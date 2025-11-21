@@ -3,30 +3,32 @@ import pandas as pd
 import yfinance as yf
 import math
 
-# --- 設定頁面 (手機版面優化) ---
-st.set_page_config(page_title="手機選股戰略", page_icon="📱", layout="centered")
+# --- 設定頁面 ---
+st.set_page_config(page_title="週轉率戰略版", page_icon="📊", layout="centered")
 
-# 注入 CSS 讓手機版面更漂亮 (隱藏多餘邊距，卡片陰影)
+# --- CSS 樣式優化 (強調高低點數據) ---
 st.markdown("""
     <style>
-    .stApp { background-color: #f5f5f5; }
+    .stApp { background-color: #f0f2f6; }
     .stock-card {
         background-color: white;
         padding: 15px;
-        border-radius: 15px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        margin-bottom: 15px;
-        border-left: 5px solid #ccc;
+        border-radius: 12px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        margin-bottom: 12px;
+        border-left: 6px solid #ccc;
     }
-    .card-up { border-left: 5px solid #ff4b4b; }
-    .card-down { border-left: 5px solid #00eb00; }
-    .big-price { font-size: 24px; font-weight: bold; }
-    .sub-info { font-size: 14px; color: #666; }
-    .section-title { font-size: 16px; font-weight: bold; margin-top: 10px; }
+    .card-up { border-left: 6px solid #d9534f; } /* 紅色多頭 */
+    .card-down { border-left: 6px solid #5cb85c; } /* 綠色空頭 */
+    .data-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .data-label { color: #666; font-size: 0.9em; }
+    .data-value { font-weight: bold; color: #333; }
+    .highlight-red { color: #d9534f; font-weight: bold; }
+    .highlight-green { color: #5cb85c; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 核心運算邏輯 (維持不變) ---
+# --- 1. 台股 Tick 計算函數 ---
 def get_tick_size(price):
     if price < 10: return 0.01
     if price < 50: return 0.05
@@ -41,132 +43,153 @@ def calculate_limit_price(price, is_up=True):
     steps = math.floor(target / tick) if is_up else math.ceil(target / tick) 
     return float(f"{steps * tick:.2f}")
 
-@st.cache_data(ttl=1800) # 手機版快取 30 分鐘
-def fetch_stock_data(code):
+# --- 2. 抓取資料 (增加昨高/昨低/今高/今低) ---
+@st.cache_data(ttl=900) # 快取 15 分鐘
+def fetch_stock_data(code, name_hint=""):
     stock_id = str(code).strip()
+    # 簡單過濾掉非股票代號 (如債券 00859B)
+    if len(stock_id) > 4 and not stock_id.isdigit(): return None
+
     ticker = f"{stock_id}.TW"
     stock = yf.Ticker(ticker)
     hist = stock.history(period="10d") 
     
     if hist.empty:
-        ticker = f"{stock_id}.TWO"
+        ticker = f"{stock_id}.TWO" # 試試上櫃
         stock = yf.Ticker(ticker)
         hist = stock.history(period="10d")
     
     if hist.empty: return None 
 
+    # 取得今日與昨日資料
     today = hist.iloc[-1]
     prev = hist.iloc[-2]
+    
     close = today['Close']
     ma5 = hist['Close'].tail(5).mean()
     
-    limit_up = calculate_limit_price(close, True)
-    limit_down = calculate_limit_price(close, False)
-    
-    # 支撐壓力邏輯
-    pressure = max(today['High'], prev['High'])
-    support = min(today['Low'], prev['Low'])
-    
+    # 計算邏輯
     trend = "多" if close > ma5 else "空"
     
+    # 壓力：昨高與今高取大
+    pressure_val = max(today['High'], prev['High'])
+    # 支撐：昨低與今低取小
+    support_val = min(today['Low'], prev['Low'])
+
     return {
         "code": stock_id,
+        "name": name_hint, # 來自 CSV 的名稱
         "price": round(close, 2),
         "pct": round((close - prev['Close']) / prev['Close'] * 100, 2),
         "ma5": round(ma5, 2),
         "trend": trend,
-        "limit_up": limit_up,
-        "limit_down": limit_down,
+        "limit_up": calculate_limit_price(close, True),
+        "limit_down": calculate_limit_price(close, False),
         "target_3": round(close * 1.03, 2),
         "stop_3": round(close * 0.97, 2),
-        "pressure": pressure,
-        "support": support
+        "high_prev": round(prev['High'], 2),
+        "high_today": round(today['High'], 2),
+        "low_prev": round(prev['Low'], 2),
+        "low_today": round(today['Low'], 2),
+        "pressure": round(pressure_val, 2),
+        "support": round(support_val, 2)
     }
 
-# --- 手機版主介面 ---
-st.title("📱 隔日沖戰略助手")
+# --- 3. 主程式介面 ---
+st.title("📊 週轉率選股戰略")
 
-# 1. 輸入區 (預設收合，節省空間)
-with st.expander("🛠️ 設定股票清單 / 上傳檔案", expanded=True):
-    uploaded_file = st.file_uploader("上傳 Excel/CSV", type=['csv', 'xlsx'])
-    manual_input = st.text_area("或手動輸入代號 (用逗號分隔)", "2330, 2603, 2317")
+# 檔案上傳區
+with st.expander("📂 上傳週轉率 CSV", expanded=True):
+    uploaded_file = st.file_uploader("選擇檔案", type=['csv', 'xlsx'])
     
-    target_codes = []
+    target_list = [] # 格式: [(代號, 名稱), ...]
+    
     if uploaded_file:
         try:
-            if uploaded_file.name.endswith('.csv'): df = pd.read_csv(uploaded_file)
-            else: df = pd.read_excel(uploaded_file)
-            # 找代號欄位
-            col = next((c for c in ['代號','股票代號','Code'] if c in df.columns), None)
-            if col: target_codes = df[col].astype(str).tolist()
-        except: st.error("讀取失敗")
-    
-    if not target_codes and manual_input:
-        target_codes = [x.strip() for x in manual_input.split(',') if x.strip()]
-
-# 2. 執行按鈕 (大按鈕適合手指按)
-if st.button("🚀 分析開始", type="primary", use_container_width=True):
-    
-    if not target_codes:
-        st.warning("請輸入代號")
-    else:
-        # 進度條
-        progress_bar = st.progress(0)
-        results = []
-        
-        for i, code in enumerate(target_codes):
-            # 只取純數字代號
-            clean_code = "".join(filter(str.isdigit, str(code)))
-            if clean_code:
-                data = fetch_stock_data(clean_code)
-                if data: results.append(data)
-            progress_bar.progress((i + 1) / len(target_codes))
+            if uploaded_file.name.endswith('.csv'): 
+                df = pd.read_csv(uploaded_file)
+            else: 
+                df = pd.read_excel(uploaded_file)
             
-        progress_bar.empty()
+            # 自動判斷欄位 (相容您的週轉率檔案)
+            code_col = next((c for c in ['代號','股票代號'] if c in df.columns), None)
+            name_col = next((c for c in ['名稱','股票名稱'] if c in df.columns), None)
+            
+            if code_col:
+                # 建立代號與名稱的對照清單
+                for index, row in df.iterrows():
+                    c = str(row[code_col]).split('.')[0].strip() # 去除小數點
+                    n = str(row[name_col]) if name_col else ""
+                    if c.isdigit(): # 確保是數字代號
+                        target_list.append((c, n))
+        except Exception as e:
+            st.error(f"檔案讀取錯誤: {e}")
+
+# 執行分析
+if st.button("🚀 開始運算 (依高低點+5MA)", type="primary", use_container_width=True):
+    if not target_list:
+        st.warning("請先上傳檔案，或確認檔案內含有「代號」欄位。")
+        # 預設範例
+        target_list = [("8043","蜜望實(範例)"), ("6173","信昌電(範例)")]
+    
+    results = []
+    progress = st.progress(0)
+    
+    for i, (code, name) in enumerate(target_list):
+        data = fetch_stock_data(code, name)
+        if data: results.append(data)
+        progress.progress((i + 1) / len(target_list))
         
-        # 3. 顯示結果 (卡片流)
-        st.markdown("---")
+    progress.empty()
+
+    # 顯示結果
+    st.markdown("---")
+    if results:
         for row in results:
-            # 決定卡片顏色 (多頭紅邊，空頭綠邊)
+            # 決定顏色樣式
             card_class = "card-up" if row['trend'] == "多" else "card-down"
-            trend_icon = "🔴 多頭" if row['trend'] == "多" else "🟢 空頭"
             trend_color = "#d9534f" if row['trend'] == "多" else "#5cb85c"
             
-            # HTML 卡片渲染
-            html_content = f"""
+            # 組合 HTML 卡片
+            html = f"""
             <div class="stock-card {card_class}">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <div>
-                        <span style="font-size:1.2em; font-weight:bold;">{row['code']}</span>
-                        <span style="background-color:{trend_color}; color:white; padding:2px 8px; border-radius:10px; font-size:0.8em; margin-left:5px;">{trend_icon}</span>
+                        <span style="font-size:1.3em; font-weight:bold;">{row['name']} ({row['code']})</span>
+                        <span style="font-size:0.8em; color:#888; margin-left:5px;">5MA: {row['ma5']}</span>
                     </div>
                     <div style="text-align:right;">
-                        <div class="big-price">{row['price']}</div>
-                        <div style="font-size:0.9em; color:{trend_color};">{row['pct']}%</div>
+                        <div style="font-size:1.5em; font-weight:bold; color:{trend_color};">{row['price']}</div>
+                        <div style="font-size:0.8em; color:{trend_color};">{row['pct']}%</div>
                     </div>
                 </div>
-                
-                <hr style="margin: 10px 0; border-top: 1px dashed #ddd;">
-                
+
+                <div style="background-color:#f9f9f9; padding:8px; border-radius:8px; margin-bottom:10px;">
+                    <div class="data-row">
+                        <span class="data-label">🔴 壓力 (昨高/今高)</span>
+                        <span class="data-value">{row['high_prev']} / {row['high_today']} ➔ <b>{row['pressure']}</b></span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">🟢 支撐 (昨低/今低)</span>
+                        <span class="data-value">{row['low_prev']} / {row['low_today']} ➔ <b>{row['support']}</b></span>
+                    </div>
+                </div>
+
                 <div style="display:flex; justify-content:space-between;">
-                    <div style="width:48%; background-color:#fff5f5; padding:5px; border-radius:5px;">
-                        <div class="section-title" style="color:#d9534f;">🛑 壓力/獲利</div>
-                        <div>漲停: <b>{row['limit_up']}</b></div>
-                        <div>+3%: {row['target_3']}</div>
-                        <div style="color:#888; font-size:0.9em;">壓: {row['pressure']}</div>
+                    <div style="width:48%;">
+                        <div style="font-size:0.8em; color:#999;">獲利目標 (+3%)</div>
+                        <div class="highlight-red" style="font-size:1.1em;">{row['target_3']}</div>
+                        <div style="font-size:0.8em; color:#ccc;">漲停: {row['limit_up']}</div>
                     </div>
-                    <div style="width:48%; background-color:#f0fff0; padding:5px; border-radius:5px;">
-                        <div class="section-title" style="color:#5cb85c;">🛡️ 支撐/防守</div>
-                        <div>跌停: <b>{row['limit_down']}</b></div>
-                        <div>-3%: {row['stop_3']}</div>
-                        <div style="color:#888; font-size:0.9em;">撐: {row['support']}</div>
+                    <div style="width:48%; text-align:right;">
+                        <div style="font-size:0.8em; color:#999;">防守停損 (-3%)</div>
+                        <div class="highlight-green" style="font-size:1.1em;">{row['stop_3']}</div>
+                        <div style="font-size:0.8em; color:#ccc;">跌停: {row['limit_down']}</div>
                     </div>
-                </div>
-                
-                <div style="margin-top:10px; font-size:0.85em; color:#999; text-align:center;">
-                     5MA: {row['ma5']} | 乖離率: {round((row['price'] - row['ma5'])/row['ma5']*100, 2)}%
                 </div>
             </div>
             """
-            st.markdown(html_content, unsafe_allow_html=True)
+            st.markdown(html, unsafe_allow_html=True)
+    else:
+        st.error("無法取得數據，請檢查代號或網路。")
 
