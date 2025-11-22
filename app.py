@@ -2,26 +2,75 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import math
-import numpy as np
+import os
 
-# --- 1. 頁面與 CSS (緊湊版面 + 綠跌紅漲) ---
-st.set_page_config(page_title="當沖戰略室 V6", page_icon="⚡", layout="wide")
+# --- 1. 頁面設定 ---
+st.set_page_config(page_title="當沖戰略室 V7", page_icon="⚡", layout="wide")
 
 st.markdown("""
     <style>
-    /* 縮減頁面留白 */
-    .block-container { padding-top: 0.5rem; padding-bottom: 1rem; padding-left: 1rem; padding-right: 1rem; }
-    
-    /* 表格字體 */
+    .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 1rem; padding-right: 1rem; }
     div[data-testid="stDataFrame"] { font-size: 14px; }
-    
-    /* 命中狀態醒目提示 */
-    .hit-tag { background-color: #ffff00; color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+    /* 讓編輯器表頭對齊 */
+    div[data-testid="stDataEditor"] table { text-align: center; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 功能模組
+# 功能模組: 名稱對照 (後端自動讀取)
+# ==========================================
+
+@st.cache_data(ttl=3600)
+def load_stock_mapping():
+    """
+    自動讀取同目錄下的 stock_names.csv
+    格式預期: 第一欄代號, 第二欄名稱
+    """
+    mapping = {}
+    try:
+        # 優先讀取 CSV
+        if os.path.exists("stock_names.csv"):
+            df = pd.read_csv("stock_names.csv")
+            # 清洗欄位 (去除空格)
+            df.columns = [c.strip() for c in df.columns]
+            # 假設欄位可能是 [代號, 名稱] 或 [股票代號, 股票名稱]
+            code_col = df.columns[0]
+            name_col = df.columns[1]
+            
+            for _, row in df.iterrows():
+                code = str(row[code_col]).split('.')[0].strip()
+                name = str(row[name_col]).strip()
+                mapping[code] = name
+    except:
+        pass
+    
+    # 內建備援熱門股 (若讀不到檔案時使用)
+    fallback = {
+        "2330":"台積電", "2317":"鴻海", "2454":"聯發科", "2603":"長榮", 
+        "2609":"陽明", "2615":"萬海", "3231":"緯創", "2382":"廣達",
+        "2376":"技嘉", "2356":"英業達", "3008":"大立光", "3034":"聯詠",
+        "2303":"聯電", "2881":"富邦金", "2882":"國泰金", "6173":"信昌電",
+        "8043":"蜜望實", "8358":"金居"
+    }
+    # 合併 (檔案優先)
+    fallback.update(mapping)
+    return fallback
+
+# 載入全域對照表
+STOCK_MAP = load_stock_mapping()
+
+def get_stock_name(code):
+    return STOCK_MAP.get(str(code), code) # 找不到回傳代號
+
+def get_code_by_name(name):
+    # 反向搜尋 (名稱 -> 代號)
+    for code, stock_name in STOCK_MAP.items():
+        if name == stock_name:
+            return code
+    return None
+
+# ==========================================
+# 核心邏輯: 計算與抓取
 # ==========================================
 
 def get_tick_size(price):
@@ -42,26 +91,7 @@ def calculate_limits(price):
     except:
         return 0, 0
 
-def get_stock_name(code, mapping_df=None):
-    """從上傳的對照表找名稱"""
-    code = str(code).strip()
-    if mapping_df is not None and not mapping_df.empty:
-        # 依照使用者提供的格式: 股票代號, 股票名稱
-        # 先確保轉成字串比對
-        try:
-            row = mapping_df[mapping_df['股票代號'].astype(str) == code]
-            if not row.empty:
-                return row.iloc[0]['股票名稱']
-        except:
-            pass # 欄位名稱不符或其他錯誤
-            
-    return code # 找不到回傳代號
-
-# ==========================================
-# 核心邏輯: 資料抓取 (Fetch)
-# ==========================================
-
-def fetch_stock_data_raw(code, name_hint="", mapping_df=None):
+def fetch_stock_data_raw(code, name_hint=""):
     code = str(code).strip()
     try:
         ticker = yf.Ticker(f"{code}.TW")
@@ -77,7 +107,7 @@ def fetch_stock_data_raw(code, name_hint="", mapping_df=None):
         today = hist.iloc[-1]
         current_price = today['Close']
         
-        # 2. 昨日狀態 (用於備註)
+        # 2. 昨日狀態 (判斷昨漲跌停)
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         prev_prev_close = hist.iloc[-3]['Close'] if len(hist) >= 3 else prev_day['Open']
         p_limit_up, p_limit_down = calculate_limits(prev_prev_close)
@@ -86,7 +116,7 @@ def fetch_stock_data_raw(code, name_hint="", mapping_df=None):
         if prev_day['Close'] >= p_limit_up: yesterday_status = "🔥昨漲停"
         elif prev_day['Close'] <= p_limit_down: yesterday_status = "💚昨跌停"
 
-        # 3. 今日漲跌停 (User Point 3 & 4)
+        # 3. 今日漲跌停
         limit_up, limit_down = calculate_limits(prev_day['Close'])
 
         # 4. 戰略點位 (近低-5MA-近高)
@@ -102,65 +132,72 @@ def fetch_stock_data_raw(code, name_hint="", mapping_df=None):
             points.append({"val": past_5['High'].max(), "tag": "高"})
             points.append({"val": past_5['Low'].min(), "tag": ""})
             
-        # 強制加入今日漲跌停到點位列表，以便排序顯示 (User Point 4)
-        points.append({"val": limit_up, "tag": "漲停"})
-        points.append({"val": limit_down, "tag": "跌停"})
+        # 計算用的點位 (包含漲跌停，為了計算支撐壓力)
+        calc_points = points.copy()
+        calc_points.append({"val": limit_up, "tag": "漲停"})
+        calc_points.append({"val": limit_down, "tag": "跌停"})
 
-        # 過濾與排序
-        valid_points = []
+        # 過濾與排序 (用於顯示備註)
+        # User Request: 備註內不要合併漲跌停
+        display_points = []
         seen = set()
-        for p in points:
+        
+        for p in points: # 使用不含漲跌停的 points 列表
             v = float(f"{p['val']:.2f}")
-            # 過濾掉超出漲跌停範圍太多的雜訊，但保留漲跌停本身
-            if limit_down <= v <= limit_up:
+            if limit_down <= v <= limit_up: # 只取區間內的
                 if v not in seen:
-                    valid_points.append({"val": v, "tag": p['tag']})
+                    display_points.append({"val": v, "tag": p['tag']})
                     seen.add(v)
-        valid_points.sort(key=lambda x: x['val'])
+        display_points.sort(key=lambda x: x['val'])
         
         # 生成戰略備註字串
         note_parts = []
         if yesterday_status: note_parts.append(yesterday_status)
         
-        for p in valid_points:
+        for p in display_points:
             v_str = f"{p['val']:.0f}" if p['val'].is_integer() else f"{p['val']:.2f}"
             tag = p['tag']
-            
-            # 格式美化
-            if "漲停" in tag: item = f"🔥漲停{v_str}"
-            elif "跌停" in tag: item = f"💚跌停{v_str}"
-            elif "高" in tag: item = f"高{v_str}"
+            if "高" in tag: item = f"高{v_str}"
             elif tag: item = f"{v_str}{tag}"
             else: item = v_str
-            
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
         
+        # 為了計算邏輯，我們需要一個完整的點位列表
+        full_calc_points = []
+        seen_calc = set()
+        for p in calc_points:
+             v = float(f"{p['val']:.2f}")
+             if v not in seen_calc:
+                 full_calc_points.append({"val": v, "tag": p['tag']})
+                 seen_calc.add(v)
+        full_calc_points.sort(key=lambda x: x['val'])
+
         # 名稱處理
         final_name = name_hint
         if not final_name or final_name == code:
-            final_name = get_stock_name(code, mapping_df)
+            final_name = get_stock_name(code)
         
-        # 漲跌幅計算
+        # 漲跌幅
         pct_change = (current_price - prev_day['Close']) / prev_day['Close'] * 100
 
         return {
             "代號": code,
-            "名稱": final_name, # 不顯示代號了，因為代號在第一欄
+            "名稱": final_name,
             "收盤價": round(current_price, 2),
-            "自訂價(可修)": None, # 預設空白
-            "漲跌幅": pct_change, # 純數值，後續用 Column Config 變色
-            "漲跌停": f"{limit_up} / {limit_down}", # User Point 3: 顯示數值
+            "自訂價(可修)": None, 
+            "漲跌幅": pct_change,
+            "漲停價": limit_up,   # 獨立欄位
+            "跌停價": limit_down, # 獨立欄位
             "獲利目標": None,
             "防守停損": None,
             "戰略備註": strategy_note,
             "命中狀態": "",
-            # 隱藏欄位 (用於計算)
-            "_points": valid_points,
+            # 隱藏欄位
+            "_points": full_calc_points, # 包含漲跌停的完整點位 (計算用)
             "_limit_up": limit_up,
-            "_limit_down": limit_down,
-            "_ma5": ma5 # 用於判斷多空
+            "_limit_down": limit_down
         }
     except Exception as e:
         return None
@@ -169,7 +206,6 @@ def fetch_stock_data_raw(code, name_hint="", mapping_df=None):
 # 介面邏輯
 # ==========================================
 
-# 初始化 State
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = pd.DataFrame()
 
@@ -177,31 +213,18 @@ if 'stock_data' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 設定")
     hide_etf = st.checkbox("隱藏 ETF (00開頭)", value=True)
+    st.info(f"已內建載入 {len(STOCK_MAP)} 檔股票名稱對照。")
     
-    st.markdown("---")
-    st.markdown("📂 **資料對照**")
-    
-    # 1. 名稱對照表上傳
-    mapping_file = st.file_uploader("1. 上傳股票代號名稱.xlsx (CSV)", type=['csv'])
-    mapping_df = None
-    if mapping_file:
-        try:
-            mapping_df = pd.read_csv(mapping_file)
-            # 寬容度處理：去除欄位空白
-            mapping_df.columns = [c.strip() for c in mapping_df.columns]
-        except:
-            st.error("對照表讀取失敗")
-
     st.markdown("---")
     limit_rows = st.number_input("顯示筆數", min_value=1, value=50)
 
-st.title("⚡ 當沖戰略室 V6")
+st.title("⚡ 當沖戰略室 V7")
 
 # --- 上方輸入區 ---
 col_search, col_file = st.columns([2, 1])
 
 with col_search:
-    search_query = st.text_input("🔍 快速查詢 (代號，用逗號分隔)", placeholder="2330, 2317")
+    search_query = st.text_input("🔍 快速查詢 (輸入代號或中文，用逗號分隔)", placeholder="台積電, 2317, 鴻海")
 
 with col_file:
     uploaded_file = st.file_uploader("2. 上傳選股清單 (Excel/CSV)", type=['xlsx', 'csv'])
@@ -213,7 +236,7 @@ with col_file:
             default_idx = xl.sheet_names.index("週轉率")
         selected_sheet = st.selectbox("選擇工作表", xl.sheet_names, index=default_idx)
 
-# --- 按鈕執行 (抓取資料) ---
+# --- 按鈕執行 ---
 if st.button("🚀 執行分析", type="primary"):
     targets = []
     
@@ -221,12 +244,15 @@ if st.button("🚀 執行分析", type="primary"):
     if search_query:
         inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
         for inp in inputs:
-            if inp.isdigit(): targets.append((inp, ""))
-            # 中文搜尋依賴 mapping_df (若有)
-            elif mapping_df is not None:
-                found = mapping_df[mapping_df['股票名稱'] == inp]
-                if not found.empty:
-                    targets.append((str(found.iloc[0]['股票代號']), inp))
+            if inp.isdigit(): 
+                targets.append((inp, ""))
+            else:
+                # 中文轉代號 (直接查表)
+                code = get_code_by_name(inp)
+                if code:
+                    targets.append((code, inp))
+                else:
+                    st.toast(f"找不到「{inp}」，請確認 stock_names.csv。", icon="⚠️")
 
     # 2. 處理選股清單
     if uploaded_file:
@@ -237,8 +263,6 @@ if st.button("🚀 執行分析", type="primary"):
                 df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
             
             c_col = next((c for c in df_up.columns if "代號" in c), None)
-            # User Requested: 盡量用網路或Mapping名稱
-            # 但若檔案內有名稱，先讀取作為 hint
             n_col = next((c for c in df_up.columns if "名稱" in c), None)
             
             if c_col:
@@ -259,7 +283,7 @@ if st.button("🚀 執行分析", type="primary"):
         if code in seen: continue
         if hide_etf and code.startswith("00"): continue
         
-        data = fetch_stock_data_raw(code, name, mapping_df)
+        data = fetch_stock_data_raw(code, name)
         if data:
             results.append(data)
             seen.add(code)
@@ -280,11 +304,7 @@ if not st.session_state.stock_data.empty:
     
     df_display = st.session_state.stock_data.reset_index(drop=True)
     
-    # 使用者要求: 負數用綠色，正數用紅色 (User Point 2)
-    # Streamlit 的 NumberColumn format 無法直接指定顏色
-    # 我們必須在計算結果的 dataframe 使用 Styler，但 Editor 本身只能顯示數值
-    # 這裡我們使用 TextColumn 搭配 Emoji 或 +- 符號來呈現漲跌幅，以利閱讀
-    
+    # 編輯器設定
     edited_df = st.data_editor(
         df_display,
         column_config={
@@ -298,66 +318,56 @@ if not st.session_state.stock_data.empty:
                 step=0.1,
                 required=False
             ),
-            "漲跌幅": st.column_config.NumberColumn(
-                "漲跌%",
-                format="%.2f%%",
-                disabled=True,
-            ),
-            "漲跌停": st.column_config.TextColumn("漲停 / 跌停", disabled=True),
+            "漲跌幅": st.column_config.NumberColumn("漲跌%", format="%.2f%%", disabled=True),
+            "漲停價": st.column_config.NumberColumn("🔥漲停", format="%.2f", disabled=True),
+            "跌停價": st.column_config.NumberColumn("💚跌停", format="%.2f", disabled=True),
             "獲利目標": st.column_config.NumberColumn(format="%.2f", disabled=True),
             "防守停損": st.column_config.NumberColumn(format="%.2f", disabled=True),
             "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
             "命中狀態": st.column_config.TextColumn(width="small", disabled=True),
-            # 隱藏
-            "_points": None, "_limit_up": None, "_limit_down": None, "_ma5": None
+            "_points": None, "_limit_up": None, "_limit_down": None
         },
-        column_order=["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "漲跌停", "獲利目標", "防守停損", "命中狀態", "戰略備註"],
+        # 新增獨立的 漲停/跌停 欄位
+        column_order=["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "漲停價", "跌停價", "獲利目標", "防守停損", "命中狀態", "戰略備註"],
         hide_index=True,
-        use_container_width=False, # User Point 5: 表格不要太寬
-        num_rows="dynamic", 
+        use_container_width=False,
+        num_rows="dynamic",
         key="main_editor" 
     )
     
-    # --- 即時運算 ---
+    # --- 即時運算 (純數學) ---
     updates = []
     
     for idx, row in edited_df.iterrows():
         custom_price = row['自訂價(可修)']
         
-        # 若未輸入 (NaN)，回傳空值
         if pd.isna(custom_price) or custom_price == "":
-            updates.append({
-                "獲利目標": None,
-                "防守停損": None,
-                "命中狀態": ""
-            })
+            updates.append({"獲利目標": None, "防守停損": None, "命中狀態": ""})
             continue
             
         price = float(custom_price)
-        points = row['_points']
+        points = row['_points'] # 包含漲跌停的完整點位
         limit_up = row['_limit_up']
         limit_down = row['_limit_down']
         
-        # User Point 6: 獲利目標邏輯
-        # 1. 優先找壓力 (大於 price 的點)
+        # 獲利邏輯 (優先找壓力)
         target = None
         for p in points:
             if p['val'] > price:
                 target = p['val']
                 break
-        # 2. 若找不到壓力 (創新高/漲停)，使用 +3% 規則
+        # 若無壓力，使用 +3% (但不大於漲停)
         if target is None:
             target = price * 1.03
-            # 但不能超過漲停價 (除非漲停價本身就是目標)
             if target > limit_up: target = limit_up
         
-        # 防守 (往下找支撐)
+        # 防守邏輯
         stop = None
         for p in reversed(points):
             if p['val'] < price:
                 stop = p['val']
                 break
-        # 若找不到支撐，使用 -3%
+        # 若無支撐，使用 -3% (但不小於跌停)
         if stop is None:
             stop = price * 0.97
             if stop < limit_down: stop = limit_down
@@ -376,15 +386,12 @@ if not st.session_state.stock_data.empty:
             "命中狀態": hit_msg
         })
     
-    # 更新顯示
+    # 更新並顯示結果
     df_updates = pd.DataFrame(updates, index=edited_df.index)
     edited_df.update(df_updates)
-    st.session_state.stock_data = edited_df # 同步回 State
+    st.session_state.stock_data = edited_df
 
-    # --- 下方結果表 (含顏色) ---
-    # User Point 2: 漲跌負數綠色
-    # 我們只針對有輸入資料的列顯示詳細結果，或顯示全部
-    
+    # --- 下方詳細結果 (含顏色) ---
     def color_change(val):
         if isinstance(val, (float, int)):
             if val > 0: return 'color: #ff4b4b' # Red
@@ -395,8 +402,6 @@ if not st.session_state.stock_data.empty:
         return ['background-color: #ffffcc; color: black' if '⚡' in str(s['命中狀態']) else '' for _ in s]
 
     st.markdown("### 🎯 計算結果")
-    
-    # 選取要顯示的欄位
     res_df = edited_df[["代號", "名稱", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "命中狀態", "戰略備註"]]
     
     st.dataframe(
