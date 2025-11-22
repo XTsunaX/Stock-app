@@ -173,7 +173,7 @@ def fetch_stock_data_raw(code, name_hint=""):
     code = str(code).strip()
     try:
         ticker = yf.Ticker(f"{code}.TW")
-        hist = ticker.history(period="3mo") # 抓3個月以計算90日高低
+        hist = ticker.history(period="3mo") 
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
@@ -183,33 +183,34 @@ def fetch_stock_data_raw(code, name_hint=""):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
-        # 1. 獲利目標與防守停損 (靜態計算：收盤價 +/- 3% 並套用Tick)
+        # 獲利目標與防守停損 (靜態計算)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         
         limit_up, limit_down = calculate_limits(prev_day['Close'])
 
-        # 2. 壓力支撐點位收集 (恢復完整邏輯)
+        # 2. 壓力支撐點位收集
+        # 關鍵更新：所有數值都經過 apply_tick_rules 處理，確保戰略備註符合台股規則
         points = []
         
-        # MA5
-        ma5 = hist['Close'].tail(5).mean()
+        # MA5 (最容易出現小數位數問題，需修正)
+        ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
         
         # 今日開高低
-        points.append({"val": today['Open'], "tag": ""})
-        points.append({"val": today['High'], "tag": ""})
-        points.append({"val": today['Low'], "tag": ""})
+        points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
+        points.append({"val": apply_tick_rules(today['High']), "tag": ""})
+        points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 近期 5日 高低 (找回此邏輯)
+        # 近期 5日 高低
         past_5 = hist.iloc[-6:-1] if len(hist) >= 6 else hist.iloc[:-1]
         if not past_5.empty:
-            points.append({"val": past_5['High'].max(), "tag": ""})
-            points.append({"val": past_5['Low'].min(), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
             
         # 90日 高低
-        high_90 = hist['High'].max()
-        low_90 = hist['Low'].min()
+        high_90 = apply_tick_rules(hist['High'].max())
+        low_90 = apply_tick_rules(hist['Low'].min())
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
@@ -385,7 +386,7 @@ if not st.session_state.stock_data.empty:
                 "自訂價 ✏️",
                 help="輸入後查看命中結果",
                 format="%.2f",
-                step=0.01, # 關鍵修正：允許輸入小數點第二位
+                step=0.01,
                 required=False,
                 width="medium" 
             ),
@@ -403,7 +404,7 @@ if not st.session_state.stock_data.empty:
         key="main_editor"
     )
     
-    # 2. 結果計算 (只做命中檢查)
+    # 2. 結果計算
     results = []
     for idx, row in edited_df.iterrows():
         custom_price = row['自訂價(可修)']
@@ -413,7 +414,7 @@ if not st.session_state.stock_data.empty:
             price = float(custom_price)
             points = row['_points']
             
-            # 命中判斷 (誤差0.01內)
+            # 命中判斷
             for p in points:
                 if abs(p['val'] - price) < 0.01:
                     is_hit = True
