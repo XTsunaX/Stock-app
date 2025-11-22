@@ -17,35 +17,48 @@ st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡",
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = pd.DataFrame()
 
-# 記憶設定
+# 記憶設定：字體大小 (預設 18)
 if 'font_size' not in st.session_state:
     st.session_state.font_size = 18
+
+# 記憶設定：顯示筆數 (預設 5)
 if 'limit_rows' not in st.session_state:
     st.session_state.limit_rows = 5
 
 # --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    st.slider("字體大小 (表格)", min_value=12, max_value=72, key='font_size')
+    
+    # 3. 修正字體記憶：明確綁定 value
+    st.slider(
+        "字體大小 (表格)", 
+        min_value=12, 
+        max_value=72, 
+        value=st.session_state.font_size,
+        key='font_size'
+    )
+    
     hide_etf = st.checkbox("隱藏 ETF (00開頭)", value=True)
     st.markdown("---")
-    st.number_input("顯示筆數", min_value=1, key='limit_rows')
+    
+    st.number_input(
+        "顯示筆數", 
+        min_value=1, 
+        value=st.session_state.limit_rows,
+        key='limit_rows'
+    )
+    
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n勾選左側框框後按 `Delete` 鍵。")
 
-# --- 動態 CSS (字體修復) ---
+# --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
 
 st.markdown(f"""
     <style>
     .block-container {{ padding-top: 0.5rem; padding-bottom: 1rem; }}
     
-    /* 強制覆蓋 Streamlit 表格內部字體 */
-    div[data-testid="stDataFrame"] {{
-        width: 100%;
-    }}
-    
-    /* 針對表格內容的精確定位 */
+    /* 強制覆蓋表格字體 */
     div[data-testid="stDataFrame"] table,
     div[data-testid="stDataFrame"] td,
     div[data-testid="stDataFrame"] th,
@@ -56,6 +69,10 @@ st.markdown(f"""
         line-height: 1.5 !important;
     }}
     
+    /* 確保輸入框高度足夠 */
+    div[data-testid="stDataFrame"] {{
+        width: 100%;
+    }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -122,7 +139,7 @@ def search_code_online(query):
     return None
 
 # ==========================================
-# 2. 核心計算邏輯 (含90天高低)
+# 2. 核心計算邏輯
 # ==========================================
 
 def get_tick_size(price):
@@ -147,7 +164,6 @@ def fetch_stock_data_raw(code, name_hint=""):
     code = str(code).strip()
     try:
         ticker = yf.Ticker(f"{code}.TW")
-        # 抓取 3個月 (約90天)
         hist = ticker.history(period="3mo")
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
@@ -167,13 +183,11 @@ def fetch_stock_data_raw(code, name_hint=""):
         points.append({"val": today['High'], "tag": ""})
         points.append({"val": today['Low'], "tag": ""})
         
-        # 90天高低
         high_90 = hist['High'].max()
         low_90 = hist['Low'].min()
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
@@ -331,8 +345,7 @@ if not st.session_state.stock_data.empty:
     limit = st.session_state.limit_rows
     df_display = st.session_state.stock_data.head(limit).copy()
     
-    # 1. 輸入區 (Input) - 極簡化，避免計算，解決跳動
-    # 移除不必要的欄位顯示
+    # 1. 輸入區 (Input) - 1. 修正輸入跳動：移除後端更新，讓編輯器維持自身狀態
     input_cols = ["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "漲停價", "跌停價", "戰略備註", "_points"]
     
     edited_df = st.data_editor(
@@ -353,7 +366,7 @@ if not st.session_state.stock_data.empty:
             "漲停價": st.column_config.NumberColumn("🔥漲停", format="%.2f", disabled=True),
             "跌停價": st.column_config.NumberColumn("💚跌停", format="%.2f", disabled=True),
             "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
-            "_points": None # 隱藏欄位
+            "_points": None 
         },
         hide_index=True,
         use_container_width=True,
@@ -361,39 +374,35 @@ if not st.session_state.stock_data.empty:
         key="main_editor"
     )
     
-    # 2. 資料同步 (只同步自訂價，避免重刷)
-    if '自訂價(可修)' in edited_df.columns:
-        st.session_state.stock_data.update(edited_df[['自訂價(可修)']])
+    # 註：這裡移除了 st.session_state.stock_data.update(...) 以解決輸入焦點跳動問題
 
-    # 3. 結果計算 (Result) - 獨立產生，不干擾輸入表
+    # 2. 結果計算 (Result)
     results = []
     for idx, row in edited_df.iterrows():
         custom_price = row['自訂價(可修)']
         target = None
         stop = None
-        is_hit = False # 命中旗標
+        is_hit = False 
 
         if not (pd.isna(custom_price) or custom_price == ""):
             price = float(custom_price)
             points = row['_points']
             
-            # 獲利目標
             for p in points:
                 if p['val'] > price:
                     target = p['val']
                     break
             if target is None: target = price * 1.03
             
-            # 防守停損
             for p in reversed(points):
                 if p['val'] < price:
                     stop = p['val']
                     break
             if stop is None: stop = price * 0.97
             
-            # 命中判斷 (誤差0.05內)
+            # 1. 修正命中誤判：容許誤差改為 0.01，避免 0.05 邊緣值誤判
             for p in points:
-                if abs(p['val'] - price) < 0.05:
+                if abs(p['val'] - price) < 0.01:
                     is_hit = True
                     break
         
@@ -403,22 +412,18 @@ if not st.session_state.stock_data.empty:
             "_is_hit": is_hit
         })
     
-    # 合併結果
     res_df_calced = pd.DataFrame(results, index=edited_df.index)
     final_df = pd.concat([edited_df, res_df_calced], axis=1)
 
     # --- 下方表格：結果區 ---
     st.markdown("### 🎯 計算結果 (命中亮色提示)")
     
-    # 只顯示有輸入的
     mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
     
     if mask.any():
         display_df = final_df[mask][["代號", "名稱", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "戰略備註", "_is_hit"]]
         
-        # 樣式函數
         def highlight_hit_row(row):
-            # 若命中，整行變色
             if row['_is_hit']:
                 return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
             return [''] * len(row)
@@ -438,7 +443,7 @@ if not st.session_state.stock_data.empty:
                 "漲跌幅": st.column_config.NumberColumn("漲跌%", format="%.2f%%"),
                 "獲利目標": st.column_config.NumberColumn(format="%.2f"),
                 "防守停損": st.column_config.NumberColumn(format="%.2f"),
-                "_is_hit": None # 隱藏旗標
+                "_is_hit": None 
             }
         )
     else:
