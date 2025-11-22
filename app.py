@@ -188,15 +188,15 @@ def fetch_stock_data_raw(code, name_hint=""):
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list]
-            final_tag = ""
-            if "漲停" in tags: final_tag = "漲停"
-            elif "跌停" in tags: final_tag = "跌停"
-            elif "高" in tags: final_tag = "高"
-            elif "低" in tags: final_tag = "低"
-            elif "多" in tags: final_tag = "多"
-            elif "空" in tags: final_tag = "空"
-            else: final_tag = ""
-            final_display_points.append({"val": val, "tag": final_tag})
+            first_tag = ""
+            if "漲停" in tags: first_tag = "漲停"
+            elif "跌停" in tags: first_tag = "跌停"
+            elif "高" in tags: first_tag = "高"
+            elif "低" in tags: first_tag = "低"
+            elif "多" in tags: first_tag = "多"
+            elif "空" in tags: first_tag = "空"
+            else: first_tag = ""
+            final_display_points.append({"val": val, "tag": first_tag})
             
         note_parts = []
         # 2. 移除昨日漲跌停標註 (修正處: 這裡不再 append yesterday_status)
