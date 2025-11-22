@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import math
 import time
+import os  # 新增 os 用於檢查檔案
 
 # --- 1. 頁面與 CSS ---
 st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡", layout="wide")
@@ -18,16 +19,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 核心功能 A: 網路爬蟲 (自動抓名稱)
+# 0. 本地資料讀取 (新增功能)
+# ==========================================
+@st.cache_data
+def load_local_stock_names():
+    """
+    讀取本地 stock_names.csv 建立快速查詢表
+    CSV 格式假設為: 代號,名稱 (無標題)
+    """
+    code_map = {}
+    name_map = {}
+    if os.path.exists("stock_names.csv"):
+        try:
+            # 讀取 CSV，指定欄位名稱
+            df = pd.read_csv("stock_names.csv", header=None, names=["code", "name"], dtype=str)
+            for _, row in df.iterrows():
+                c = str(row['code']).strip()
+                n = str(row['name']).strip()
+                code_map[c] = n
+                name_map[n] = c  # 建立 名稱->代號 的反向查表
+        except Exception as e:
+            print(f"Error loading CSV: {e}")
+    return code_map, name_map
+
+# ==========================================
+# 核心功能 A: 網路爬蟲 (自動抓名稱) - 已整合本地查詢
 # ==========================================
 
-@st.cache_data(ttl=86400) # 快取一天，避免重複爬
+@st.cache_data(ttl=86400)
 def get_stock_name_online(code):
     """
-    輸入代號 (2330)，去 Yahoo 抓取中文名稱 (台積電)
+    輸入代號 (2330)，優先查本地 CSV，查不到再去 Yahoo 抓取中文名稱
     """
     code = str(code).strip()
-    if not code.isdigit(): return code # 防呆
+    if not code.isdigit(): return code
+    
+    # 1. 優先查本地 CSV
+    code_map, _ = load_local_stock_names()
+    if code in code_map:
+        return code_map[code]
     
     try:
         # 嘗試上市
@@ -35,11 +65,9 @@ def get_stock_name_online(code):
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=2)
         
-        # 解析 Title: <title>台積電(2330) - 個股走勢...</title>
         soup = BeautifulSoup(r.text, "html.parser")
         if soup.title:
             title_text = soup.title.string
-            # 格式通常是 "台積電(2330)..."
             if "(" in title_text and ")" in title_text:
                 name = title_text.split('(')[0].strip()
                 return name
@@ -53,17 +81,22 @@ def get_stock_name_online(code):
             if "(" in title_text:
                 return title_text.split('(')[0].strip()
                 
-        return code # 真的抓不到就回傳代號
+        return code 
     except:
         return code
 
 @st.cache_data(ttl=86400)
 def search_code_online(query):
     """
-    輸入中文 (鴻海)，去 Yahoo 搜尋代號 (2317)
+    輸入中文 (元晶)，優先查本地 CSV，查不到再去 Yahoo 搜尋
     """
     query = query.strip()
     if query.isdigit(): return query
+    
+    # 1. 優先查本地 CSV (精確搜尋)
+    _, name_map = load_local_stock_names()
+    if query in name_map:
+        return name_map[query]
     
     try:
         url = f"https://tw.stock.yahoo.com/h/kimosearch/search_list.html?keyword={query}"
@@ -71,18 +104,16 @@ def search_code_online(query):
         r = requests.get(url, headers=headers, timeout=2)
         soup = BeautifulSoup(r.text, "html.parser")
         
-        # 抓取連結中的代號
         links = soup.find_all('a', href=True)
         for link in links:
             href = link['href']
-            # 尋找類似 /quote/2317.TW 的連結
             if "/quote/" in href and ".TW" in href:
                 parts = href.split("/quote/")[1].split(".")
                 if parts[0].isdigit():
                     return parts[0]
     except:
         pass
-    return None # 找不到
+    return None
 
 # ==========================================
 # 核心邏輯 B: 計算與抓取
@@ -131,7 +162,7 @@ def fetch_stock_data_raw(code, name_hint=""):
         if prev_day['Close'] >= p_limit_up: yesterday_status = "🔥昨漲停"
         elif prev_day['Close'] <= p_limit_down: yesterday_status = "💚昨跌停"
 
-        # 3. 今日漲跌停 (獨立顯示)
+        # 3. 今日漲跌停
         limit_up, limit_down = calculate_limits(prev_day['Close'])
 
         # 4. 戰略點位
@@ -147,12 +178,12 @@ def fetch_stock_data_raw(code, name_hint=""):
             points.append({"val": past_5['High'].max(), "tag": "高"})
             points.append({"val": past_5['Low'].min(), "tag": ""})
             
-        # 計算用的點位 (包含漲跌停，為了計算獲利目標)
+        # 計算用的點位
         calc_points = points.copy()
         calc_points.append({"val": limit_up, "tag": "漲停"})
         calc_points.append({"val": limit_down, "tag": "跌停"})
 
-        # 過濾與排序 (用於顯示備註 - 不含漲跌停)
+        # 過濾與排序
         display_points = []
         seen = set()
         for p in points:
@@ -163,12 +194,26 @@ def fetch_stock_data_raw(code, name_hint=""):
                     seen.add(v)
         display_points.sort(key=lambda x: x['val'])
         
-        # 生成戰略備註字串
+        # --- 生成戰略備註字串 (修改處) ---
         note_parts = []
         if yesterday_status: note_parts.append(yesterday_status)
         
+        # 檢查當日是否觸及漲跌停 (加入備註)
+        today_high = today['High']
+        today_low = today['Low']
+        
+        def fmt_val(v):
+            return f"{v:.0f}" if v.is_integer() else f"{v:.2f}"
+
+        # 允許些微浮點數誤差
+        if today_high >= limit_up - 0.01:
+            note_parts.append(f"漲停{fmt_val(limit_up)}")
+        
+        if today_low <= limit_down + 0.01:
+            note_parts.append(f"跌停{fmt_val(limit_down)}")
+
         for p in display_points:
-            v_str = f"{p['val']:.0f}" if p['val'].is_integer() else f"{p['val']:.2f}"
+            v_str = fmt_val(p['val'])
             tag = p['tag']
             if "高" in tag: item = f"高{v_str}"
             elif tag: item = f"{v_str}{tag}"
@@ -176,8 +221,9 @@ def fetch_stock_data_raw(code, name_hint=""):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
+        # -------------------------------
         
-        # 準備計算用的完整點位 (排序)
+        # 準備計算用的完整點位
         full_calc_points = []
         seen_calc = set()
         for p in calc_points:
@@ -187,12 +233,11 @@ def fetch_stock_data_raw(code, name_hint=""):
                  seen_calc.add(v)
         full_calc_points.sort(key=lambda x: x['val'])
 
-        # 自動抓取名稱 (如果沒有提供)
+        # 自動抓取名稱
         final_name = name_hint
         if not final_name:
             final_name = get_stock_name_online(code)
         
-        # 漲跌幅
         pct_change = (current_price - prev_day['Close']) / prev_day['Close'] * 100
 
         return {
@@ -238,7 +283,6 @@ st.title("⚡ 當沖戰略室 V8 (網路版)")
 col_search, col_file = st.columns([2, 1])
 
 with col_search:
-    # 修改 placeholder 提示支援中文
     search_query = st.text_input("🔍 快速查詢 (輸入中文名稱或代號，用逗號分隔)", placeholder="鴻海, 2603, 緯創")
 
 with col_file:
@@ -255,20 +299,20 @@ with col_file:
 if st.button("🚀 執行分析", type="primary"):
     targets = []
     
-    # 1. 處理搜尋 (支援中文)
+    # 1. 處理搜尋
     if search_query:
         inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
         for inp in inputs:
             if inp.isdigit(): 
                 targets.append((inp, ""))
             else:
-                # 中文轉代號 (網路爬蟲)
+                # 中文轉代號 (優先查本地 CSV，其次爬蟲)
                 with st.spinner(f"正在搜尋「{inp}」..."):
                     code = search_code_online(inp)
                 if code:
                     targets.append((code, inp))
                 else:
-                    st.toast(f"網路上找不到「{inp}」的代號。", icon="⚠️")
+                    st.toast(f"找不到「{inp}」的代號。", icon="⚠️")
 
     # 2. 處理選股清單
     if uploaded_file:
@@ -300,7 +344,6 @@ if st.button("🚀 執行分析", type="primary"):
         if code in seen: continue
         if hide_etf and code.startswith("00"): continue
         
-        # 若 name 為空，fetch 內部會自動去網路抓
         data = fetch_stock_data_raw(code, name)
         if data:
             results.append(data)
@@ -324,7 +367,11 @@ if not st.session_state.stock_data.empty:
     
     df_display = st.session_state.stock_data.reset_index(drop=True)
     
-    # 這裡開啟 num_rows="dynamic"，允許使用者刪除行 (User Point 2)
+    # --- 修復: 應用「顯示筆數」設定 ---
+    if limit_rows > 0:
+        df_display = df_display.head(limit_rows)
+    # -------------------------------
+    
     edited_df = st.data_editor(
         df_display,
         column_config={
@@ -350,7 +397,7 @@ if not st.session_state.stock_data.empty:
         column_order=["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "漲停價", "跌停價", "獲利目標", "防守停損", "命中狀態", "戰略備註"],
         hide_index=True,
         use_container_width=False,
-        num_rows="dynamic", # 關鍵: 允許刪除行
+        num_rows="dynamic",
         key="main_editor" 
     )
     
@@ -420,7 +467,6 @@ if not st.session_state.stock_data.empty:
 
     st.markdown("### 🎯 計算結果")
     
-    # 只顯示有輸入的行 (乾淨)
     mask = edited_df['自訂價(可修)'].notna()
     
     if mask.any():
