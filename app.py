@@ -195,9 +195,9 @@ def fetch_stock_data_raw(code, name_hint=""):
         # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
-        limit_up_col, limit_down_col = calculate_limits(current_price) # 用於表格顯示 (明日參考)
+        limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 2. 戰略備註用的數據 (以昨日收盤為基準，判斷今日狀態)
+        # 2. 戰略備註用的數據 (以昨日收盤為基準，計算今日的漲跌停)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         # 點位收集
@@ -224,14 +224,15 @@ def fetch_stock_data_raw(code, name_hint=""):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理 (只顯示今日漲跌停範圍內的點)
+        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
+            # 只顯示在今日合理範圍內的點位
             if limit_down_today <= v <= limit_up_today:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 加入今日的漲跌停價
+        # 加入今日的漲跌停價到候選名單，以便排序和標記
         display_candidates.append({"val": limit_up_today, "tag": "漲停"})
         display_candidates.append({"val": limit_down_today, "tag": "跌停"})
             
@@ -247,27 +248,31 @@ def fetch_stock_data_raw(code, name_hint=""):
             final_tag = ""
             is_limit_up = "漲停" in tags
             is_limit_down = "跌停" in tags
+            
+            # 這裡的 high/low 是指該數值同時也是 90日高低
             is_high = "高" in tags
             is_low = "低" in tags
             
-            # --- 關鍵修正：套用漲停高/跌停低規則 ---
-            if is_limit_up:
-                if is_high: 
+            # --- 關鍵修正：套用漲停高/跌停低規則 與 延伸計算 ---
+            if abs(val - limit_up_today) < 0.01: # 確認是漲停價
+                if val >= high_90 - 0.01: # 確認是近期高點
                     final_tag = "漲停高"
-                    # 漲停高 -> 計算 +3%
+                    # 延伸計算：漲停價 * 1.03 (符合台股規則)
                     ext_val = apply_tick_rules(val * 1.03)
                     extra_points.append({"val": ext_val, "tag": ""})
                 else:
                     final_tag = "漲停"
-            elif is_limit_down:
-                if is_low:
+                    
+            elif abs(val - limit_down_today) < 0.01: # 確認是跌停價
+                if val <= low_90 + 0.01: # 確認是近期低點
                     final_tag = "跌停低"
-                    # 跌停低 -> 計算 -3% (0.97)
+                    # 延伸計算：跌停價 * 0.97 (符合台股規則)
                     ext_val = apply_tick_rules(val * 0.97)
                     extra_points.append({"val": ext_val, "tag": ""})
                 else:
                     final_tag = "跌停"
             else:
+                # 其他點位
                 if is_high: final_tag = "高"
                 elif is_low: final_tag = "低"
                 elif "多" in tags: final_tag = "多"
@@ -280,14 +285,13 @@ def fetch_stock_data_raw(code, name_hint=""):
         if extra_points:
             for ep in extra_points:
                 final_display_points.append(ep)
-            # 重新排序
             final_display_points.sort(key=lambda x: x['val'])
             
         note_parts = []
-        seen_vals = set() # 避免延伸點位跟既有點位重複顯示
+        seen_vals = set() 
         
         for p in final_display_points:
-            # 簡單去重 (針對數值)
+            # 簡單去重
             if p['val'] in seen_vals and p['tag'] == "": 
                 continue
             seen_vals.add(p['val'])
