@@ -13,13 +13,13 @@ import itertools
 # ==========================================
 st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡", layout="wide")
 
-# --- 初始化 Session State (確保設定被記憶) ---
+# --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = pd.DataFrame()
 
+# 記憶設定：確保在 rerun 時保留數值
 if 'font_size' not in st.session_state:
     st.session_state.font_size = 18
-
 if 'limit_rows' not in st.session_state:
     st.session_state.limit_rows = 5
 
@@ -27,7 +27,7 @@ if 'limit_rows' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    # 使用 key 自動綁定 session_state，不需手動指定 value (若指定需與 state 一致)
+    # 使用 key 自動綁定 session_state
     st.slider(
         "字體大小 (表格)", 
         min_value=12, 
@@ -192,18 +192,15 @@ def fetch_stock_data_raw(code, name_hint=""):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
-        # 1. 獲利目標與防守停損 (靜態計算：收盤價 +/- 3%)
+        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
-        
-        # 2. 漲跌停計算 (雙軌制)
-        # (A) 今日的漲跌停 (基於昨收) -> 用於戰略備註 (判斷是否觸發漲停高)
-        limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
-        
-        # (B) 下個漲跌停 (基於今收) -> 用於表格欄位顯示 (預判明日)
-        limit_up_next, limit_down_next = calculate_limits(current_price)
+        limit_up_col, limit_down_col = calculate_limits(current_price) # 用於表格顯示 (明日參考)
 
-        # 3. 壓力支撐點位收集
+        # 2. 戰略備註用的數據 (以昨日收盤為基準，判斷今日狀態)
+        limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
+
+        # 點位收集
         points = []
         
         # MA5
@@ -227,27 +224,22 @@ def fetch_stock_data_raw(code, name_hint=""):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理 (使用 limit_up_today 來比對)
+        # 戰略備註整理 (只顯示今日漲跌停範圍內的點)
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 只顯示在今日漲跌停範圍內的點位
             if limit_down_today <= v <= limit_up_today:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停
-        touched_up = today['High'] >= limit_up_today - 0.01
-        touched_down = today['Low'] <= limit_down_today + 0.01
-        
-        if touched_up:
-            display_candidates.append({"val": limit_up_today, "tag": "漲停"})
-        if touched_down:
-            display_candidates.append({"val": limit_down_today, "tag": "跌停"})
+        # 加入今日的漲跌停價
+        display_candidates.append({"val": limit_up_today, "tag": "漲停"})
+        display_candidates.append({"val": limit_down_today, "tag": "跌停"})
             
         display_candidates.sort(key=lambda x: x['val'])
         
         final_display_points = []
-        # Groupby 時使用些微誤差容許，確保同價位合併
+        extra_points = [] # 用於存儲延伸計算的點 (漲停高+3%)
+
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list]
@@ -258,11 +250,23 @@ def fetch_stock_data_raw(code, name_hint=""):
             is_high = "高" in tags
             is_low = "低" in tags
             
-            # 智慧標籤邏輯
+            # --- 關鍵修正：套用漲停高/跌停低規則 ---
             if is_limit_up:
-                final_tag = "漲停高" if is_high else "漲停"
+                if is_high: 
+                    final_tag = "漲停高"
+                    # 漲停高 -> 計算 +3%
+                    ext_val = apply_tick_rules(val * 1.03)
+                    extra_points.append({"val": ext_val, "tag": ""})
+                else:
+                    final_tag = "漲停"
             elif is_limit_down:
-                final_tag = "跌停低" if is_low else "跌停"
+                if is_low:
+                    final_tag = "跌停低"
+                    # 跌停低 -> 計算 -3% (0.97)
+                    ext_val = apply_tick_rules(val * 0.97)
+                    extra_points.append({"val": ext_val, "tag": ""})
+                else:
+                    final_tag = "跌停"
             else:
                 if is_high: final_tag = "高"
                 elif is_low: final_tag = "低"
@@ -271,11 +275,26 @@ def fetch_stock_data_raw(code, name_hint=""):
                 else: final_tag = ""
 
             final_display_points.append({"val": val, "tag": final_tag})
+        
+        # 將延伸點位合併並重新排序
+        if extra_points:
+            for ep in extra_points:
+                final_display_points.append(ep)
+            # 重新排序
+            final_display_points.sort(key=lambda x: x['val'])
             
         note_parts = []
+        seen_vals = set() # 避免延伸點位跟既有點位重複顯示
+        
         for p in final_display_points:
+            # 簡單去重 (針對數值)
+            if p['val'] in seen_vals and p['tag'] == "": 
+                continue
+            seen_vals.add(p['val'])
+            
             v_str = f"{p['val']:.0f}" if p['val'].is_integer() else f"{p['val']:.2f}"
             t = p['tag']
+            
             if t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]:
                 item = f"{t}{v_str}"
             elif t: 
@@ -286,10 +305,12 @@ def fetch_stock_data_raw(code, name_hint=""):
         
         strategy_note = "-".join(note_parts)
 
-        # 計算用的完整點位 (命中檢查用，使用今日漲跌停)
+        # 計算用的完整點位 (用於命中檢查，包含延伸點)
         calc_points = points.copy()
         calc_points.append({"val": limit_up_today, "tag": "漲停"})
         calc_points.append({"val": limit_down_today, "tag": "跌停"})
+        for ep in extra_points:
+            calc_points.append(ep)
         
         full_calc_points = []
         seen_calc = set()
@@ -309,8 +330,8 @@ def fetch_stock_data_raw(code, name_hint=""):
             "收盤價": round(current_price, 2),
             "自訂價(可修)": None, 
             "漲跌幅": pct_change,
-            "漲停價": limit_up_next,  # 顯示下個漲停 (基於收盤)
-            "跌停價": limit_down_next, # 顯示下個跌停 (基於收盤)
+            "漲停價": limit_up_col,   # 表格顯示 (收盤價基準)
+            "跌停價": limit_down_col, # 表格顯示 (收盤價基準)
             "獲利目標": target_price, 
             "防守停損": stop_price,   
             "戰略備註": strategy_note,
