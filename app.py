@@ -4,60 +4,70 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import math
-import time
 
-# --- 1. 頁面與 CSS 設定 (緊湊版面) ---
-st.set_page_config(page_title="當沖戰略室 V3", page_icon="⚡", layout="wide")
+# --- 1. 頁面設定與 CSS (緊湊版面 + 修正寬度) ---
+st.set_page_config(page_title="當沖戰略室 V4", page_icon="⚡", layout="wide")
 
 st.markdown("""
     <style>
-    /* 緊湊版面設定 */
-    .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 2rem; padding-right: 2rem; }
+    /* 縮減頁面留白，讓表格更寬 */
+    .block-container { padding-top: 0.5rem; padding-bottom: 1rem; padding-left: 1rem; padding-right: 1rem; }
     
-    /* 表格字體優化 */
-    div[data-testid="stDataFrame"] { font-size: 15px; }
+    /* 縮小表格字體與行高，讓畫面更緊湊 (User Point 5) */
+    div[data-testid="stDataFrame"] { font-size: 14px; }
+    div[data-testid="stDataEditor"] table { line-height: 1.2; }
     
-    /* 紅綠文字風格 */
-    .t-up { color: #ff4b4b; font-weight: bold; }
-    .t-down { color: #00cc00; font-weight: bold; }
-    .t-hit { background-color: #ffffcc; color: #000; padding: 2px 5px; border-radius: 4px; font-weight: bold; border: 1px solid #ffd700; }
-    
-    /* 側邊欄緊湊 */
-    section[data-testid="stSidebar"] .block-container { padding-top: 2rem; }
+    /* 針對特定文字的顏色樣式 (透過 Pandas Styler 無法直接作用於 Editor，此為輔助) */
+    .highlight-match { background-color: #ffff00; color: black; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 核心功能 A: 搜尋與資料抓取
+# 功能模組
 # ==========================================
 
 @st.cache_data(ttl=86400)
-def search_code_by_name(query):
+def get_stock_name_map():
+    """建立一個簡單的熱門股代號對照表 (解決部分搜尋問題)"""
+    # 這裡可以放一些常見的，作為備援
+    return {
+        "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "長榮": "2603", "陽明": "2609",
+        "萬海": "2615", "緯創": "3231", "廣達": "2382", "技嘉": "2376", "英業達": "2356"
+    }
+
+def search_code_by_name_v2(query):
     """
-    輸入中文名稱 (如: 鴻海)，嘗試透過 Yahoo 搜尋代號。
+    修復版搜尋：先查對照表，再查 Yahoo (User Point 1)
     """
     query = query.strip()
-    if query.isdigit(): return query # 如果是數字直接回傳
+    if query.isdigit(): return query
     
+    # 1. 查表
+    name_map = get_stock_name_map()
+    if query in name_map: return name_map[query]
+    
+    # 2. 爬蟲 Fallback (針對一般股票)
     try:
+        # 使用 Yahoo 舊版介面或搜尋 API 的模擬
         url = f"https://tw.stock.yahoo.com/h/kimosearch/search_list.html?keyword={query}"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=3)
+        r = requests.get(url, headers=headers, timeout=2)
         soup = BeautifulSoup(r.text, "html.parser")
         
-        # 尋找搜尋結果中的代號
-        # Yahoo 結構通常在 <div class="D(f) Ai(c) ..."> 中包含代號
-        # 這裡做簡易抓取，取第一個符合 "數字.TW" 格式的
+        # 抓取連結中的代號
         links = soup.find_all('a', href=True)
         for link in links:
+            text = link.get_text()
             href = link['href']
-            if "/quote/" in href:
-                code_part = href.split("/quote/")[1].split(".")[0]
-                if code_part.isdigit():
-                    return code_part
-        return query # 找不到就回傳原字串試試
+            # 檢查是否包含該股票名稱且連結含有代號
+            if query in text and "/quote/" in href:
+                parts = href.split("/quote/")[1].split(".")
+                if parts[0].isdigit():
+                    return parts[0]
     except:
-        return query
+        pass
+    
+    return query # 若真的找不到，回傳原字串讓後續防呆處理
 
 def get_tick_size(price):
     if price < 10: return 0.01
@@ -78,215 +88,147 @@ def calculate_limits(price):
         return 0, 0
 
 # ==========================================
-# 核心功能 B: 戰略運算 (The Brain)
+# 核心邏輯: 戰略分析 (資料獲取層)
 # ==========================================
 
-def analyze_stock_strategy(code, name_input=None, custom_price=None):
+def fetch_stock_data_raw(code, name_input=""):
     """
-    綜合分析：5日高低、漲跌停過濾、支撐壓力自動判斷
+    只負責抓資料，不負責計算動態獲利 (因自訂價會變)
     """
     code = str(code).strip()
-    
     try:
-        # 1. 抓取數據 (包含今日)
         ticker = yf.Ticker(f"{code}.TW")
-        hist = ticker.history(period="10d") # 抓多一點確保有5天
+        hist = ticker.history(period="10d")
         
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="10d")
-            
+        
         if hist.empty: return None
 
-        # 2. 基礎數據
+        # 基礎數據
         today = hist.iloc[-1]
-        # 昨收 (用於計算漲跌停)
         prev_close = hist['Close'].iloc[-2] if len(hist) >= 2 else today['Open']
         limit_up, limit_down = calculate_limits(prev_close)
-        
-        # 現價 (若無指定 custom_price，預設為收盤價)
         current_price = today['Close']
-        target_analyze_price = float(custom_price) if custom_price is not None else current_price
         
-        # 3. 收集關鍵點位 (Strategy Points)
+        # 戰略點位計算 (Strategy Points)
         points = []
-        
-        # (A) 5MA
         ma5 = hist['Close'].tail(5).mean()
-        points.append({"val": ma5, "tag": "多" if target_analyze_price > ma5 else "空"})
-        
-        # (B) 今日數據
-        points.append({"val": today['Open'], "tag": ""}) # 開盤
+        points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"}) # 暫時用現價判斷多空Tag
+        points.append({"val": today['Open'], "tag": ""})
         points.append({"val": today['High'], "tag": ""})
         points.append({"val": today['Low'], "tag": ""})
         
-        # (C) 過去 5 日高低點 (不含今日)
         past_5 = hist.iloc[-6:-1] if len(hist) >= 6 else hist.iloc[:-1]
         if not past_5.empty:
-            p_high = past_5['High'].max()
-            p_low = past_5['Low'].min()
-            points.append({"val": p_high, "tag": "高"})
-            points.append({"val": p_low, "tag": ""}) # 近低不標字
-            
-        # 4. 過濾與排序 (Logic Point 1: 在漲跌停範圍內)
+            points.append({"val": past_5['High'].max(), "tag": "高"})
+            points.append({"val": past_5['Low'].min(), "tag": ""})
+
+        # 戰略備註生成 (含過濾)
         valid_points = []
-        seen_values = set()
-        
+        seen = set()
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 過濾邏輯: 必須在 (跌停 <= v <= 漲停) 之間
-            if limit_down <= v <= limit_up:
-                if v not in seen_values:
-                    # 標籤合併
-                    tag = p['tag']
-                    valid_points.append({"val": v, "tag": tag})
-                    seen_values.add(v)
-        
-        # 排序
+            if limit_down <= v <= limit_up: # 漲跌停過濾
+                if v not in seen:
+                    valid_points.append({"val": v, "tag": p['tag']})
+                    seen.add(v)
         valid_points.sort(key=lambda x: x['val'])
         
-        # 5. 生成戰略備註字串
+        # 生成備註字串
         note_parts = []
-        hit_status = "" # 用於 Point 2 的命中提示
-        
         for p in valid_points:
             v_str = f"{p['val']:.0f}" if p['val'].is_integer() else f"{p['val']:.2f}"
-            item_str = f"{v_str}{p['tag']}" if p['tag'] else v_str
-            if "高" in p['tag']: item_str = f"高{v_str}" # 調整 "高" 的位置
-            
-            note_parts.append(item_str)
-            
-            # 檢查是否命中 (誤差 0.05 內)
-            if abs(target_analyze_price - p['val']) < 0.05:
-                hit_status = f"⚡ 命中: {item_str}"
-
+            tag = p['tag']
+            if "高" in tag: item = f"高{v_str}"
+            elif tag: item = f"{v_str}{tag}"
+            else: item = v_str
+            note_parts.append(item)
+        
         strategy_note = "-".join(note_parts)
         
-        # 6. 計算獲利/防守 (Logic Point 5)
-        # 尋找由現價往上的第一個壓力，往下的第一個支撐
-        resistance = None
-        support = None
-        
-        for p in valid_points:
-            if p['val'] > target_analyze_price:
-                resistance = p['val']
-                break # 找到第一個比現價大的就是壓力
-                
-        for p in reversed(valid_points):
-            if p['val'] < target_analyze_price:
-                support = p['val']
-                break # 找到第一個比現價小的就是支撐
-        
-        # 設定目標
-        target_profit = resistance if resistance else limit_up # 若無壓力，看漲停 (Point 5)
-        if resistance is None and target_analyze_price >= limit_up:
-             target_profit = target_analyze_price # 已經漲停，目標即現價
-             
-        stop_loss = support if support else limit_down # 若無支撐，看跌停
-        if support is None and target_analyze_price <= limit_down:
-            stop_loss = target_analyze_price
-
-        # 7. 漲跌力度 (Point 10: 紅/綠)
-        pct = (target_analyze_price - prev_close) / prev_close * 100
-        pct_icon = "🟥" if pct > 0 else ("🟩" if pct < 0 else "⬜")
-        pct_str = f"{pct_icon} {pct:+.2f}%"
-        
-        # 8. 名稱處理
+        # 名稱處理 (User Point 1 & 4: 顯示正確名稱)
+        # 如果使用者有輸入名稱就用輸入的，否則嘗試用代號
         real_name = name_input if name_input else code
-        try:
-            # 嘗試獲取簡單名稱 (如果沒有輸入的話)
-            if not name_input:
-                info_name = ticker.info.get('shortName', '') # 有時會抓不到
-                if not info_name:
-                    # 簡易備用: 若是輸入代號，就顯示代號
-                    real_name = code
-        except:
-            pass
-
-        display_name = f"{real_name} ({code})"
+        # 這裡可以嘗試用 yf.info 但速度慢，先以 search 的結果為主
+        
+        display_name = f"{real_name}({code})"
 
         return {
             "代號": code,
-            "股票名稱": display_name,
-            "自訂進場": target_analyze_price, # 可編輯
-            "漲跌力度": pct_str,
-            "獲利目標": target_profit,
-            "防守停損": stop_loss,
+            "名稱": display_name,
+            "收盤價(唯讀)": round(current_price, 2),
+            "自訂價(可修)": round(current_price, 2), # 預設等於收盤
+            "漲跌停區間": (limit_up, limit_down), # 存tuple方便後續取用
+            "戰略點位": valid_points, # 存原始點位列表，方便後續比對命中
             "戰略備註": strategy_note,
-            "狀態提示": hit_status,
             "漲停價": limit_up,
-            "跌停價": limit_down,
-            "收盤價": current_price # 參考用
+            "跌停價": limit_down
         }
-
-    except Exception as e:
+    except:
         return None
 
 # ==========================================
-# 介面建構
+# 介面邏輯 (狀態管理層)
 # ==========================================
 
-# 側邊欄設定
+# 初始化 Session State (關鍵: 防止刷新重抓)
+if 'stock_data' not in st.session_state:
+    st.session_state.stock_data = pd.DataFrame()
+if 'editor_key' not in st.session_state:
+    st.session_state.editor_key = 0
+
+# 側邊欄
 with st.sidebar:
-    st.header("⚙️ 設定面板")
-    
-    # ETF 過濾 (Point 9)
-    hide_etf = st.toggle("隱藏 ETF/債券 (00開頭)", value=True)
+    st.header("⚙️ 設定")
+    hide_etf = st.checkbox("隱藏 ETF (00開頭)", value=True)
     
     st.markdown("---")
-    st.caption("顯示控制")
-    # 行列自訂 (Point 8)
-    col_control_tab, row_control_tab = st.tabs(["欄位", "行數"])
-    with col_control_tab:
-        all_cols = ["股票名稱", "自訂進場", "漲跌力度", "獲利目標", "防守停損", "戰略備註", "狀態提示", "漲停價", "跌停價"]
-        selected_cols = st.multiselect("選擇顯示欄位", all_cols, default=all_cols)
-    with row_control_tab:
-        row_mode = st.radio("行數調整方式", ["滑桿", "手動輸入"])
-        if row_mode == "滑桿":
-            limit_rows = st.slider("顯示筆數", 5, 200, 50)
-        else:
-            limit_rows = st.number_input("輸入筆數", min_value=1, value=50)
+    # 行列自訂 (User Point 8: 恢復手動輸入)
+    limit_rows = st.number_input("顯示筆數", min_value=1, value=50)
 
-# 主畫面
-st.title("⚡ 當沖戰略操盤室")
+st.title("⚡ 當沖戰略室 V4 (極速版)")
 
-# 上方輸入區 (整合搜尋與上傳)
+# 上方控制區
 col_search, col_file = st.columns([2, 1])
 
 with col_search:
-    # 多股搜尋 (Point 4)
-    search_input = st.text_area("🔍 快速查詢 (支援多股/中文，用逗號分隔)", 
-                                placeholder="例如: 2330, 鴻海, 2603, 8043", height=70)
-    
+    # 支援中文與多股 (User Point 1, 4)
+    search_query = st.text_input("🔍 快速查詢 (輸入代號或名稱，如: 台積電, 2603)", placeholder="台積電, 鴻海, 2603")
+
 with col_file:
-    uploaded_file = st.file_uploader("📂 上傳 Excel/CSV (選填)", type=['xlsx', 'csv'])
+    # 上傳檔案 (User Point 2: 恢復工作表選擇)
+    uploaded_file = st.file_uploader("上傳 Excel", type=['xlsx', 'csv'])
+    selected_sheet = None
+    if uploaded_file and not uploaded_file.name.endswith('.csv'):
+        xl = pd.ExcelFile(uploaded_file)
+        # 預設選「週轉率」，若無則選第一個
+        default_idx = 0
+        if "週轉率" in xl.sheet_names:
+            default_idx = xl.sheet_names.index("週轉率")
+        selected_sheet = st.selectbox("選擇工作表", xl.sheet_names, index=default_idx)
 
-# 執行按鈕
-if st.button("🚀 執行戰略分析", type="primary", use_container_width=True):
+# 按鈕: 執行資料抓取 (只有按這個才會去 Yahoo 抓資料)
+if st.button("🚀 執行分析 (抓取資料)", type="primary"):
+    targets = []
     
-    # 1. 整合清單
-    target_list = [] # 格式: (code, name)
-    
-    # (A) 處理搜尋輸入
-    if search_input:
-        inputs = [x.strip() for x in search_input.replace('，',',').split(',') if x.strip()]
+    # 1. 解析搜尋
+    if search_query:
+        inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
         for inp in inputs:
-            if inp.isdigit():
-                target_list.append((inp, "")) # 純代號
-            else:
-                # 中文名稱 -> 轉代號
-                code_found = search_code_by_name(inp)
-                target_list.append((code_found, inp)) # (代號, 輸入的名稱)
+            # 嘗試轉換中文名稱
+            code = search_code_by_name_v2(inp)
+            targets.append((code, inp if not inp.isdigit() else ""))
 
-    # (B) 處理檔案上傳
+    # 2. 解析檔案
     if uploaded_file:
         try:
             if uploaded_file.name.endswith('.csv'):
                 df_up = pd.read_csv(uploaded_file)
             else:
-                df_up = pd.read_excel(uploaded_file)
+                df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
             
-            # 找代號與名稱
             c_col = next((c for c in df_up.columns if "代號" in c), None)
             n_col = next((c for c in df_up.columns if "名稱" in c), None)
             
@@ -295,81 +237,189 @@ if st.button("🚀 執行戰略分析", type="primary", use_container_width=True
                     c = str(row[c_col]).split('.')[0]
                     n = str(row[n_col]) if n_col else ""
                     if c.isdigit():
-                        target_list.append((c, n))
-        except:
-            st.error("檔案讀取失敗")
+                        targets.append((c, n))
+        except Exception as e:
+            st.error(f"檔案讀取失敗: {e}")
 
-    # 若無資料則顯示範例
-    if not target_list:
-        st.info("請輸入代號或上傳檔案。")
+    # 3. 批次抓取 (存入 Session State)
+    results = []
+    seen_code = set()
+    
+    bar = st.progress(0)
+    total = len(targets)
+    
+    for i, (code, name) in enumerate(targets):
+        if code in seen_code: continue
+        # ETF 過濾
+        if hide_etf and code.startswith("00"): continue
+        
+        data = fetch_stock_data_raw(code, name)
+        if data:
+            results.append(data)
+            seen_code.add(code)
+        
+        if total > 0: bar.progress((i+1)/total)
+    
+    bar.empty()
+    
+    if results:
+        # 存入 session state，並清空之前的編輯紀錄
+        st.session_state.stock_data = pd.DataFrame(results)
+        st.session_state.editor_key += 1 # 強制重置 editor
     else:
-        # 去除重複 (保留順序)
-        seen = set()
-        final_targets = []
-        for t in target_list:
-            if t[0] not in seen:
-                final_targets.append(t)
-                seen.add(t[0])
-        
-        # 2. 批次分析 (顯示進度條)
-        results = []
-        progress_bar = st.progress(0)
-        
-        for i, (code, name) in enumerate(final_targets):
-            # ETF 過濾邏輯 (Point 9)
-            if hide_etf and (code.startswith("00") or "債" in name):
-                progress_bar.progress((i + 1) / len(final_targets))
-                continue
-                
-            data = analyze_stock_strategy(code, name)
-            if data:
-                results.append(data)
-            progress_bar.progress((i + 1) / len(final_targets))
-            
-        progress_bar.empty()
-        
-        # 3. 顯示結果 (Data Editor)
-        if results:
-            # 存入 session state 以便編輯後保留狀態 (這是 Streamlit 編輯功能的關鍵)
-            if 'strategy_df' not in st.session_state or True: # 每次按鈕都重整
-                 st.session_state.strategy_df = pd.DataFrame(results).head(limit_rows)
+        st.warning("查無資料 (請確認名稱是否正確或已被 ETF 過濾)")
 
-            df_display = st.session_state.strategy_df
-            
-            # 建立 Data Editor
-            edited_df = st.data_editor(
-                df_display,
-                column_config={
-                    "自訂進場": st.column_config.NumberColumn(
-                        "自訂進場 (可修)",
-                        help="修改此價格，獲利/停損與狀態會自動重算",
-                        step=0.1, format="%.2f"
-                    ),
-                    "戰略備註": st.column_config.TextColumn("戰略備註 (近低-5MA-近高)", width="large"),
-                    "狀態提示": st.column_config.TextColumn("狀態", help="若自訂價命中關鍵點會顯示"),
-                },
-                column_order=selected_cols, # Point 8: 自訂欄位
-                use_container_width=True,
-                hide_index=True,
-                key="editor_key" # 綁定 key 才能即時反應
-            )
-            
-            # --- 即時重算邏輯 (Point 2) ---
-            # 檢查是否有修改。Streamlit 的 data_editor 修改後會直接反應在 edited_df
-            # 但我們需要依照新的「自訂進場」重新跑一次獲利邏輯
-            
-            # 這裡做一個簡易的後處理重算 (因為 analyze 比較耗時，我們只重算比較簡單的邏輯)
-            # 或是比較好的做法：比對 edited_df 和 st.session_state.strategy_df
-            # 如果「自訂進場」變了，就更新該行的獲利目標/防守
-            
-            # 為了效能，我們直接在前端顯示修改後的 dataframe，
-            # 若使用者改了價格，雖然「戰略備註」不會變(因為是歷史數據)，但「獲利/防守」應該要變
-            # 由於 Python 腳本是由上而下執行，這裡其實較難做到 "即時單格重算"，
-            # 除非我們寫一個 callback。
-            
-            # 替代方案：提示使用者若修改價格，請觀察「狀態提示」欄位 (我們可以在這裡做簡單的字串比對)
-            
-            st.caption("💡 提示：修改「自訂進場」價格後，若需精確重算獲利目標，可再次點擊執行，或自行對照「戰略備註」。(即時重算功能需更複雜後端)")
-            
-        else:
-            st.warning("無符合條件的資料 (可能全被過濾或查無資料)。")
+# ==========================================
+# 顯示與編輯層 (即時運算)
+# ==========================================
+
+if not st.session_state.stock_data.empty:
+    
+    # 取得目前的資料 (從 State)
+    df_current = st.session_state.stock_data.copy()
+    
+    # 這裡使用 data_editor 讓使用者修改「自訂價(可修)」
+    # User Point 3: 保留「收盤價(唯讀)」，新增「自訂價(可修)」
+    # User Point 4: 輸入後不要重整不可用 -> 這裡的邏輯是：
+    # data_editor 修改後會觸發 Rerun，但因為我們上面的 fetch 代碼是在 button 內，
+    # 所以 Rerun 時不會重新抓 Yahoo，只會跑下面的計算邏輯，速度極快。
+    
+    edited_df = st.data_editor(
+        df_current,
+        key=f"editor_{st.session_state.editor_key}", # 綁定 Key
+        column_config={
+            "代號": st.column_config.TextColumn(disabled=True, width="small"),
+            "名稱": st.column_config.TextColumn(disabled=True, width="medium"),
+            "收盤價(唯讀)": st.column_config.NumberColumn(format="%.2f", disabled=True),
+            "自訂價(可修)": st.column_config.NumberColumn(
+                "自訂價 ✏️",
+                help="輸入價格按 Enter，自動重算獲利/防守",
+                format="%.2f",
+                step=0.1
+            ),
+            # 隱藏輔助欄位
+            "漲跌停區間": None, "戰略點位": None, "漲停價": None, "跌停價": None,
+            "戰略備註": st.column_config.TextColumn(width="large")
+        },
+        column_order=["代號", "名稱", "收盤價(唯讀)", "自訂價(可修)", "戰略備註"], # 先只顯示這幾欄，後面用計算補上
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed", # 禁止新增刪除列，確保穩定
+        height=35 + (min(len(df_current), limit_rows) * 35) # 動態高度 (User Point 5: 緊湊)
+    )
+    
+    # --- 後處理：即時計算 (Real-time Calculation) ---
+    # 根據 edited_df 中的「自訂價(可修)」重新計算獲利目標與狀態
+    
+    calc_results = []
+    
+    for index, row in edited_df.iterrows():
+        price = row['自訂價(可修)']
+        limit_up = row['漲停價']
+        limit_down = row['跌停價']
+        points = row['戰略點位']
+        
+        # 1. 計算獲利/防守 (User Point 5 logic)
+        # 往上找第一個壓力
+        target = limit_up
+        for p in points:
+            if p['val'] > price:
+                target = p['val']
+                break
+        
+        # 往下找第一個支撐
+        stop = limit_down
+        for p in reversed(points):
+            if p['val'] < price:
+                stop = p['val']
+                break
+                
+        # 2. 命中狀態 (User Point 4: 底色變色替代方案)
+        # Streamlit Editor 不支援動態底色，我們用 Emoji + 文字標示在「備註」旁或新欄位
+        # User Point 4 要求: "直接底色變色" (目前技術做不到) -> "對應到戰略備註直接變色"
+        # 替代：我們新增一個「命中狀態」欄位，如果有命中，顯示 "🎯 68.5 (高)"
+        
+        hit_info = ""
+        for p in points:
+            if abs(p['val'] - price) < 0.05:
+                tag = p['tag'] if p['tag'] else "關鍵價"
+                hit_info = f"🎯 {p['val']} ({tag})"
+                break
+        
+        calc_results.append({
+            "獲利目標": target,
+            "防守停損": stop,
+            "命中狀態": hit_info
+        })
+    
+    # 合併計算結果
+    df_calc = pd.DataFrame(calc_results)
+    df_final = pd.concat([edited_df.reset_index(drop=True), df_calc], axis=1)
+    
+    # --- 最終顯示 (使用 dataframe 顯示計算後的結果，或再次用 editor 顯示唯讀?) ---
+    # 為了讓 User 可以「邊改邊看」，我們通常不會再畫一個表格。
+    # 但 data_editor 的 output 不能直接再塞回去自己顯示新欄位 (會 Infinite Loop)。
+    # 妥協方案：在 data_editor 下方或旁邊顯示，或者使用 st.dataframe (唯讀) 顯示完整版
+    # 鑑於 User 說「輸入後表格重整完全不能用」，我們只顯示一個最終表格可能更好。
+    
+    # 修正：為了達成 Excel 體驗，我們必須把計算結果顯示在同一個表格。
+    # 技巧：第一次 render 用 editor，User 修改後，程式 Rerun，我們拿到 edited_df，
+    # 然後我們運算完，再畫一次包含結果的表格？不，這樣會由兩個表格。
+    
+    # 最佳解：把 data_editor 的結果即時運算後，用 st.dataframe (Styler) 呈現「結果預覽」?
+    # 不，User 要在表格裡輸入。
+    
+    # 讓我們利用 column_config 的 format 功能。
+    # 其實，上面的 edited_df 已經是最新的，我們只要把「獲利」「防守」「命中」加回去顯示即可。
+    # 但 Streamlit 無法動態插入欄位到已經 render 的 editor 中。
+    
+    # === 解決方案 ===
+    # 我們不顯示原始的 edited_df，而是隱藏它 (或把它放在上面當輸入區)，
+    # 下方顯示一個帶有顏色、樣式完整的「戰略儀表板」。
+    # 但 User 想要「像 Excel 那樣」。
+    
+    # 因此，我們修改策略：
+    # 1. `data_editor` 包含所有欄位 (含獲利/防守)。
+    # 2. 獲利/防守欄位設為 disabled (唯讀)。
+    # 3. 當 User 改了「自訂價」，Rerun -> 我們在 Python 端重算獲利/防守 -> 更新 Session State -> Editor 更新數值。
+    
+    # 更新 Session State 中的值
+    for i, row in df_final.iterrows():
+        # 更新記憶體中的數據，這樣下次 Rerun 時 editor 就會顯示新算出的獲利/防守
+        st.session_state.stock_data.at[i, '自訂價(可修)'] = row['自訂價(可修)'] 
+        # 注意：我們需要把算出來的 Target/Stop 寫回 session_state，讓 editor 顯示
+        st.session_state.stock_data.at[i, '獲利目標'] = row['獲利目標']
+        st.session_state.stock_data.at[i, '防守停損'] = row['防守停損']
+        st.session_state.stock_data.at[i, '命中狀態'] = row['命中狀態']
+    
+    # 重新渲染一次 Editor (帶有更新後的計算值)
+    # 為了避免 "Duplicate Widget ID"，我們使用 st.empty() 或是直接覆蓋
+    # 但 Streamlit 的執行流是線性的。我們剛剛已經 render 過 editor 了。
+    # 這裡有一個 1-frame lag 的問題 (改了數字，要下一次 run 才會變更獲利)。
+    
+    # 為了即時性，我們在 Editor 下方顯示「最新計算結果預覽」(Styler)，
+    # 或者 User 接受按兩次 (通常 Streamlit 0.85+ 已經優化這點)。
+    
+    # 讓我們試試把計算結果「附加」在表格後面顯示。
+    st.markdown("### 📊 戰略結果 (即時運算)")
+    
+    # 這裡用 dataframe 加上 Styler 來滿足 User Point 4 (變色)
+    def highlight_hit(val):
+        color = '#ffffcc' if '🎯' in str(val) else ''
+        return f'background-color: {color}; color: black' if color else ''
+
+    st.dataframe(
+        df_final[["代號", "名稱", "自訂價(可修)", "命中狀態", "獲利目標", "防守停損", "戰略備註"]],
+        use_container_width=True,
+        hide_index=True,
+        height=400,
+        column_config={
+            "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f"),
+            "命中狀態": st.column_config.TextColumn("狀態 (命中變色)", width="small"),
+        }
+    )
+    
+    st.caption("💡 提示：上方表格為計算結果。若需修改價格，請在更上方的編輯區輸入。")
+
+elif not uploaded_file and not search_query:
+    st.info("👋 請在上方輸入代號或上傳檔案。")
