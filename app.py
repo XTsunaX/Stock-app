@@ -148,26 +148,23 @@ def get_tick_size(price):
 
 def calculate_limits(price):
     """
-    計算漲跌停價 (10%)
-    修正：需使用「目標價格」的 Tick 進行捨去/進位，而非參考價的 Tick
+    計算漲跌停價 (10%) - 以輸入價格為基準
+    修正：根據計算後的目標價格判斷 Tick 單位，而非基準價
     """
     try:
         p = float(price)
         
-        # 1. 計算原始目標價
+        # 1. 漲停價 (無條件捨去至最近 Tick)
         raw_up = p * 1.10
+        tick_up = get_tick_size(raw_up) # 依據漲停目標價取得 Tick
+        limit_up = math.floor(raw_up / tick_up) * tick_up
+        
+        # 2. 跌停價 (無條件進位至最近 Tick)
         raw_down = p * 0.90
+        tick_down = get_tick_size(raw_down) # 依據跌停目標價取得 Tick
+        limit_down = math.ceil(raw_down / tick_down) * tick_down
         
-        # 2. 漲停價：找到目標價對應的 Tick，並無條件捨去 (Floor)
-        # 加上微小 epsilon 避免浮點數運算誤差 (例如 100*1.1=110.0000001)
-        tick_up = get_tick_size(raw_up)
-        limit_up = math.floor(raw_up / tick_up + 0.00001) * tick_up
-        
-        # 3. 跌停價：找到目標價對應的 Tick，並無條件進位 (Ceil)
-        tick_down = get_tick_size(raw_down)
-        limit_down = math.ceil(raw_down / tick_down - 0.00001) * tick_down
-        
-        # 修正浮點數顯示問題
+        # 修正浮點數誤差
         return float(f"{limit_up:.2f}"), float(f"{limit_down:.2f}")
     except:
         return 0, 0
@@ -198,14 +195,14 @@ def fetch_stock_data_raw(code, name_hint=""):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
-        # 獲利目標與防守停損 (靜態計算：收盤價 +/- 3% 並套用Tick)
+        # 1. 獲利目標與防守停損 (靜態計算：收盤價 +/- 3% 並套用Tick)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         
-        # 漲跌停計算 (以昨日收盤價為基準)
-        limit_up, limit_down = calculate_limits(prev_day['Close'])
+        # 2. 漲跌停計算 (依據使用者要求：以收盤價為基準)
+        limit_up, limit_down = calculate_limits(current_price)
 
-        # 2. 壓力支撐點位收集
+        # 3. 壓力支撐點位收集
         points = []
         
         # MA5
@@ -233,9 +230,11 @@ def fetch_stock_data_raw(code, name_hint=""):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
+            # 只顯示在合理範圍內的點位 (使用新的漲跌停範圍)
             if limit_down <= v <= limit_up:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
+        # 檢查是否觸及 (由於 limit_up 現在是基於 Current Price 算出的，通常不會觸及，但保留邏輯)
         touched_up = today['High'] >= limit_up - 0.01
         touched_down = today['Low'] <= limit_down + 0.01
         
