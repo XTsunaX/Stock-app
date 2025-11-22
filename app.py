@@ -17,11 +17,9 @@ st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡",
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = pd.DataFrame()
 
-# 記憶設定：字體大小 (預設 18)
+# 記憶設定
 if 'font_size' not in st.session_state:
     st.session_state.font_size = 18
-
-# 記憶設定：顯示筆數 (預設 5)
 if 'limit_rows' not in st.session_state:
     st.session_state.limit_rows = 5
 
@@ -29,7 +27,6 @@ if 'limit_rows' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    # 3. 修正字體記憶：明確綁定 value
     st.slider(
         "字體大小 (表格)", 
         min_value=12, 
@@ -58,7 +55,6 @@ st.markdown(f"""
     <style>
     .block-container {{ padding-top: 0.5rem; padding-bottom: 1rem; }}
     
-    /* 強制覆蓋表格字體 */
     div[data-testid="stDataFrame"] table,
     div[data-testid="stDataFrame"] td,
     div[data-testid="stDataFrame"] th,
@@ -69,7 +65,6 @@ st.markdown(f"""
         line-height: 1.5 !important;
     }}
     
-    /* 確保輸入框高度足夠 */
     div[data-testid="stDataFrame"] {{
         width: 100%;
     }}
@@ -139,10 +134,11 @@ def search_code_online(query):
     return None
 
 # ==========================================
-# 2. 核心計算邏輯
+# 2. 核心計算邏輯 (含台股 Tick 規則)
 # ==========================================
 
 def get_tick_size(price):
+    """取得台股價格對應的跳動檔位"""
     if price < 10: return 0.01
     if price < 50: return 0.05
     if price < 100: return 0.1
@@ -151,6 +147,7 @@ def get_tick_size(price):
     return 5.0
 
 def calculate_limits(price):
+    """計算漲跌停價 (10%)"""
     try:
         p = float(price)
         tick = get_tick_size(p)
@@ -159,6 +156,19 @@ def calculate_limits(price):
         return limit_up, limit_down
     except:
         return 0, 0
+
+def apply_tick_rules(price):
+    """
+    將任意價格 (如 103.456) 修正為符合台股 Tick 規則的價格 (如 103.5)
+    """
+    try:
+        p = float(price)
+        tick = get_tick_size(p)
+        # 四捨五入到最近的 tick
+        rounded_price = round(p / tick) * tick
+        return float(f"{rounded_price:.2f}") # 修正浮點數誤差
+    except:
+        return price
 
 def fetch_stock_data_raw(code, name_hint=""):
     code = str(code).strip()
@@ -174,8 +184,15 @@ def fetch_stock_data_raw(code, name_hint=""):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
+        # 1. 獲利目標與防守停損 (靜態計算：收盤價 +/- 3%)
+        # 套用台股 Tick 規則
+        target_price = apply_tick_rules(current_price * 1.03)
+        stop_price = apply_tick_rules(current_price * 0.97)
+        
+        # 漲跌停計算 (昨日收盤為基準)
         limit_up, limit_down = calculate_limits(prev_day['Close'])
 
+        # 點位收集
         points = []
         ma5 = hist['Close'].tail(5).mean()
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -188,6 +205,7 @@ def fetch_stock_data_raw(code, name_hint=""):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
@@ -242,6 +260,7 @@ def fetch_stock_data_raw(code, name_hint=""):
         
         strategy_note = "-".join(note_parts)
 
+        # 計算用的完整點位
         calc_points = points.copy()
         calc_points.append({"val": limit_up, "tag": "漲停"})
         calc_points.append({"val": limit_down, "tag": "跌停"})
@@ -266,8 +285,8 @@ def fetch_stock_data_raw(code, name_hint=""):
             "漲跌幅": pct_change,
             "漲停價": limit_up,
             "跌停價": limit_down,
-            "獲利目標": None,
-            "防守停損": None,
+            "獲利目標": target_price, # 靜態值
+            "防守停損": stop_price,   # 靜態值
             "戰略備註": strategy_note,
             "_points": full_calc_points
         }
@@ -345,8 +364,9 @@ if not st.session_state.stock_data.empty:
     limit = st.session_state.limit_rows
     df_display = st.session_state.stock_data.head(limit).copy()
     
-    # 1. 輸入區 (Input) - 1. 修正輸入跳動：移除後端更新，讓編輯器維持自身狀態
-    input_cols = ["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "漲停價", "跌停價", "戰略備註", "_points"]
+    # 1. 輸入區 (Input)
+    # 這裡的 "獲利目標" 和 "防守停損" 已經在 fetch 階段算好了，所以直接顯示即可
+    input_cols = ["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "漲停價", "跌停價", "戰略備註", "_points"]
     
     edited_df = st.data_editor(
         df_display[input_cols],
@@ -356,13 +376,16 @@ if not st.session_state.stock_data.empty:
             "收盤價": st.column_config.NumberColumn(format="%.2f", disabled=True),
             "自訂價(可修)": st.column_config.NumberColumn(
                 "自訂價 ✏️",
-                help="輸入後查看下方結果",
+                help="輸入後查看命中結果",
                 format="%.2f",
                 step=0.1,
                 required=False,
                 width="medium" 
             ),
             "漲跌幅": st.column_config.NumberColumn("漲跌%", format="%.2f%%", disabled=True),
+            # 獲利目標與停損改為唯讀，顯示收盤價 +/- 3%
+            "獲利目標": st.column_config.NumberColumn("獲利(+3%)", format="%.2f", disabled=True),
+            "防守停損": st.column_config.NumberColumn("停損(-3%)", format="%.2f", disabled=True),
             "漲停價": st.column_config.NumberColumn("🔥漲停", format="%.2f", disabled=True),
             "跌停價": st.column_config.NumberColumn("💚跌停", format="%.2f", disabled=True),
             "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
@@ -374,41 +397,23 @@ if not st.session_state.stock_data.empty:
         key="main_editor"
     )
     
-    # 註：這裡移除了 st.session_state.stock_data.update(...) 以解決輸入焦點跳動問題
-
-    # 2. 結果計算 (Result)
+    # 2. 結果計算 (只做命中檢查，不再計算目標/停損)
     results = []
     for idx, row in edited_df.iterrows():
         custom_price = row['自訂價(可修)']
-        target = None
-        stop = None
         is_hit = False 
 
         if not (pd.isna(custom_price) or custom_price == ""):
             price = float(custom_price)
             points = row['_points']
             
-            for p in points:
-                if p['val'] > price:
-                    target = p['val']
-                    break
-            if target is None: target = price * 1.03
-            
-            for p in reversed(points):
-                if p['val'] < price:
-                    stop = p['val']
-                    break
-            if stop is None: stop = price * 0.97
-            
-            # 1. 修正命中誤判：容許誤差改為 0.01，避免 0.05 邊緣值誤判
+            # 命中判斷 (誤差0.01內)
             for p in points:
                 if abs(p['val'] - price) < 0.01:
                     is_hit = True
                     break
         
         results.append({
-            "獲利目標": target,
-            "防守停損": stop,
             "_is_hit": is_hit
         })
     
@@ -418,10 +423,15 @@ if not st.session_state.stock_data.empty:
     # --- 下方表格：結果區 ---
     st.markdown("### 🎯 計算結果 (命中亮色提示)")
     
+    # 只要有資料就顯示，因為獲利停損是預設值
+    # 但為了避免太雜，還是維持只顯示有輸入的，或者全部顯示但強調命中
+    # 依照慣例，只顯示有輸入的
     mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
     
     if mask.any():
-        display_df = final_df[mask][["代號", "名稱", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "戰略備註", "_is_hit"]]
+        # 顯示的欄位
+        display_cols = ["代號", "名稱", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "戰略備註", "_is_hit"]
+        display_df = final_df[mask][display_cols]
         
         def highlight_hit_row(row):
             if row['_is_hit']:
@@ -441,13 +451,13 @@ if not st.session_state.stock_data.empty:
             column_config={
                 "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f"),
                 "漲跌幅": st.column_config.NumberColumn("漲跌%", format="%.2f%%"),
-                "獲利目標": st.column_config.NumberColumn(format="%.2f"),
-                "防守停損": st.column_config.NumberColumn(format="%.2f"),
+                "獲利目標": st.column_config.NumberColumn("獲利(+3%)", format="%.2f"),
+                "防守停損": st.column_config.NumberColumn("停損(-3%)", format="%.2f"),
                 "_is_hit": None 
             }
         )
     else:
-        st.info("請在上方表格輸入「自訂價」以查看計算結果。")
+        st.info("請在上方表格輸入「自訂價」以進行戰略點位比對。")
 
 elif not uploaded_file and not search_query:
     st.info("請輸入代號/中文名稱或上傳檔案。")
