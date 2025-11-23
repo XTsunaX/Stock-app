@@ -112,10 +112,6 @@ st.markdown(f"""
     [data-testid="stMetricValue"] {{
         font-size: 1.2em;
     }}
-    
-    /* 隱藏索引列的額外 CSS 確保 */
-    thead tr th:first-child {{ display:none }}
-    tbody th {{ display:none }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -254,22 +250,18 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            # 增加錯誤提示，讓使用者知道沒抓到資料
-            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)，請確認代號或稍後再試。")
+            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
             return None
 
         today = hist.iloc[-1]
         current_price = today['Close']
         
-        # 確保昨日資料存在
         if len(hist) >= 2:
             prev_day = hist.iloc[-2]
         else:
             prev_day = today
         
-        # 檢查數據有效性 (防止 NaN 傳遞導致後續崩潰)
         if pd.isna(current_price) or pd.isna(prev_day['Close']):
-            st.error(f"⚠️ 代號 {code}: 價格數據異常 (NaN)。")
             return None
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
@@ -308,13 +300,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -385,6 +375,23 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
+        
+        # 3. 恢復 full_calc_points 定義 (修復 NameError)
+        calc_points = points.copy()
+        calc_points.append({"val": limit_up_today, "tag": "漲停"})
+        calc_points.append({"val": limit_down_today, "tag": "跌停"})
+        for ep in extra_points:
+            calc_points.append(ep)
+        
+        full_calc_points = []
+        seen_calc = set()
+        for p in calc_points:
+             v = float(f"{p['val']:.2f}")
+             if v not in seen_calc:
+                 full_calc_points.append({"val": v, "tag": p['tag']})
+                 seen_calc.add(v)
+        full_calc_points.sort(key=lambda x: x['val'])
+
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
         return {
@@ -401,7 +408,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "_points": full_calc_points
         }
     except Exception as e:
-        # 這裡會顯示錯誤，幫助您除錯，而不是一片空白
         st.error(f"⚠️ 代號 {code} 發生錯誤: {e}")
         return None
 
@@ -426,7 +432,7 @@ with tab1:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
                 else:
-                    # 檢查 openpyxl 是否可用
+                    # 檢查 openpyxl
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
                         st.error("❌ 缺少 `openpyxl` 套件，無法讀取 Excel 檔。請在 requirements.txt 加入 openpyxl 並重啟 App。")
