@@ -112,6 +112,10 @@ st.markdown(f"""
     [data-testid="stMetricValue"] {{
         font-size: 1.2em;
     }}
+    
+    /* 隱藏索引列的額外 CSS 確保 */
+    thead tr th:first-child {{ display:none }}
+    tbody th {{ display:none }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -250,7 +254,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
+            # 增加錯誤提示，讓使用者知道沒抓到資料
+            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
         today = hist.iloc[-1]
@@ -262,6 +267,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             prev_day = today
         
         if pd.isna(current_price) or pd.isna(prev_day['Close']):
+            st.error(f"⚠️ 代號 {code}: 價格數據異常。")
             return None
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
@@ -376,7 +382,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         
-        # 3. 恢復 full_calc_points 定義 (修復 NameError)
         calc_points = points.copy()
         calc_points.append({"val": limit_up_today, "tag": "漲停"})
         calc_points.append({"val": limit_down_today, "tag": "跌停"})
@@ -431,6 +436,8 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
+                    # CSV 讀取時指定 dtype=str 防止 ETF 代號丟失
+                    df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
                     # 檢查 openpyxl
                     import importlib.util
@@ -439,6 +446,7 @@ with tab1:
                         xl = None
                     else:
                         xl = pd.ExcelFile(uploaded_file) 
+                        # Excel 讀取時不在此處讀內容，等到按鈕按下
             except Exception as e:
                 st.error(f"❌ 讀取檔案失敗: {e}")
 
@@ -454,10 +462,11 @@ with tab1:
         if uploaded_file:
             try:
                 if uploaded_file.name.endswith('.csv'): 
-                    df_up = pd.read_csv(uploaded_file)
+                    # 已在上面讀取過，這裡直接用 (需注意變數作用域，或重新讀取)
+                    df_up = pd.read_csv(uploaded_file, dtype=str)
                 else: 
                     if 'xl' in locals() and xl:
-                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
                     else:
                         df_up = pd.DataFrame()
                 
@@ -469,7 +478,10 @@ with tab1:
                         for _, row in df_up.iterrows():
                             c = str(row[c_col]).split('.')[0].strip()
                             if c.isdigit():
-                                if len(c) < 4: c = c.zfill(4) 
+                                # 關鍵修正: 針對被轉成數字的 ETF 代號進行補零
+                                if len(c) == 2: c = "00" + c
+                                elif len(c) == 3: c = "00" + c
+                                
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
             except Exception as e:
@@ -567,7 +579,6 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
-                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
