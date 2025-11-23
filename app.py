@@ -113,7 +113,7 @@ st.markdown(f"""
         font-size: 1.2em;
     }}
     
-    /* 隱藏索引列 */
+    /* 隱藏索引列的額外 CSS 確保 */
     thead tr th:first-child {{ display:none }}
     tbody th {{ display:none }}
     </style>
@@ -254,7 +254,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            # st.error(f"⚠️ 代號 {code}: 抓取無資料") 
+            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
             return None
 
         today = hist.iloc[-1]
@@ -304,11 +304,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
+            # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
+        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -434,10 +436,8 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
-                    # 1. CSV 強制 dtype=str
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
-                    # 檢查 openpyxl
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
                         st.error("❌ 缺少 `openpyxl` 套件，無法讀取 Excel 檔。請在 requirements.txt 加入 openpyxl 並重啟 App。")
@@ -459,11 +459,10 @@ with tab1:
         if uploaded_file:
             try:
                 if uploaded_file.name.endswith('.csv'): 
-                    # 已在上面讀取，變數 df_up
-                    pass 
+                    # 已在上面讀取 df_up
+                    pass
                 else: 
                     if 'xl' in locals() and xl:
-                        # 2. Excel 強制 dtype=str
                         df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
                     else:
                         df_up = pd.DataFrame()
@@ -474,18 +473,10 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            # 3. 強化 ETF 補零邏輯
-                            c_raw = str(row[c_col])
-                            # 移除小數點 (針對 50.0 這種)
-                            c = c_raw.split('.')[0].strip()
-                            
+                            c = str(row[c_col]).split('.')[0].strip()
                             if c.isdigit():
-                                # 若是 2 碼 (50) -> 0050
-                                if len(c) == 2: 
-                                    c = "00" + c
-                                # 若是 3 碼 (878) -> 00878 (ETF)
-                                elif len(c) == 3: 
-                                    c = "00" + c
+                                # 修正: 使用 zfill(4) 來自動補零
+                                if len(c) < 4: c = c.zfill(4)
                                 
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
@@ -530,7 +521,6 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
-        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
