@@ -14,7 +14,7 @@ import json
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 
-# 1. 標題位置 (確保不被遮擋)
+# 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
 
 CONFIG_FILE = "config.json"
@@ -90,7 +90,11 @@ font_px = f"{st.session_state.font_size}px"
 
 st.markdown(f"""
     <style>
-    .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
+    /* 1. 隱藏 Streamlit 頂部黑條 (Toolbar) */
+    header {{visibility: hidden;}}
+    
+    /* 調整上方內距 */
+    .block-container {{ padding-top: 2rem; padding-bottom: 1rem; }}
     
     /* 套用到所有 Streamlit 表格相關元素 */
     div[data-testid="stDataFrame"] table,
@@ -183,11 +187,6 @@ def search_code_online(query):
 
 def get_tick_size(price):
     """取得台股價格對應的跳動檔位"""
-    try:
-        price = float(price)
-    except:
-        return 0.01
-        
     if pd.isna(price) or price <= 0: return 0.01
     if price < 10: return 0.01
     if price < 50: return 0.05
@@ -200,7 +199,7 @@ def calculate_limits(price):
     """計算漲跌停價 (10%)"""
     try:
         p = float(price)
-        if pd.isna(p) or p <= 0: return 0, 0
+        if math.isnan(p) or p <= 0: return 0, 0
         
         raw_up = p * 1.10
         tick_up = get_tick_size(raw_up) 
@@ -218,7 +217,7 @@ def apply_tick_rules(price):
     """將任意價格修正為符合台股 Tick 規則的價格"""
     try:
         p = float(price)
-        if pd.isna(p): return 0.0
+        if math.isnan(p): return 0.0
         tick = get_tick_size(p)
         rounded_price = round(p / tick) * tick
         return float(f"{rounded_price:.2f}")
@@ -254,13 +253,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         today = hist.iloc[-1]
         current_price = today['Close']
         
-        # 確保昨日資料存在
         if len(hist) >= 2:
             prev_day = hist.iloc[-2]
         else:
             prev_day = today
         
-        # 檢查數據有效性 (防止 NaN 傳遞導致後續崩潰)
         if pd.isna(current_price) or pd.isna(prev_day['Close']):
             return None
 
@@ -282,7 +279,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 近期 5日 高低
         if len(hist) >= 6:
             past_5 = hist.iloc[-6:-1]
         else:
@@ -301,13 +297,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -341,7 +335,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                     extra_points.append({"val": ext_val, "tag": ""})
                 else:
                     final_tag = "漲停"
-                    
             elif is_limit_down:
                 if is_low and is_close_price:
                     final_tag = "跌停低"
@@ -395,7 +388,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "_points": full_calc_points
         }
     except Exception as e:
-        # 捕捉所有錯誤並回傳 None，避免程式崩潰
         return None
 
 # ==========================================
@@ -496,6 +488,7 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
+        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -549,7 +542,6 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
-                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
