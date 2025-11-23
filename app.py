@@ -112,10 +112,6 @@ st.markdown(f"""
     [data-testid="stMetricValue"] {{
         font-size: 1.2em;
     }}
-    
-    /* 隱藏索引列 */
-    thead tr th:first-child {{ display:none }}
-    tbody th {{ display:none }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -254,7 +250,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            # st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
+            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
         today = hist.iloc[-1]
@@ -270,15 +266,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
-        # 點位收集
         points = []
         ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -300,17 +293,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -336,7 +326,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             
             is_close_price = abs(val - current_price) < 0.01
             
-            # --- 漲停高/跌停低 + 延伸計算 ---
             if is_limit_up:
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
@@ -436,10 +425,8 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
-                    # CSV 讀取時指定 dtype=str 防止 ETF 代號丟失
-                    import pandas as pd # ensure pd is available
+                    df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
-                    # 檢查 openpyxl
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
                         st.error("❌ 缺少 `openpyxl` 套件，無法讀取 Excel 檔。請在 requirements.txt 加入 openpyxl 並重啟 App。")
@@ -457,9 +444,7 @@ with tab1:
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # 1. 處理上傳清單 (修正讀取邏輯)
         if uploaded_file:
-            uploaded_file.seek(0) # 重置檔案指標
             try:
                 if uploaded_file.name.endswith('.csv'): 
                     df_up = pd.read_csv(uploaded_file, dtype=str)
@@ -475,23 +460,18 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            # 3. 強化 ETF 處理：先轉字串，去小數點，再補零
                             c_raw = str(row[c_col])
                             c = c_raw.split('.')[0].strip()
                             
-                            # 允許數字或英數字 (如 00632R)
-                            if c:
-                                # 若是純數字且長度不足，進行補零 (針對 Excel 吃掉 00 的情況)
-                                if c.isdigit():
-                                    if len(c) == 2: c = "00" + c
-                                    elif len(c) == 3: c = "00" + c
+                            if c.isdigit():
+                                if len(c) == 2: c = "00" + c
+                                elif len(c) == 3: c = "00" + c
                                 
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
-        # 2. 處理搜尋輸入
         if search_query:
             inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
             for inp in inputs:
@@ -529,7 +509,6 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
-        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -583,7 +562,6 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
-                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
@@ -641,17 +619,41 @@ with tab1:
 with tab2:
     st.markdown("#### 💰 當沖損益試算 💰")
     
-    c1, c2, c3, c4 = st.columns(4)
+    # 自動嘗試帶入 Tab 1 第一筆資料的收盤價
+    default_price = st.session_state.calc_base_price
+    if not st.session_state.stock_data.empty and st.session_state.calc_base_price == 100.0:
+        try:
+            first_price = st.session_state.stock_data.iloc[0]['收盤價']
+            default_price = float(first_price)
+        except:
+            pass
+
+    # 1. 新增 漲停價/跌停價 輸入
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
-        calc_price = st.number_input("基準價格", value=st.session_state.calc_base_price, step=0.1, format="%.2f")
+        calc_price = st.number_input("基準價格", value=default_price, step=0.1, format="%.2f")
         st.session_state.calc_base_price = calc_price
     with c2:
-        shares = st.number_input("股數", value=1000, step=1000)
+        limit_up_input = st.number_input("漲停價 (選填)", value=0.0, step=0.1, format="%.2f", help="設定後超過此價格不顯示")
     with c3:
-        discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
+        limit_down_input = st.number_input("跌停價 (選填)", value=0.0, step=0.1, format="%.2f", help="設定後低於此價格不顯示")
     with c4:
+        shares = st.number_input("股數", value=1000, step=1000)
+    with c5:
+        discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
+    with c6:
         min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
-        
+    
+    # 若有資料，嘗試自動帶入第一筆的漲跌停
+    if not st.session_state.stock_data.empty and limit_up_input == 0.0 and limit_down_input == 0.0:
+         try:
+            auto_up = st.session_state.stock_data.iloc[0]['當日漲停價']
+            auto_down = st.session_state.stock_data.iloc[0]['當日跌停價']
+            if pd.notna(auto_up): limit_up_input = float(auto_up)
+            if pd.notna(auto_down): limit_down_input = float(auto_down)
+         except:
+             pass
+
     direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
     
     b1, b2, _ = st.columns([1, 1, 6])
@@ -676,39 +678,41 @@ with tab2:
     for i in ticks_range:
         p = move_tick(base_p, i)
         
+        # 2. 過濾顯示範圍 (若有設定漲跌停)
+        if limit_up_input > 0 and p > limit_up_input: continue
+        if limit_down_input > 0 and p < limit_down_input: continue
+        
         if is_long:
             buy_price = base_p
             sell_price = p
-            
             buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
             sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
             tax = math.floor(sell_price * shares * tax_rate)
-            
             cost = (buy_price * shares) + buy_fee
             income = (sell_price * shares) - sell_fee - tax
             profit = income - cost
             total_fee = buy_fee + sell_fee
-            
         else: 
             sell_price = base_p
             buy_price = p
-            
             sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
             buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
             tax = math.floor(sell_price * shares * tax_rate)
-            
             income = (sell_price * shares) - sell_fee - tax
             cost = (buy_price * shares) + buy_fee
             profit = income - cost
             total_fee = buy_fee + sell_fee
             
-        if base_p * shares != 0:
+        roi = 0
+        if (base_p * shares) != 0:
             roi = (profit / (base_p * shares)) * 100
-        else:
-            roi = 0
             
         diff = p - base_p
         diff_str = f"{diff:+.2f}" if diff != 0 else "0.00"
+        
+        # 3. 判斷是否為漲跌停價 (用於變色)
+        is_limit_up = (limit_up_input > 0 and abs(p - limit_up_input) < 0.001)
+        is_limit_down = (limit_down_input > 0 and abs(p - limit_down_input) < 0.001)
         
         calc_data.append({
             "成交價": f"{p:.2f}",
@@ -717,12 +721,20 @@ with tab2:
             "報酬率%": f"{roi:+.2f}%",
             "手續費": int(total_fee),
             "交易稅": int(tax),
-            "_profit": profit
+            "_profit": profit,
+            "_is_up": is_limit_up,
+            "_is_down": is_limit_down
         })
         
     df_calc = pd.DataFrame(calc_data)
     
     def style_calc_row(row):
+        # 3. 優先判斷漲跌停顏色
+        if row['_is_up']:
+            return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+        if row['_is_down']:
+            return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+            
         prof = row['_profit']
         if prof > 0:
             return ['color: #ff4b4b; font-weight: bold'] * len(row) 
@@ -731,11 +743,14 @@ with tab2:
         else:
             return ['color: gray'] * len(row)
 
-    st.dataframe(
-        df_calc.style.apply(style_calc_row, axis=1),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "_profit": None
-        }
-    )
+    if not df_calc.empty:
+        st.dataframe(
+            df_calc.style.apply(style_calc_row, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "_profit": None,
+                "_is_up": None,
+                "_is_down": None
+            }
+        )
