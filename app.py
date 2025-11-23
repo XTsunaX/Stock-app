@@ -256,9 +256,8 @@ def fetch_stock_data_raw(code, name_hint=""):
         for p in points:
             v = float(f"{p['val']:.2f}")
             
-            # 3. 備註過濾邏輯修正：使用【以當前收盤價計算的漲跌停 (limit_up_col)】來過濾
-            # 這樣能確保顯示的點位符合明天的操作範圍 (或當下的合理範圍)
-            # 5MA (tag含多/空) 仍為例外
+            # 備註過濾邏輯：使用【以當前收盤價計算的漲跌停 (limit_up_col)】來過濾
+            # 確保顯示的點位不超過收盤價的 +/- 10%
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             
@@ -280,7 +279,6 @@ def fetch_stock_data_raw(code, name_hint=""):
         final_display_points = []
         extra_points = [] # 用於存儲延伸計算的點
 
-        # 分組處理重複點位
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list]
@@ -298,7 +296,6 @@ def fetch_stock_data_raw(code, name_hint=""):
             if is_limit_up:
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
-                    # 延伸計算：漲停價 * 1.03
                     ext_val = apply_tick_rules(val * 1.03)
                     extra_points.append({"val": ext_val, "tag": ""})
                 else:
@@ -307,7 +304,6 @@ def fetch_stock_data_raw(code, name_hint=""):
             elif is_limit_down:
                 if is_low and is_close_price:
                     final_tag = "跌停低"
-                    # 延伸計算：跌停價 * 0.97
                     ext_val = apply_tick_rules(val * 0.97)
                     extra_points.append({"val": ext_val, "tag": ""})
                 else:
@@ -331,7 +327,6 @@ def fetch_stock_data_raw(code, name_hint=""):
         seen_vals = set() 
         
         for p in final_display_points:
-            # 去重
             if p['val'] in seen_vals and p['tag'] == "": 
                 continue
             seen_vals.add(p['val'])
@@ -415,9 +410,10 @@ with col_file:
             selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
 
 if st.button("🚀 執行分析", type="primary"):
+    # 這裡將 Targets 標記來源，以便後續排序
     targets = []
     
-    # 2. 順序調整：先處理上傳清單
+    # 1. 先處理上傳清單 (標記 source='upload')
     if uploaded_file:
         try:
             if uploaded_file.name.endswith('.csv'): 
@@ -429,35 +425,46 @@ if st.button("🚀 執行分析", type="primary"):
             n_col = next((c for c in df_up.columns if "名稱" in c), None)
             if c_col:
                 for _, row in df_up.iterrows():
-                    c = str(row[c_col]).split('.')[0]
+                    c = str(row[c_col]).split('.')[0].strip()
+                    # ETF 補零修正
+                    if c.isdigit() and len(c) < 4:
+                        c = c.zfill(4)
                     n = str(row[n_col]) if n_col else ""
-                    if c.isdigit(): targets.append((c, n))
+                    targets.append((c, n, 'upload'))
         except Exception as e:
             st.error(f"讀取失敗: {e}")
 
-    # 再處理搜尋輸入
+    # 2. 再處理搜尋輸入 (標記 source='search')
     if search_query:
         inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
         for inp in inputs:
-            if inp.isdigit(): targets.append((inp, ""))
+            if inp.isdigit(): 
+                targets.append((inp, "", 'search'))
             else:
                 with st.spinner(f"搜尋「{inp}」..."):
                     code = search_code_online(inp)
-                if code: targets.append((code, inp))
-                else: st.toast(f"找不到「{inp}」", icon="⚠️")
+                if code: 
+                    targets.append((code, inp, 'search'))
+                else: 
+                    st.toast(f"找不到「{inp}」", icon="⚠️")
 
     results = []
     seen = set()
     bar = st.progress(0)
     total = len(targets)
-    for i, (code, name) in enumerate(targets):
+    
+    # 開始抓取
+    for i, (code, name, source) in enumerate(targets):
         if code in seen: continue
         if hide_etf and code.startswith("00"): continue
+        
         data = fetch_stock_data_raw(code, name)
         if data:
+            data['_source'] = source # 標記來源
             results.append(data)
             seen.add(code)
         if total > 0: bar.progress((i+1)/total)
+    
     bar.empty()
     if results:
         st.session_state.stock_data = pd.DataFrame(results)
@@ -471,11 +478,19 @@ if st.button("🚀 執行分析", type="primary"):
 if not st.session_state.stock_data.empty:
     
     limit = st.session_state.limit_rows
-    df_display = st.session_state.stock_data.head(limit).copy()
+    df_all = st.session_state.stock_data
     
-    # 1. 輸入區
-    # 移除 "漲跌幅" (display_cols 那邊處理結果區)，但這裡作為輸入區結構保留或移除皆可
-    input_cols = ["代號", "名稱", "收盤價", "自訂價(可修)", "漲跌幅", "獲利目標", "防守停損", "漲停價", "跌停價", "戰略備註", "_points"]
+    # --- 顯示邏輯：上傳清單只顯示前 N 筆，快速查詢全部顯示在後 ---
+    if '_source' in df_all.columns:
+        df_up = df_all[df_all['_source'] == 'upload'].head(limit)
+        df_se = df_all[df_all['_source'] == 'search']
+        # 合併顯示：上傳前N筆 + 搜尋結果
+        # 注意：使用 concat 後 index 會變，為了不讓 data_editor 混亂，不重置 index
+        df_display = pd.concat([df_up, df_se])
+    else:
+        df_display = df_all.head(limit)
+    
+    input_cols = ["代號", "名稱", "收盤價", "自訂價(可修)", "獲利目標", "防守停損", "戰略備註", "_points"]
     
     edited_df = st.data_editor(
         df_display[input_cols],
@@ -491,11 +506,8 @@ if not st.session_state.stock_data.empty:
                 required=False,
                 width="medium" 
             ),
-            "漲跌幅": st.column_config.NumberColumn("漲跌%", format="%.2f%%", disabled=True),
             "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True),
             "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True),
-            "漲停價": st.column_config.NumberColumn("🔥漲停", format="%.2f", disabled=True),
-            "跌停價": st.column_config.NumberColumn("💚跌停", format="%.2f", disabled=True),
             "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
             "_points": None 
         },
@@ -534,7 +546,6 @@ if not st.session_state.stock_data.empty:
     mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
     
     if mask.any():
-        # 3. 欄位調整：移除 漲跌幅，重命名 獲利/停損
         display_cols = ["代號", "名稱", "自訂價(可修)", "獲利目標", "防守停損", "戰略備註", "_is_hit"]
         display_df = final_df[mask][display_cols]
         
