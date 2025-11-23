@@ -47,10 +47,6 @@ if 'stock_data' not in st.session_state:
 if 'calc_base_price' not in st.session_state:
     st.session_state.calc_base_price = 100.0
 
-# [修正] 補上 calc_view_price 的初始化，防止 AttributeError
-if 'calc_view_price' not in st.session_state:
-    st.session_state.calc_view_price = 100.0
-
 # 優先從設定檔讀取
 saved_config = load_config()
 
@@ -258,7 +254,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
+            # st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
         today = hist.iloc[-1]
@@ -274,13 +270,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 1. 欄位顯示用的數據 (以收盤價為基準)
+        # 1. 欄位顯示用的數據
+        # 獲利/停損：以【收盤價】為基準 (策略需求)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
-        limit_up_col, limit_down_col = calculate_limits(current_price) 
+        
+        # 漲跌停欄位：以【昨日收盤價】為基準 (修正點：顯示今日實際漲跌停)
+        limit_up_col, limit_down_col = calculate_limits(prev_day['Close']) 
 
-        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
-        limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
+        # 2. 戰略備註用的漲跌停 (同上，以昨日收盤為基準)
+        limit_up_today = limit_up_col
+        limit_down_today = limit_down_col
 
         # 點位收集
         points = []
@@ -308,8 +308,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯
-            is_in_range = limit_down_col <= v <= limit_up_col
+            # 備註過濾邏輯 (使用今日漲跌停範圍)
+            is_in_range = limit_down_today <= v <= limit_up_today
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
@@ -481,7 +481,7 @@ with tab1:
                             c = c_raw.split('.')[0].strip()
                             
                             if c.isdigit():
-                                if len(c) <= 3: c = "00" + c 
+                                if len(c) <= 3: c = "00" + c # 修正 ETF
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
             except Exception as e:
@@ -525,6 +525,7 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
+        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -578,6 +579,7 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
+                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
@@ -654,7 +656,7 @@ with tab2:
         discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
     with c4:
         min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
-        
+    
     with c5:
         tick_count = st.number_input("顯示檔數 (檔)", value=5, min_value=1, max_value=50, step=1)
         
