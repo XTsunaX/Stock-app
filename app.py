@@ -7,27 +7,54 @@ import math
 import time
 import os
 import itertools
+import json # 新增 json 用於儲存設定
 
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡", layout="wide")
 
-# --- 初始化 Session State ---
+CONFIG_FILE = "config.json"
+
+def load_config():
+    """讀取設定檔"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_config(font_size, limit_rows):
+    """儲存設定檔"""
+    try:
+        config = {"font_size": font_size, "limit_rows": limit_rows}
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f)
+        return True
+    except:
+        return False
+
+# --- 初始化 Session State (載入設定) ---
 if 'stock_data' not in st.session_state:
     st.session_state.stock_data = pd.DataFrame()
 
-# 記憶設定
+# 優先從設定檔讀取，若無則使用預設值
+saved_config = load_config()
+
 if 'font_size' not in st.session_state:
-    st.session_state.font_size = 18
+    st.session_state.font_size = saved_config.get('font_size', 18)
+
 if 'limit_rows' not in st.session_state:
-    st.session_state.limit_rows = 5
+    st.session_state.limit_rows = saved_config.get('limit_rows', 5)
 
 # --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    st.slider(
+    # 使用 key 自動綁定 session_state
+    current_font_size = st.slider(
         "字體大小 (表格)", 
         min_value=12, 
         max_value=72, 
@@ -37,11 +64,18 @@ with st.sidebar:
     hide_etf = st.checkbox("隱藏 ETF (00開頭)", value=True)
     st.markdown("---")
     
-    st.number_input(
+    current_limit_rows = st.number_input(
         "顯示筆數", 
         min_value=1, 
         key='limit_rows'
     )
+    
+    # 1. 新增儲存按鈕
+    if st.button("💾 儲存設定"):
+        if save_config(current_font_size, current_limit_rows):
+            st.toast("設定已儲存！下次開啟將自動套用。", icon="✅")
+        else:
+            st.error("設定儲存失敗。")
     
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n勾選左側框框後按 `Delete` 鍵。")
@@ -147,7 +181,6 @@ def get_tick_size(price):
 def calculate_limits(price):
     """
     計算漲跌停價 (10%)
-    修正：正確使用漲跌停目標價的 Tick 進行捨去/進位
     """
     try:
         p = float(price)
@@ -192,14 +225,12 @@ def fetch_stock_data_raw(code, name_hint=""):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
-        # 1. 欄位顯示用的數據 (以當日收盤價為基準，計算明日參考漲跌停)
-        limit_up_col, limit_down_col = calculate_limits(current_price) 
-        
-        # 獲利目標與防守停損 (靜態計算)
+        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
+        limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 2. 戰略備註用的數據 (以昨日收盤為基準，計算今日的漲跌停限制)
+        # 2. 戰略備註用的數據 (以昨日收盤為基準，計算今日的漲跌停)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         # 點位收集
@@ -230,12 +261,15 @@ def fetch_stock_data_raw(code, name_hint=""):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 只顯示在今日漲跌停範圍內的點位 (排除異常值)
-            if limit_down_today <= v <= limit_up_today:
+            
+            # 3. 備註過濾邏輯：範圍內才顯示，但 5MA (tag含多/空) 例外
+            is_in_range = limit_down_today <= v <= limit_up_today
+            is_5ma = "多" in p['tag'] or "空" in p['tag']
+            
+            if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # --- 關鍵修正：檢查是否觸及今日漲跌停 ---
-        # 只有在今日最高價碰到漲停，或最低價碰到跌停時，才將漲跌停價加入備註
+        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -248,7 +282,7 @@ def fetch_stock_data_raw(code, name_hint=""):
         display_candidates.sort(key=lambda x: x['val'])
         
         final_display_points = []
-        extra_points = [] # 用於存儲延伸計算的點 (漲停高+3%)
+        extra_points = [] # 用於存儲延伸計算的點
 
         # 分組處理重複點位
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
@@ -264,9 +298,8 @@ def fetch_stock_data_raw(code, name_hint=""):
             # 判斷是否為今日收盤價 (誤差 0.01)
             is_close_price = abs(val - current_price) < 0.01
             
-            # --- 邏輯判斷 ---
+            # --- 漲停高/跌停低 + 延伸計算 ---
             if is_limit_up:
-                # 只有當: 是漲停價 AND 是近期高點 AND 是今日收盤價 -> 才是漲停高
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
                     # 延伸計算：漲停價 * 1.03
@@ -276,7 +309,6 @@ def fetch_stock_data_raw(code, name_hint=""):
                     final_tag = "漲停"
                     
             elif is_limit_down:
-                # 只有當: 是跌停價 AND 是近期低點 AND 是今日收盤價 -> 才是跌停低
                 if is_low and is_close_price:
                     final_tag = "跌停低"
                     # 延伸計算：跌停價 * 0.97
@@ -285,7 +317,6 @@ def fetch_stock_data_raw(code, name_hint=""):
                 else:
                     final_tag = "跌停"
             else:
-                # 一般點位標籤
                 if is_high: final_tag = "高"
                 elif is_low: final_tag = "低"
                 elif "多" in tags: final_tag = "多"
@@ -369,11 +400,24 @@ with col_search:
 with col_file:
     uploaded_file = st.file_uploader("📂 上傳清單", type=['xlsx', 'csv'])
     selected_sheet = None
-    if uploaded_file and not uploaded_file.name.endswith('.csv'):
-        xl = pd.ExcelFile(uploaded_file)
-        default_idx = 0
-        if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
-        selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
+    if uploaded_file:
+        try:
+            # 2. 修正 Excel 讀取錯誤
+            if uploaded_file.name.endswith('.csv'):
+                xl = None # 不用 ExcelFile
+            else:
+                xl = pd.ExcelFile(uploaded_file) # 這裡若沒裝 openpyxl 會報錯，需處理
+        except ImportError:
+            st.error("❌ 讀取 Excel 失敗：環境缺少 `openpyxl` 套件。請在 requirements.txt 中加入 openpyxl。")
+            st.stop()
+        except Exception as e:
+            st.error(f"❌ 讀取檔案失敗: {e}")
+            st.stop()
+
+        if xl:
+            default_idx = 0
+            if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
+            selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
 
 if st.button("🚀 執行分析", type="primary"):
     targets = []
@@ -389,8 +433,11 @@ if st.button("🚀 執行分析", type="primary"):
 
     if uploaded_file:
         try:
-            if uploaded_file.name.endswith('.csv'): df_up = pd.read_csv(uploaded_file)
-            else: df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+            if uploaded_file.name.endswith('.csv'): 
+                df_up = pd.read_csv(uploaded_file)
+            else: 
+                df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+                
             c_col = next((c for c in df_up.columns if "代號" in c), None)
             n_col = next((c for c in df_up.columns if "名稱" in c), None)
             if c_col:
