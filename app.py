@@ -12,7 +12,8 @@ import json
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖戰略室 V8 (網路版)", page_icon="⚡", layout="wide")
+# 1. 更新網頁標題設定
+st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 
 CONFIG_FILE = "config.json"
 
@@ -219,7 +220,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         current_price = today['Close']
         prev_day = hist.iloc[-2] if len(hist) >= 2 else today
         
-        # 計算漲跌相關 (保留後端計算，但前端不一定顯示)
+        # 計算漲跌相關
         change_price = current_price - prev_day['Close']
         pct_change = (change_price / prev_day['Close']) * 100
         
@@ -320,7 +321,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
             final_display_points.append({"val": val, "tag": final_tag})
         
-        # 將延伸點位加入列表
         if extra_points:
             for ep in extra_points:
                 final_display_points.append(ep)
@@ -349,7 +349,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "代號": code,
             "名稱": final_name,
             "收盤價": round(current_price, 2),
-            "漲跌幅": pct_change, # 保留欄位供漲跌色判斷
+            "漲跌幅": pct_change, 
+            "漲停價": limit_up_col,   # 提供給後端比對用
+            "跌停價": limit_down_col, # 提供給後端比對用
             "自訂價(可修)": None, 
             "獲利目標": target_price, 
             "防守停損": stop_price,   
@@ -363,7 +365,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 # 3. 介面與互動
 # ==========================================
 
-st.title("⚡ 當沖戰略室 V8 (網路版)")
+# 1. 標題更新 (前後閃電)
+st.title("⚡ 當沖戰略室 ⚡")
 
 col_search, col_file = st.columns([2, 1])
 with col_search:
@@ -392,7 +395,6 @@ with col_file:
 if st.button("🚀 執行分析", type="primary"):
     targets = []
     
-    # 1. 處理上傳清單
     if uploaded_file:
         try:
             if uploaded_file.name.endswith('.csv'): 
@@ -407,13 +409,12 @@ if st.button("🚀 執行分析", type="primary"):
                 for _, row in df_up.iterrows():
                     c = str(row[c_col]).split('.')[0].strip()
                     if c.isdigit():
-                        if len(c) < 4: c = c.zfill(4) # ETF 補零
+                        if len(c) < 4: c = c.zfill(4) 
                         n = str(row[n_col]) if n_col else ""
                         targets.append((c, n, 'upload', {}))
         except Exception as e:
             st.error(f"讀取失敗: {e}")
 
-    # 2. 處理搜尋輸入
     if search_query:
         inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
         for inp in inputs:
@@ -446,8 +447,8 @@ if st.button("🚀 執行分析", type="primary"):
     bar.empty()
     if results:
         st.session_state.stock_data = pd.DataFrame(results)
-    else:
-        st.warning("無資料")
+    # 2. 移除無資料警告
+    # else: st.warning("無資料") <--- 已移除
 
 # ==========================================
 # 4. 表格顯示與計算
@@ -458,18 +459,15 @@ if not st.session_state.stock_data.empty:
     limit = st.session_state.limit_rows
     df_all = st.session_state.stock_data
     
-    # 顯示邏輯：上傳清單前N筆 + 搜尋結果
     if '_source' in df_all.columns:
         df_up = df_all[df_all['_source'] == 'upload'].head(limit)
         df_se = df_all[df_all['_source'] == 'search']
-        df_display = pd.concat([df_up, df_se]).reset_index(drop=True) # 重置索引以解決序號問題
+        df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
     else:
         df_display = df_all.head(limit).reset_index(drop=True)
     
-    # 3. 欄位排序更新 (移除 漲跌價, 成交量, 週轉率)
     input_cols = ["代號", "名稱", "收盤價", "漲跌幅", "戰略備註", "自訂價(可修)", "獲利目標", "防守停損", "_points"]
     
-    # 確保欄位存在
     for col in input_cols:
         if col not in df_display.columns and col != "_points":
             df_display[col] = None
@@ -494,26 +492,39 @@ if not st.session_state.stock_data.empty:
             "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
             "_points": None 
         },
-        hide_index=True, # 隱藏索引 (關鍵設定)
+        hide_index=True, 
         use_container_width=True,
         num_rows="dynamic",
         key="main_editor"
     )
     
-    # 結果計算
     results = []
     for idx, row in edited_df.iterrows():
         custom_price = row['自訂價(可修)']
-        is_hit = False 
+        hit_type = 'none'
 
         if not (pd.isna(custom_price) or custom_price == ""):
             price = float(custom_price)
             points = row['_points']
-            for p in points:
-                if abs(p['val'] - price) < 0.01:
-                    is_hit = True
-                    break
-        results.append({"_is_hit": is_hit})
+            
+            # 3. 取得該股的漲跌停價 (從原始資料中獲取，因為 input_cols 沒顯示)
+            # 由於 index 有對齊 (reset_index 且無過濾)，可直接用 idx 存取
+            limit_up = df_display.at[idx, '漲停價']
+            limit_down = df_display.at[idx, '跌停價']
+            
+            # 判斷命中類型
+            if abs(price - limit_up) < 0.01:
+                hit_type = 'up' # 漲停
+            elif abs(price - limit_down) < 0.01:
+                hit_type = 'down' # 跌停
+            else:
+                # 檢查其他點位
+                for p in points:
+                    if abs(p['val'] - price) < 0.01:
+                        hit_type = 'normal'
+                        break
+                        
+        results.append({"_hit_type": hit_type})
     
     res_df_calced = pd.DataFrame(results, index=edited_df.index)
     final_df = pd.concat([edited_df, res_df_calced], axis=1)
@@ -524,24 +535,29 @@ if not st.session_state.stock_data.empty:
     mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
     
     if mask.any():
-        # 移除 漲跌幅
-        display_cols = ["代號", "名稱", "自訂價(可修)", "獲利目標", "防守停損", "戰略備註", "_is_hit"]
+        display_cols = ["代號", "名稱", "自訂價(可修)", "獲利目標", "防守停損", "戰略備註", "_hit_type"]
         display_df = final_df[mask][display_cols]
         
+        # 3. 顏色樣式更新
         def highlight_hit_row(row):
-            if row['_is_hit']:
-                return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
+            t = row['_hit_type']
+            if t == 'up':
+                return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row) # 紅底白字
+            elif t == 'down':
+                return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row) # 綠底白字
+            elif t == 'normal':
+                return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row) # 黃底黑字
             return [''] * len(row)
 
         st.dataframe(
             display_df.style.apply(highlight_hit_row, axis=1),
             use_container_width=True,
-            hide_index=True, # 隱藏索引
+            hide_index=True,
             column_config={
                 "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f"),
                 "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f"),
                 "防守停損": st.column_config.NumberColumn("-3%", format="%.2f"),
-                "_is_hit": None 
+                "_hit_type": None # 隱藏狀態欄
             }
         )
     else:
