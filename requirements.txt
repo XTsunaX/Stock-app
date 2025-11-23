@@ -1,7 +1,8 @@
 streamlit
 pandas
-yfinance
+yfinance>=0.2.40
 requests
 beautifulsoup4
 numpy
 openpyxl
+lxml
