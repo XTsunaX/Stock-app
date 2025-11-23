@@ -254,7 +254,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
+            # st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
         today = hist.iloc[-1]
@@ -304,13 +304,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯：確保顯示的點位不超過收盤價的 +/- 10% (limit_up_col)
+            # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停 (基於昨日收盤價)
+        # 檢查是否觸及今日漲跌停
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -382,7 +382,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         
-        # 3. 補回 full_calc_points 以防 NameError
         calc_points = points.copy()
         calc_points.append({"val": limit_up_today, "tag": "漲停"})
         calc_points.append({"val": limit_down_today, "tag": "跌停"})
@@ -437,8 +436,10 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
-                    df_up = pd.read_csv(uploaded_file, dtype=str)
+                    # CSV 讀取時指定 dtype=str 防止 ETF 代號丟失
+                    import pandas as pd # ensure pd is available
                 else:
+                    # 檢查 openpyxl
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
                         st.error("❌ 缺少 `openpyxl` 套件，無法讀取 Excel 檔。請在 requirements.txt 加入 openpyxl 並重啟 App。")
@@ -456,16 +457,15 @@ with tab1:
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # 1. 處理上傳清單
+        # 1. 處理上傳清單 (修正讀取邏輯)
         if uploaded_file:
+            uploaded_file.seek(0) # 重置檔案指標
             try:
                 if uploaded_file.name.endswith('.csv'): 
-                    # 已讀取
-                    pass
+                    df_up = pd.read_csv(uploaded_file, dtype=str)
                 else: 
                     if 'xl' in locals() and xl:
-                        # 修正: 移除 dtype=str 避免引擎錯誤，改用一般讀取後處理
-                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
                     else:
                         df_up = pd.DataFrame()
                 
@@ -475,14 +475,16 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            # 強化 ETF 處理：先轉字串，去小數點，再補零
+                            # 3. 強化 ETF 處理：先轉字串，去小數點，再補零
                             c_raw = str(row[c_col])
                             c = c_raw.split('.')[0].strip()
                             
-                            if c.isdigit():
-                                # 若長度 <= 3，前面補 "00" (適用 50->0050, 878->00878)
-                                if len(c) <= 3: 
-                                    c = "00" + c
+                            # 允許數字或英數字 (如 00632R)
+                            if c:
+                                # 若是純數字且長度不足，進行補零 (針對 Excel 吃掉 00 的情況)
+                                if c.isdigit():
+                                    if len(c) == 2: c = "00" + c
+                                    elif len(c) == 3: c = "00" + c
                                 
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
@@ -527,6 +529,7 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
+        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -580,6 +583,7 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
+                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
