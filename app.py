@@ -14,7 +14,7 @@ import json
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 
-# 1. 標題
+# 標題
 st.title("⚡ 當沖戰略室 ⚡")
 
 CONFIG_FILE = "config.json"
@@ -90,8 +90,7 @@ font_px = f"{st.session_state.font_size}px"
 
 st.markdown(f"""
     <style>
-    /* 調整上方內距，避免標題被遮擋 */
-    .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
+    .block-container {{ padding-top: 3.5rem; padding-bottom: 1rem; }}
     
     /* 套用到所有 Streamlit 表格相關元素 */
     div[data-testid="stDataFrame"] table,
@@ -108,10 +107,6 @@ st.markdown(f"""
     div[data-testid="stDataFrame"] {{
         width: 100%;
     }}
-    
-    /* 隱藏索引列的額外 CSS 確保 */
-    thead tr th:first-child {{ display:none }}
-    tbody th {{ display:none }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -195,7 +190,7 @@ def calculate_limits(price):
     """計算漲跌停價 (10%)"""
     try:
         p = float(price)
-        if math.isnan(p) or p <= 0: return 0, 0
+        if math.isnan(p) or p <= 0: return 0, 0 # 防止 NaN 崩潰
         
         raw_up = p * 1.10
         tick_up = get_tick_size(raw_up) 
@@ -286,7 +281,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             # 備註過濾邏輯
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
-            
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
@@ -383,7 +377,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 # 主介面 (Tabs)
 # ==========================================
 
-tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益試算 💰"])
+tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "⚡ 當沖損益計算 ⚡"])
 
 # -------------------------------------------------------
 # Tab 1: 當沖戰略室
@@ -402,7 +396,6 @@ with tab1:
                 else:
                     xl = pd.ExcelFile(uploaded_file) 
             except ImportError:
-                # 關鍵修正：若缺少套件，只顯示錯誤但不停止，讓搜尋功能可用
                 st.error("❌ 讀取 Excel 失敗：環境缺少 `openpyxl` 套件。")
             except Exception as e:
                 st.error(f"❌ 讀取檔案失敗: {e}")
@@ -421,23 +414,18 @@ with tab1:
                 if uploaded_file.name.endswith('.csv'): 
                     df_up = pd.read_csv(uploaded_file)
                 else: 
-                    # 加入 check，若 xl 為 None 則跳過
-                    if 'xl' in locals() and xl:
-                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
-                    else:
-                        df_up = pd.DataFrame()
+                    df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
                 
-                if not df_up.empty:
-                    c_col = next((c for c in df_up.columns if "代號" in c), None)
-                    n_col = next((c for c in df_up.columns if "名稱" in c), None)
-                    
-                    if c_col:
-                        for _, row in df_up.iterrows():
-                            c = str(row[c_col]).split('.')[0].strip()
-                            if c.isdigit():
-                                if len(c) < 4: c = c.zfill(4) 
-                                n = str(row[n_col]) if n_col else ""
-                                targets.append((c, n, 'upload', {}))
+                c_col = next((c for c in df_up.columns if "代號" in c), None)
+                n_col = next((c for c in df_up.columns if "名稱" in c), None)
+                
+                if c_col:
+                    for _, row in df_up.iterrows():
+                        c = str(row[c_col]).split('.')[0].strip()
+                        if c.isdigit():
+                            if len(c) < 4: c = c.zfill(4) 
+                            n = str(row[n_col]) if n_col else ""
+                            targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
@@ -479,7 +467,7 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
-        # 修正欄位對應
+        # 自動修正舊資料 Key 名稱，防止 TypeError
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -536,7 +524,6 @@ with tab1:
                 limit_up = df_display.at[idx, '當日漲停價']
                 limit_down = df_display.at[idx, '當日跌停價']
                 
-                # 防止 TypeError (檢查是否為 NaN)
                 if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                     hit_type = 'up' 
                 elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
@@ -611,7 +598,7 @@ with tab2:
             st.session_state.calc_base_price = move_tick(st.session_state.calc_base_price, -5)
             st.rerun()
             
-    ticks_range = range(5, -6, -1) 
+    ticks_range = range(5, -6, -1) # 修正：顯示上下 5 檔
     calc_data = []
     
     base_p = st.session_state.calc_base_price
