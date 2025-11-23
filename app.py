@@ -113,7 +113,7 @@ st.markdown(f"""
         font-size: 1.2em;
     }}
     
-    /* 隱藏索引列的額外 CSS 確保 */
+    /* 隱藏索引列 */
     thead tr th:first-child {{ display:none }}
     tbody th {{ display:none }}
     </style>
@@ -254,7 +254,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
+            st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
         today = hist.iloc[-1]
@@ -304,13 +304,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯
+            # 備註過濾邏輯：確保顯示的點位不超過收盤價的 +/- 10% (limit_up_col)
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停
+        # 檢查是否觸及今日漲跌停 (基於昨日收盤價)
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -382,6 +382,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         
+        # 3. 補回 full_calc_points 以防 NameError
         calc_points = points.copy()
         calc_points.append({"val": limit_up_today, "tag": "漲停"})
         calc_points.append({"val": limit_down_today, "tag": "跌停"})
@@ -459,11 +460,12 @@ with tab1:
         if uploaded_file:
             try:
                 if uploaded_file.name.endswith('.csv'): 
-                    # 已在上面讀取 df_up
+                    # 已讀取
                     pass
                 else: 
                     if 'xl' in locals() and xl:
-                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
+                        # 修正: 移除 dtype=str 避免引擎錯誤，改用一般讀取後處理
+                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
                     else:
                         df_up = pd.DataFrame()
                 
@@ -473,10 +475,14 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            c = str(row[c_col]).split('.')[0].strip()
+                            # 強化 ETF 處理：先轉字串，去小數點，再補零
+                            c_raw = str(row[c_col])
+                            c = c_raw.split('.')[0].strip()
+                            
                             if c.isdigit():
-                                # 修正: 使用 zfill(4) 來自動補零
-                                if len(c) < 4: c = c.zfill(4)
+                                # 若長度 <= 3，前面補 "00" (適用 50->0050, 878->00878)
+                                if len(c) <= 3: 
+                                    c = "00" + c
                                 
                                 n = str(row[n_col]) if n_col else ""
                                 targets.append((c, n, 'upload', {}))
@@ -574,7 +580,6 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
-                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
