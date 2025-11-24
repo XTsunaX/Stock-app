@@ -262,7 +262,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             st.error(f"⚠️ 代號 {code}: 抓取無資料。")
             return None
 
-        # 判斷盤中時間，若為盤中則取昨收數據，否則取最新
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
         last_date = hist.index[-1].date()
@@ -287,15 +286,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 1. 欄位顯示用的數據
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
-        # 點位收集
         points = []
         ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -317,7 +313,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
@@ -396,6 +391,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
+        
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
         light = "⚪"
@@ -440,6 +436,7 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
+                    # 強制讀取為字串，防止 Excel 自動將 0050 轉為 50
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
                     import importlib.util
@@ -459,9 +456,9 @@ with tab1:
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # 1. 處理上傳清單 (修正 ETF 讀取)
+        # 1. 處理上傳清單
         if uploaded_file:
-            uploaded_file.seek(0) # 重置指標
+            uploaded_file.seek(0) # 關鍵: 重置指標
             try:
                 if uploaded_file.name.endswith('.csv'): 
                     df_up = pd.read_csv(uploaded_file, dtype=str)
@@ -477,17 +474,21 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            c_raw = str(row[c_col])
-                            c = c_raw.split('.')[0].strip()
+                            c_raw = str(row[c_col]).strip()
+                            # 移除 Excel 可能產生的 .0
+                            if c_raw.endswith('.0'): c_raw = c_raw[:-2]
                             
-                            # 修正邏輯: 不再強制檢查 c.isdigit()，允許含有英文的代號 (如 00859B)
-                            # 僅對純數字且長度不足的進行補零
-                            if c: 
-                                if c.isdigit():
-                                    if len(c) <= 3: c = "00" + c
-                                
-                                n = str(row[n_col]) if n_col else ""
-                                targets.append((c, n, 'upload', {}))
+                            c = c_raw
+                            
+                            # 排除空值或 nan
+                            if not c or c.lower() == 'nan': continue
+                            
+                            # 修正 ETF 補零邏輯 (只針對純數字)
+                            if c.isdigit():
+                                if len(c) <= 3: c = "00" + c
+                            
+                            n = str(row[n_col]) if n_col else ""
+                            targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
