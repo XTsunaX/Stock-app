@@ -271,7 +271,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
+            # st.error(f"⚠️ 代號 {code}: 抓取無資料。") # 忽略無資料提示
             return None
 
         tz = pytz.timezone('Asia/Taipei')
@@ -409,7 +409,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        
         full_calc_points = final_display_points
         
         final_name = name_hint if name_hint else get_stock_name_online(code)
@@ -434,7 +433,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "_points": full_calc_points
         }
     except Exception as e:
-        st.error(f"⚠️ 代號 {code} 發生錯誤: {e}")
         return None
 
 # ==========================================
@@ -497,11 +495,11 @@ with tab1:
                             c_raw = str(row[c_col])
                             c = c_raw.split('.')[0].strip()
                             
-                            # 修正: 增加 nan 檢查與空字串檢查
+                            # 修正: 檢查包含中文字或過長字串，排除非代號文字
                             if not c or c.lower() == 'nan': continue
+                            if len(c) > 10 or any('\u4e00' <= char <= '\u9fff' for char in c): continue
                             
                             # 修正: 不再強制 isdigit，允許英文代號
-                            # 僅對純數字且長度不足的進行補零
                             if c.isdigit():
                                 if len(c) <= 3: c = "00" + c
                             
@@ -631,11 +629,13 @@ with tab1:
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
+                    # 1. 優先檢查是否等於當日漲跌停 (紅/綠)
                     if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                         hit_type = 'up' 
                     elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
                         hit_type = 'down'
                     else:
+                        # 2. 其次檢查是否在戰略備註點位內 (黃)
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
