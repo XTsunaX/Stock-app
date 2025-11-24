@@ -8,6 +8,8 @@ import time
 import os
 import itertools
 import json
+from datetime import datetime, time as dt_time
+import pytz
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -50,6 +52,10 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
+# [新增] 已忽略(刪除)的股票清單
+if 'ignored_stocks' not in st.session_state:
+    st.session_state.ignored_stocks = set()
+
 # 優先從設定檔讀取
 saved_config = load_config()
 
@@ -84,9 +90,17 @@ with st.sidebar:
             st.toast("設定已儲存！下次開啟將自動套用。", icon="✅")
         else:
             st.error("設定儲存失敗。")
+            
+    # [新增] 管理已忽略名單
+    st.markdown("---")
+    st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
+    if st.button("🗑️ 清空已忽略名單"):
+        st.session_state.ignored_stocks.clear()
+        st.toast("已清空忽略名單，下次分析將重新顯示。", icon="🔄")
+        st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n勾選左側框框後按 `Delete` 鍵。")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選並按 `Delete`，該股票下次分析時將不再出現。")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
@@ -257,9 +271,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            # st.error(f"⚠️ 代號 {code}: 抓取無資料。")
+            # st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
             return None
 
+        tz = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz)
+        last_date = hist.index[-1].date()
+        
+        is_today_data = (last_date == now.date())
+        is_during_trading = (now.time() < dt_time(13, 45))
+        
+        if is_today_data and is_during_trading:
+            if len(hist) > 1:
+                hist = hist.iloc[:-1]
+        
         today = hist.iloc[-1]
         current_price = today['Close']
         
@@ -433,7 +458,6 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
-                    # CSV 強制 dtype=str
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
                     import importlib.util
@@ -474,9 +498,8 @@ with tab1:
                             c_raw = str(row[c_col])
                             c = c_raw.split('.')[0].strip()
                             
-                            # 3. 修正: 只要有內容就處理，不限純數字
-                            if c:
-                                # 僅對純數字且長度不足的進行補零 (修正 0050 問題)
+                            if c: 
+                                # 修正: 不再強制 isdigit，允許 00859B
                                 if c.isdigit():
                                     if len(c) <= 3: c = "00" + c
                                 
@@ -505,6 +528,9 @@ with tab1:
         total = len(targets)
         
         for i, (code, name, source, extra) in enumerate(targets):
+            # [新增] 過濾已忽略名單
+            if code in st.session_state.ignored_stocks: continue
+            
             if code in seen: continue
             if hide_etf and code.startswith("00"): continue
             
@@ -526,6 +552,9 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
+        # [新增] 再一次過濾已忽略名單
+        df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
+        
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
@@ -539,6 +568,10 @@ with tab1:
             if col not in df_display.columns and col != "_points":
                 df_display[col] = None
 
+        # [新增] 偵測刪除的邏輯
+        # 為了能偵測刪除，我們需要知道「原本顯示了什麼」
+        # df_display 是本次渲染的原始資料
+        
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -566,6 +599,18 @@ with tab1:
             num_rows="dynamic",
             key="main_editor"
         )
+        
+        # [新增] 檢查是否有刪除
+        if len(edited_df) < len(df_display):
+            # 找出消失的代號
+            original_codes = set(df_display['代號'])
+            new_codes = set(edited_df['代號'])
+            removed_codes = original_codes - new_codes
+            
+            if removed_codes:
+                # 加入忽略名單
+                st.session_state.ignored_stocks.update(removed_codes)
+                st.rerun() # 立即重新執行以更新畫面
         
         results_hit = []
         for idx, row in edited_df.iterrows():
