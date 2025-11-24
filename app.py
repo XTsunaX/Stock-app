@@ -8,7 +8,7 @@ import time
 import os
 import itertools
 import json
-import io  # [新增] 用於處理 Goodinfo 資料流
+import io
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -48,7 +48,6 @@ if 'stock_data' not in st.session_state:
 if 'calc_base_price' not in st.session_state:
     st.session_state.calc_base_price = 100.0
 
-# [修正] 補上 calc_view_price 的初始化
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
@@ -187,36 +186,42 @@ def search_code_online(query):
     return None
 
 # ==========================================
-# [新增] Goodinfo 抓取邏輯
+# [修改] 改用 Yahoo 奇摩股市 API 抓取週轉率排行
 # ==========================================
 @st.cache_data(ttl=3600)
-def fetch_goodinfo_ranking():
-    """抓取 Goodinfo 成交量週轉率排行"""
-    url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
+def fetch_yahoo_ranking():
+    """抓取 Yahoo 奇摩股市成交量週轉率排行 (API)"""
+    # Yahoo 股市 API 端點 (週轉率排行)
+    url = "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.rank.getRank?chainId=tse&market=ALL&rankCategory=turnoverRatio&limit=100"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Referer": "https://goodinfo.tw/tw/StockList.asp"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     }
     
     try:
         res = requests.get(url, headers=headers, timeout=10)
-        res.encoding = "utf-8"
-        dfs = pd.read_html(io.StringIO(res.text))
+        data = res.json()
         
-        target_df = None
-        for df in dfs:
-            if "代號" in str(df.columns) and len(df) > 10:
-                target_df = df
-                break
-        
-        if target_df is not None:
-            target_df.columns = [c[-1] if isinstance(c, tuple) else c for c in target_df.columns]
-            target_df = target_df[target_df['代號'] != '代號']
-            target_df.reset_index(drop=True, inplace=True)
-            return target_df[['代號', '名稱']]
+        # 解析 JSON 資料
+        if 'payload' in data and 'rank' in data['payload']:
+            rank_list = data['payload']['rank']
             
+            # 整理成 DataFrame
+            extracted_data = []
+            for item in rank_list:
+                symbol = item.get('symbol')
+                name = item.get('name')
+                # 這裡的 symbol 包含市場後綴 (如 2330.TW)，我們只取數字部分
+                if symbol:
+                    symbol_code = symbol.split('.')[0]
+                    extracted_data.append({'代號': symbol_code, '名稱': name})
+            
+            if extracted_data:
+                return pd.DataFrame(extracted_data)
+                
         return None
     except Exception as e:
+        print(f"Yahoo API Error: {e}")
         return None
 
 # ==========================================
@@ -487,22 +492,22 @@ with tab1:
                 if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
                 selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
         
-        # [新增] Goodinfo 勾選框
-        use_goodinfo = st.checkbox("🔥 匯入 Goodinfo 週轉率排行")
+        # [修改] 改為 Yahoo 來源
+        use_yahoo = st.checkbox("🔥 匯入熱門週轉率排行 (來源: Yahoo股市)")
 
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # [新增] 處理 Goodinfo 資料
-        if use_goodinfo:
-            with st.spinner("正在從 Goodinfo 抓取熱門排行..."):
-                gi_df = fetch_goodinfo_ranking()
-                if gi_df is not None:
-                    for _, row in gi_df.iterrows():
-                        targets.append((str(row['代號']), str(row['名稱']), 'goodinfo', {}))
-                    st.toast(f"已匯入 {len(gi_df)} 檔熱門股", icon="🔥")
+        # [修改] 處理 Yahoo API 資料
+        if use_yahoo:
+            with st.spinner("正在從 Yahoo 奇摩股市抓取熱門排行..."):
+                rank_df = fetch_yahoo_ranking()
+                if rank_df is not None:
+                    for _, row in rank_df.iterrows():
+                        targets.append((str(row['代號']), str(row['名稱']), 'yahoo', {}))
+                    st.toast(f"已匯入 {len(rank_df)} 檔熱門股", icon="🔥")
                 else:
-                    st.error("Goodinfo 連線失敗或暫無資料，請稍後再試。")
+                    st.error("Yahoo 股市連線失敗，請稍後再試。")
 
         # 1. 處理上傳清單
         if uploaded_file:
@@ -574,12 +579,12 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
-        # [修改] 排序邏輯：優先顯示搜尋 > Goodinfo > 上傳
+        # [修改] 排序邏輯：優先顯示搜尋 > Yahoo > 上傳
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
-            df_gi = df_all[df_all['_source'] == 'goodinfo'].head(limit)
-            df_display = pd.concat([df_se, df_gi, df_up]).reset_index(drop=True)
+            df_yahoo = df_all[df_all['_source'] == 'yahoo'].head(limit)
+            df_display = pd.concat([df_se, df_yahoo, df_up]).reset_index(drop=True)
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
@@ -719,28 +724,22 @@ with tab2:
     
     b1, b2, _ = st.columns([1, 1, 6])
     with b1:
-        if st.button("🔼 向上", use_container_width=True):
+        if st.button("🔽 向上 (價格+1檔)", use_container_width=True): # 修正按鈕邏輯
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
-            
-            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
-            if st.session_state.calc_view_price > limit_up:
-                st.session_state.calc_view_price = limit_up
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, 1) # 只移動1檔方便操作
             st.rerun()
             
     with b2:
-        if st.button("🔽 向下", use_container_width=True):
+        if st.button("🔼 向下 (價格-1檔)", use_container_width=True): # 修正按鈕邏輯
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
-            
-            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
-            if st.session_state.calc_view_price < limit_down:
-                st.session_state.calc_view_price = limit_down
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -1) # 只移動1檔方便操作
             st.rerun()
-            
+    
+    # 計算並顯示表格 (保持你原有的邏輯)
     ticks_range = range(tick_count, -(tick_count + 1), -1)
     calc_data = []
     
     base_p = st.session_state.calc_base_price
-    
     if 'calc_view_price' not in st.session_state:
         st.session_state.calc_view_price = base_p
     view_p = st.session_state.calc_view_price
