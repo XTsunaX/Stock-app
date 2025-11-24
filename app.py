@@ -8,6 +8,7 @@ import time
 import os
 import itertools
 import json
+import io  # [新增] 用於處理 Goodinfo 資料流
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -184,6 +185,39 @@ def search_code_online(query):
     except:
         pass
     return None
+
+# ==========================================
+# [新增] Goodinfo 抓取邏輯
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_goodinfo_ranking():
+    """抓取 Goodinfo 成交量週轉率排行"""
+    url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Referer": "https://goodinfo.tw/tw/StockList.asp"
+    }
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = "utf-8"
+        dfs = pd.read_html(io.StringIO(res.text))
+        
+        target_df = None
+        for df in dfs:
+            if "代號" in str(df.columns) and len(df) > 10:
+                target_df = df
+                break
+        
+        if target_df is not None:
+            target_df.columns = [c[-1] if isinstance(c, tuple) else c for c in target_df.columns]
+            target_df = target_df[target_df['代號'] != '代號']
+            target_df.reset_index(drop=True, inplace=True)
+            return target_df[['代號', '名稱']]
+            
+        return None
+    except Exception as e:
+        return None
 
 # ==========================================
 # 2. 核心計算邏輯 (含台股 Tick 規則)
@@ -452,10 +486,24 @@ with tab1:
                 default_idx = 0
                 if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
                 selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
+        
+        # [新增] Goodinfo 勾選框
+        use_goodinfo = st.checkbox("🔥 匯入 Goodinfo 週轉率排行")
 
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
+        # [新增] 處理 Goodinfo 資料
+        if use_goodinfo:
+            with st.spinner("正在從 Goodinfo 抓取熱門排行..."):
+                gi_df = fetch_goodinfo_ranking()
+                if gi_df is not None:
+                    for _, row in gi_df.iterrows():
+                        targets.append((str(row['代號']), str(row['名稱']), 'goodinfo', {}))
+                    st.toast(f"已匯入 {len(gi_df)} 檔熱門股", icon="🔥")
+                else:
+                    st.error("Goodinfo 連線失敗或暫無資料，請稍後再試。")
+
         # 1. 處理上傳清單
         if uploaded_file:
             try:
@@ -526,10 +574,12 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
+        # [修改] 排序邏輯：優先顯示搜尋 > Goodinfo > 上傳
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
-            df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
+            df_gi = df_all[df_all['_source'] == 'goodinfo'].head(limit)
+            df_display = pd.concat([df_se, df_gi, df_up]).reset_index(drop=True)
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
@@ -635,7 +685,7 @@ with tab1:
             )
 
 # -------------------------------------------------------
-# Tab 2: 當沖損益試算
+# Tab 2: 當沖損益試算 (保持原樣)
 # -------------------------------------------------------
 with tab2:
     st.markdown("#### 💰 當沖損益試算 💰")
