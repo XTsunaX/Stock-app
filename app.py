@@ -298,12 +298,15 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
+        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
+        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
+        # 點位收集
         points = []
         ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -325,14 +328,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
+            # 備註過濾邏輯：確保顯示的點位不超過收盤價預測的漲跌停範圍
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
+        # 檢查是否觸及今日漲跌停 (基於昨日收盤價)
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -358,6 +364,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             
             is_close_price = abs(val - current_price) < 0.01
             
+            # --- 漲停高/跌停低 + 延伸計算 ---
             if is_limit_up:
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
@@ -403,13 +410,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         
-        light = "⚪"
-        if "多" in strategy_note: light = "🔴"
-        elif "空" in strategy_note: light = "🟢"
-        
         full_calc_points = final_display_points
         
         final_name = name_hint if name_hint else get_stock_name_online(code)
+        
+        # 加入燈號到名稱
+        light = "⚪"
+        if "多" in strategy_note: light = "🔴"
+        elif "空" in strategy_note: light = "🟢"
         final_name_display = f"{light} {final_name}"
         
         return {
@@ -489,13 +497,18 @@ with tab1:
                             c_raw = str(row[c_col])
                             c = c_raw.split('.')[0].strip()
                             
-                            if c: 
-                                # 修正: 只要非空就處理，允許含英文字
-                                if c.isdigit():
-                                    if len(c) <= 3: c = "00" + c
-                                
-                                n = str(row[n_col]) if n_col else ""
-                                targets.append((c, n, 'upload', {}))
+                            # 修正: 增加 nan 檢查與空字串檢查
+                            if not c or c.lower() == 'nan': continue
+                            
+                            # 修正: 不再強制 isdigit，允許英文代號
+                            # 僅對純數字且長度不足的進行補零
+                            if c.isdigit():
+                                if len(c) <= 3: c = "00" + c
+                            
+                            n = str(row[n_col]) if n_col else ""
+                            if n.lower() == 'nan': n = ""
+                            
+                            targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
@@ -518,17 +531,16 @@ with tab1:
         bar = st.progress(0)
         total = len(targets)
         
-        # 使用 fetch_cache 避免重複抓取
+        # fetch_cache 避免重複抓取 (代號為 key)
         fetch_cache = {}
         
         for i, (code, name, source, extra) in enumerate(targets):
             # 過濾已忽略名單
             if code in st.session_state.ignored_stocks: continue
             
-            # 檢查是否重複 (代號+來源)
             if (code, source) in seen: continue
+            if hide_etf and code.startswith("00"): continue
             
-            # 快取機制
             if code in fetch_cache:
                 data = fetch_cache[code]
             else:
@@ -536,7 +548,6 @@ with tab1:
                 if data: fetch_cache[code] = data
             
             if data:
-                # 建立副本以儲存不同的 source
                 row_data = data.copy()
                 row_data['_source'] = source
                 results.append(row_data)
@@ -620,13 +631,11 @@ with tab1:
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
-                    # 1. 優先檢查是否等於當日漲跌停 (紅/綠)
                     if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                         hit_type = 'up' 
                     elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
                         hit_type = 'down'
                     else:
-                        # 2. 其次檢查是否在戰略備註點位內 (黃)
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
