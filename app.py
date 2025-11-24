@@ -186,42 +186,42 @@ def search_code_online(query):
     return None
 
 # ==========================================
-# [修改] 改用 Yahoo 奇摩股市 API 抓取週轉率排行
+# [修改] 改用 HiStock (嗨投資) 抓取週轉率排行
+# 原因: HiStock 是靜態網頁表格，比 Yahoo API 更不容易被雲端主機阻擋
 # ==========================================
 @st.cache_data(ttl=3600)
-def fetch_yahoo_ranking():
-    """抓取 Yahoo 奇摩股市成交量週轉率排行 (API)"""
-    # Yahoo 股市 API 端點 (週轉率排行)
-    url = "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.rank.getRank?chainId=tse&market=ALL&rankCategory=turnoverRatio&limit=100"
+def fetch_histock_ranking():
+    """抓取 HiStock 週轉率排行"""
+    # p=t 代表 Turnover (週轉率)
+    url = "https://histock.tw/stock/rank.aspx?p=t"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     }
     
     try:
+        # 1. 請求網頁
         res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
+        res.encoding = "utf-8"
         
-        # 解析 JSON 資料
-        if 'payload' in data and 'rank' in data['payload']:
-            rank_list = data['payload']['rank']
+        # 2. 解析表格
+        dfs = pd.read_html(io.StringIO(res.text))
+        
+        # 3. 尋找正確的表格 (包含 '代號' 與 '名稱' 的那個)
+        target_df = None
+        for df in dfs:
+            if "代號" in df.columns and "名稱" in df.columns:
+                target_df = df
+                break
+        
+        if target_df is not None:
+            # 確保代號是字串格式
+            target_df['代號'] = target_df['代號'].astype(str)
+            return target_df[['代號', '名稱']]
             
-            # 整理成 DataFrame
-            extracted_data = []
-            for item in rank_list:
-                symbol = item.get('symbol')
-                name = item.get('name')
-                # 這裡的 symbol 包含市場後綴 (如 2330.TW)，我們只取數字部分
-                if symbol:
-                    symbol_code = symbol.split('.')[0]
-                    extracted_data.append({'代號': symbol_code, '名稱': name})
-            
-            if extracted_data:
-                return pd.DataFrame(extracted_data)
-                
         return None
     except Exception as e:
-        print(f"Yahoo API Error: {e}")
+        # print(f"HiStock Error: {e}") # Debug用
         return None
 
 # ==========================================
@@ -492,22 +492,22 @@ with tab1:
                 if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
                 selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
         
-        # [修改] 改為 Yahoo 來源
-        use_yahoo = st.checkbox("🔥 匯入熱門週轉率排行 (來源: Yahoo股市)")
+        # [修改] 來源改為 HiStock
+        use_histock = st.checkbox("🔥 匯入熱門週轉率排行 (來源: 嗨投資)")
 
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # [修改] 處理 Yahoo API 資料
-        if use_yahoo:
-            with st.spinner("正在從 Yahoo 奇摩股市抓取熱門排行..."):
-                rank_df = fetch_yahoo_ranking()
+        # [修改] 處理 HiStock 資料
+        if use_histock:
+            with st.spinner("正在從 HiStock 嗨投資抓取熱門排行..."):
+                rank_df = fetch_histock_ranking()
                 if rank_df is not None:
                     for _, row in rank_df.iterrows():
-                        targets.append((str(row['代號']), str(row['名稱']), 'yahoo', {}))
+                        targets.append((str(row['代號']), str(row['名稱']), 'histock', {}))
                     st.toast(f"已匯入 {len(rank_df)} 檔熱門股", icon="🔥")
                 else:
-                    st.error("Yahoo 股市連線失敗，請稍後再試。")
+                    st.error("HiStock 連線失敗，請稍後再試。")
 
         # 1. 處理上傳清單
         if uploaded_file:
@@ -579,12 +579,12 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
-        # [修改] 排序邏輯：優先顯示搜尋 > Yahoo > 上傳
+        # [修改] 排序邏輯：優先顯示搜尋 > HiStock > 上傳
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
-            df_yahoo = df_all[df_all['_source'] == 'yahoo'].head(limit)
-            df_display = pd.concat([df_se, df_yahoo, df_up]).reset_index(drop=True)
+            df_histock = df_all[df_all['_source'] == 'histock'].head(limit)
+            df_display = pd.concat([df_se, df_histock, df_up]).reset_index(drop=True)
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
