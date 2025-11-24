@@ -52,6 +52,10 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
+# 新增：已忽略(刪除)的股票清單
+if 'ignored_stocks' not in st.session_state:
+    st.session_state.ignored_stocks = set()
+
 # 優先從設定檔讀取
 saved_config = load_config()
 
@@ -81,14 +85,23 @@ with st.sidebar:
         key='limit_rows'
     )
     
-    if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows):
-            st.toast("設定已儲存！下次開啟將自動套用。", icon="✅")
-        else:
-            st.error("設定儲存失敗。")
+    col_save, col_reset = st.columns([1, 1])
+    with col_save:
+        if st.button("💾 儲存設定"):
+            if save_config(current_font_size, current_limit_rows):
+                st.toast("設定已儲存！", icon="✅")
+            else:
+                st.error("設定儲存失敗。")
+                
+    # 管理已忽略名單
+    st.markdown("---")
+    st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔股票")
+    if st.button("🗑️ 清空已忽略名單"):
+        st.session_state.ignored_stocks.clear()
+        st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n勾選左側框框後按 `Delete` 鍵。")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選並按 `Delete`，該股票下次分析時將不再出現。")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
@@ -111,11 +124,6 @@ st.markdown(f"""
     
     div[data-testid="stDataFrame"] {{
         width: 100%;
-    }}
-    
-    /* 計算機頁面特定樣式 */
-    [data-testid="stMetricValue"] {{
-        font-size: 1.2em;
     }}
     
     /* 隱藏索引列 */
@@ -390,13 +398,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        full_calc_points = final_display_points
-        
-        final_name = name_hint if name_hint else get_stock_name_online(code)
         
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
+        
+        full_calc_points = final_display_points
+        
+        final_name = name_hint if name_hint else get_stock_name_online(code)
         final_name_display = f"{light} {final_name}"
         
         return {
@@ -436,7 +445,6 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
-                    # 強制讀取為字串，防止 Excel 自動將 0050 轉為 50
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
                     import importlib.util
@@ -458,7 +466,7 @@ with tab1:
         
         # 1. 處理上傳清單
         if uploaded_file:
-            uploaded_file.seek(0) # 關鍵: 重置指標
+            uploaded_file.seek(0) 
             try:
                 if uploaded_file.name.endswith('.csv'): 
                     df_up = pd.read_csv(uploaded_file, dtype=str)
@@ -474,21 +482,14 @@ with tab1:
                     
                     if c_col:
                         for _, row in df_up.iterrows():
-                            c_raw = str(row[c_col]).strip()
-                            # 移除 Excel 可能產生的 .0
-                            if c_raw.endswith('.0'): c_raw = c_raw[:-2]
+                            c_raw = str(row[c_col])
+                            c = c_raw.split('.')[0].strip()
                             
-                            c = c_raw
-                            
-                            # 排除空值或 nan
-                            if not c or c.lower() == 'nan': continue
-                            
-                            # 修正 ETF 補零邏輯 (只針對純數字)
                             if c.isdigit():
                                 if len(c) <= 3: c = "00" + c
-                            
-                            n = str(row[n_col]) if n_col else ""
-                            targets.append((c, n, 'upload', {}))
+                                
+                                n = str(row[n_col]) if n_col else ""
+                                targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
@@ -512,6 +513,9 @@ with tab1:
         total = len(targets)
         
         for i, (code, name, source, extra) in enumerate(targets):
+            # 修正：加入已忽略名單的過濾
+            if code in st.session_state.ignored_stocks: continue
+            
             if code in seen: continue
             if hide_etf and code.startswith("00"): continue
             
@@ -533,6 +537,9 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
+        # 過濾已忽略的股票 (防止資料殘留)
+        df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
+        
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
@@ -546,6 +553,7 @@ with tab1:
             if col not in df_display.columns and col != "_points":
                 df_display[col] = None
 
+        # 建立 DataFrame 顯示
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -573,6 +581,16 @@ with tab1:
             num_rows="dynamic",
             key="main_editor"
         )
+        
+        # 偵測刪除：比較 df_display 與 edited_df
+        if len(edited_df) < len(df_display):
+            # 找出被刪除的代號
+            current_codes = set(df_display['代號'])
+            remaining_codes = set(edited_df['代號'])
+            removed = current_codes - remaining_codes
+            if removed:
+                st.session_state.ignored_stocks.update(removed)
+                st.rerun() # 重新整理以更新狀態
         
         results_hit = []
         for idx, row in edited_df.iterrows():
