@@ -47,7 +47,6 @@ if 'stock_data' not in st.session_state:
 if 'calc_base_price' not in st.session_state:
     st.session_state.calc_base_price = 100.0
 
-# [修正] 補上 calc_view_price 的初始化
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
@@ -393,6 +392,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         elif "空" in strategy_note:
             light = "🟢"
             
+        # _points 只包含 final_display_points
         full_calc_points = final_display_points
         
         final_name = name_hint if name_hint else get_stock_name_online(code)
@@ -402,7 +402,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         return {
             "代號": code,
-            "名稱": final_name_display, # 更新為帶燈號的名稱
+            "名稱": final_name_display, 
             "收盤價": round(current_price, 2),
             "漲跌幅": pct_change, 
             "當日漲停價": limit_up_col,   
@@ -522,7 +522,6 @@ with tab1:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data
         
-        # 自動修正舊資料 Key 名稱
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
@@ -533,6 +532,7 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
+        # 更新輸入欄位排序: 代號 名稱 收盤價 漲跌幅 戰略備註 自訂價 當日漲停價 當日跌停價 +3% -3%
         input_cols = ["代號", "名稱", "收盤價", "漲跌幅", "戰略備註", "自訂價(可修)", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "_points"]
         
         for col in input_cols:
@@ -576,25 +576,20 @@ with tab1:
                 try:
                     price = float(custom_price)
                     points = row['_points']
-                    
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
+                    # 1. 檢查是否命中當日漲跌停 (紅/綠)
                     if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                         hit_type = 'up' 
                     elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
                         hit_type = 'down'
                     else:
+                        # 2. 檢查是否命中戰略點位 (黃)
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
-                                    # 根據戰略備註的 Tag 決定顏色
-                                    if "漲停" in p['tag']:
-                                        hit_type = 'up'
-                                    elif "跌停" in p['tag']:
-                                        hit_type = 'down'
-                                    else:
-                                        hit_type = 'normal'
+                                    hit_type = 'normal'
                                     break
                 except:
                     pass
@@ -609,7 +604,8 @@ with tab1:
         mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
         
         if mask.any():
-            display_cols = ["代號", "名稱", "自訂價(可修)", "獲利目標", "防守停損", "戰略備註", "_hit_type"]
+            # 更新結果表格欄位排序: 代號 名稱 戰略備註 自訂價 +3% -3%
+            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "獲利目標", "防守停損", "_hit_type"]
             display_df = final_df[mask][display_cols]
             
             def highlight_hit_row(row):
