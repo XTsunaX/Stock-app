@@ -52,7 +52,7 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
-# [新增] 已忽略(刪除)的股票清單
+# 已忽略(刪除)的股票清單
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
 
@@ -91,7 +91,7 @@ with st.sidebar:
         else:
             st.error("設定儲存失敗。")
             
-    # [新增] 管理已忽略名單
+    # 管理已忽略名單
     st.markdown("---")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     if st.button("🗑️ 清空已忽略名單"):
@@ -271,7 +271,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
-            # st.error(f"⚠️ 代號 {code}: 抓取無資料 (Yahoo Finance 返回空值)。")
+            st.error(f"⚠️ 代號 {code}: 抓取無資料。")
             return None
 
         tz = pytz.timezone('Asia/Taipei')
@@ -298,15 +298,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
-        # 點位收集
         points = []
         ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -328,17 +325,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 備註過濾邏輯：確保顯示的點位不超過收盤價預測的漲跌停範圍
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
-        # 檢查是否觸及今日漲跌停 (基於昨日收盤價)
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -364,7 +358,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             
             is_close_price = abs(val - current_price) < 0.01
             
-            # --- 漲停高/跌停低 + 延伸計算 ---
             if is_limit_up:
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
@@ -410,15 +403,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         
-        # _points 只包含 final_display_points
-        full_calc_points = final_display_points
-        
-        final_name = name_hint if name_hint else get_stock_name_online(code)
-        
-        # 加入燈號到名稱
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
+        
+        full_calc_points = final_display_points
+        
+        final_name = name_hint if name_hint else get_stock_name_online(code)
         final_name_display = f"{light} {final_name}"
         
         return {
@@ -499,7 +490,7 @@ with tab1:
                             c = c_raw.split('.')[0].strip()
                             
                             if c: 
-                                # 修正: 不再強制 isdigit，允許 00859B
+                                # 修正: 只要非空就處理，允許含英文字
                                 if c.isdigit():
                                     if len(c) <= 3: c = "00" + c
                                 
@@ -527,18 +518,30 @@ with tab1:
         bar = st.progress(0)
         total = len(targets)
         
+        # 使用 fetch_cache 避免重複抓取
+        fetch_cache = {}
+        
         for i, (code, name, source, extra) in enumerate(targets):
-            # [新增] 過濾已忽略名單
+            # 過濾已忽略名單
             if code in st.session_state.ignored_stocks: continue
             
-            if code in seen: continue
-            if hide_etf and code.startswith("00"): continue
+            # 檢查是否重複 (代號+來源)
+            if (code, source) in seen: continue
             
-            data = fetch_stock_data_raw(code, name, extra)
+            # 快取機制
+            if code in fetch_cache:
+                data = fetch_cache[code]
+            else:
+                data = fetch_stock_data_raw(code, name, extra)
+                if data: fetch_cache[code] = data
+            
             if data:
-                data['_source'] = source
-                results.append(data)
-                seen.add(code)
+                # 建立副本以儲存不同的 source
+                row_data = data.copy()
+                row_data['_source'] = source
+                results.append(row_data)
+                seen.add((code, source))
+                
             if total > 0: bar.progress((i+1)/total)
         
         bar.empty()
@@ -552,7 +555,7 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
-        # [新增] 再一次過濾已忽略名單
+        # 過濾已忽略的股票
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
         
         if '_source' in df_all.columns:
@@ -568,10 +571,6 @@ with tab1:
             if col not in df_display.columns and col != "_points":
                 df_display[col] = None
 
-        # [新增] 偵測刪除的邏輯
-        # 為了能偵測刪除，我們需要知道「原本顯示了什麼」
-        # df_display 是本次渲染的原始資料
-        
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -600,17 +599,14 @@ with tab1:
             key="main_editor"
         )
         
-        # [新增] 檢查是否有刪除
+        # 偵測刪除
         if len(edited_df) < len(df_display):
-            # 找出消失的代號
             original_codes = set(df_display['代號'])
             new_codes = set(edited_df['代號'])
             removed_codes = original_codes - new_codes
-            
             if removed_codes:
-                # 加入忽略名單
                 st.session_state.ignored_stocks.update(removed_codes)
-                st.rerun() # 立即重新執行以更新畫面
+                st.rerun()
         
         results_hit = []
         for idx, row in edited_df.iterrows():
@@ -624,20 +620,17 @@ with tab1:
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
+                    # 1. 優先檢查是否等於當日漲跌停 (紅/綠)
                     if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                         hit_type = 'up' 
                     elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
                         hit_type = 'down'
                     else:
+                        # 2. 其次檢查是否在戰略備註點位內 (黃)
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
-                                    if "漲停" in p['tag']:
-                                        hit_type = 'up'
-                                    elif "跌停" in p['tag']:
-                                        hit_type = 'down'
-                                    else:
-                                        hit_type = 'normal'
+                                    hit_type = 'normal'
                                     break
                 except:
                     pass
