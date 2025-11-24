@@ -354,7 +354,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
-            # 過濾邏輯: 用收盤價計算的漲跌停
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
@@ -476,12 +475,12 @@ with tab1:
                 else:
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
-                        st.error("❌ 缺少 `openpyxl` 套件。")
+                        st.error("❌ 缺少 openpyxl。")
                         xl = None
                     else:
                         xl = pd.ExcelFile(uploaded_file) 
             except Exception as e:
-                st.error(f"❌ 讀取檔案失敗: {e}")
+                st.error(f"❌ 讀取失敗: {e}")
 
             if xl:
                 default_idx = 0
@@ -491,6 +490,7 @@ with tab1:
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
+        # 1. 上傳清單 (修復 ETF 補零)
         if uploaded_file:
             uploaded_file.seek(0) 
             try:
@@ -514,21 +514,20 @@ with tab1:
                             if not c or c.lower() == 'nan': continue
                             if len(c) > 10 or any('\u4e00' <= char <= '\u9fff' for char in c): continue
 
-                            # 修正: 不強制 isdigit，允許英文字母 (00859B)
-                            # 僅對純數字且長度不足者補零
+                            # 修正: 針對純數字且長度不足者補零
                             if c.isdigit():
                                 if len(c) <= 3: c = "00" + c
-                            
-                            # 若是 4 碼但含英文 (如 859B)，也補零
+                            # 修正: 針對含英文的 4 碼代號補零 (如 859B -> 00859B)
                             elif len(c) == 4 and c[0].isdigit() and c[-1].isalpha():
                                 c = "00" + c
-
+                            
                             n = str(row[n_col]) if n_col else ""
                             if n.lower() == 'nan': n = ""
                             targets.append((c, n, 'upload', {}))
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
+        # 2. 搜尋輸入
         if search_query:
             inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
             for inp in inputs:
@@ -558,13 +557,12 @@ with tab1:
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
             
-            # 修正：隱藏邏輯更新
-            # 隱藏條件: 00開頭 且 長度<=4 (一般ETF)
-            # 債券ETF (長度>4 或 含英文) 不隱藏
-            # 權證 (長度>4 純數字) 隱藏
+            # 修正：隱藏邏輯
             if hide_non_stock:
-                if code.startswith("00") and len(code) <= 4: continue # 一般ETF
-                if len(code) > 4 and code.isdigit(): continue # 權證/其他
+                # 隱藏 00開頭 (一般ETF + 債券ETF)
+                if code.startswith("00"): continue
+                # 隱藏 長度>4 (權證、特別股等)，但排除含英文的債券已被上面 00 擋掉，這裡主要擋權證
+                if len(code) > 4: continue
             
             if code in fetch_cache:
                 data = fetch_cache[code]
@@ -594,15 +592,12 @@ with tab1:
         
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
         
-        # 顯示前的再次過濾
+        # 顯示前再次過濾 (即時響應 Checkbox)
         if hide_non_stock:
-             # 過濾掉 00 開頭且長度 <=4 的 (一般ETF)
-             mask_etf = df_all['代號'].str.startswith('00') & (df_all['代號'].str.len() <= 4)
-             # 過濾掉 長度 > 4 且 純數字的 (權證/其他)
-             mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
-             
-             df_all = df_all[~(mask_etf | mask_warrant)]
-
+             mask_etf = df_all['代號'].str.startswith('00')
+             mask_len = df_all['代號'].str.len() > 4
+             df_all = df_all[~(mask_etf | mask_len)]
+        
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
@@ -610,7 +605,7 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
-        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "_points"]
+        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "收盤價", "漲跌幅", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "_points"]
         
         for col in input_cols:
             if col not in df_display.columns and col != "_points":
@@ -673,12 +668,7 @@ with tab1:
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
-                                    if "漲停" in p['tag']:
-                                        hit_type = 'up'
-                                    elif "跌停" in p['tag']:
-                                        hit_type = 'down'
-                                    else:
-                                        hit_type = 'normal'
+                                    hit_type = 'normal'
                                     break
                 except:
                     pass
