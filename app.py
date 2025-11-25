@@ -101,7 +101,7 @@ with st.sidebar:
     current_font_size = st.slider(
         "字體大小 (表格)", 
         min_value=12, 
-        max_value=40, 
+        max_value=72, 
         key='font_size'
     )
     
@@ -124,7 +124,7 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
-    # 2. 按鈕改為上下排列
+    # 按鈕上下排列
     if st.button("♻️ 復原忽略", use_container_width=True):
         st.session_state.ignored_stocks.clear()
         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
@@ -292,22 +292,30 @@ def move_tick(price, steps):
     except:
         return price
 
-# [修正] 戰略備註寬度計算：加權並加大 Buffer
+# [修正] 寬度計算：移除最小限制，緊湊計算
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
         for c in str(s):
-            # 中文字寬度加權
-            w += 2.1 if ord(c) > 127 else 1.1
+            w += 2.0 if ord(c) > 127 else 1.0
         return w
     
-    if series.empty: return 300
-    max_w = series.apply(get_width).max()
-    if pd.isna(max_w): max_w = 20
+    # 計算標題 "戰略備註" (4字) 的寬度作為保底
+    header_width = 8.0
     
-    # 字體大小 * 係數(0.7) + 固定Buffer(60)
-    pixel_width = int(max_w * (font_size * 0.7)) + 60
-    return max(300, min(pixel_width, 2000))
+    if series.empty: 
+        max_w = header_width
+    else:
+        # 找出最長的一串文字
+        content_max = series.astype(str).apply(get_width).max()
+        if pd.isna(content_max): content_max = 0
+        max_w = max(content_max, header_width)
+    
+    # 係數 0.52, Buffer +15px (非常緊湊)
+    pixel_width = int(max_w * (font_size * 0.52)) + 15
+    
+    # 不設下限 (除了標題長度自然形成的下限)，設個合理上限避免太誇張
+    return min(pixel_width, 1500)
 
 def recalculate_row(row):
     custom_price = row.get('自訂價(可修)')
@@ -353,7 +361,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
-        # 盤中不更新
+        # 盤中不更新：切掉今日資料，使用昨日
         if is_today_data and is_during_trading and len(hist) > 1:
             hist = hist.iloc[:-1]
         
@@ -367,10 +375,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
+        # 1. 獲利目標/停損：以 current_price (收盤價) 為基準，固定不變
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
+        # 2. 戰略備註 (昨日收盤基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
@@ -536,10 +546,13 @@ with tab1:
                             c_raw = str(row[c_col]).split('.')[0].strip()
                             if not c_raw or c_raw.lower() == 'nan': continue
                             if len(c_raw) > 10 or any('\u4e00' <= char <= '\u9fff' for char in c_raw): continue
+                            
+                            # ETF 補零邏輯
                             if c_raw.isdigit():
                                 if len(c_raw) <= 3: c_raw = "00" + c_raw
                             elif len(c_raw) == 4 and c_raw[0].isdigit() and c_raw[-1].isalpha():
                                 c_raw = "00" + c_raw
+
                             n = str(row[n_col]) if n_col else ""
                             if n.lower() == 'nan': n = ""
                             targets.append((c_raw, n, 'upload', {}))
@@ -612,6 +625,7 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
+        # [自動計算寬度] (使用新算法)
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
         input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "_points"]
@@ -633,6 +647,7 @@ with tab1:
                 "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "狀態": st.column_config.TextColumn(width="small", disabled=True),
+                # 應用動態寬度
                 "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
                 "_points": None 
             },
@@ -652,7 +667,6 @@ with tab1:
         
         updated_rows = []
         need_rerun = False
-        
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row)
             if new_status != row['狀態']:
@@ -669,6 +683,35 @@ with tab1:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
             st.rerun()
+
+        mask = final_df_for_res = pd.DataFrame(updated_rows)
+        mask_valid = mask['自訂價(可修)'].notna() & (mask['自訂價(可修)'] != "")
+        
+        if mask_valid.any():
+            st.markdown("### 🎯 計算結果 (命中亮色提示)")
+            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "+3%", "-3%", "狀態"]
+            res_df = pd.DataFrame(updated_rows)[mask_valid]
+            
+            res_note_width = calculate_note_width(res_df['戰略備註'], current_font_size)
+            
+            def highlight_hit_row(row):
+                s = str(row['狀態'])
+                if "漲停" in s: return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row)
+                elif "跌停" in s: return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row)
+                elif "命中" in s: return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
+                return [''] * len(row)
+
+            st.dataframe(
+                res_df[display_cols].style.apply(highlight_hit_row, axis=1),
+                use_container_width=False,
+                hide_index=True, 
+                column_config={
+                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
+                    "+3%": st.column_config.NumberColumn(format="%.2f", width="small"),
+                    "-3%": st.column_config.NumberColumn(format="%.2f", width="small"),
+                    "戰略備註": st.column_config.TextColumn(width=res_note_width, disabled=True)
+                }
+            )
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
