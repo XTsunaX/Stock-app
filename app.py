@@ -637,7 +637,7 @@ with tab1:
                 "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True, width="small"),
                 "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True, width="small"),
-                "戰略備註": st.column_config.TextColumn(width="medium", disabled=True), # 分析表用 medium
+                "戰略備註": st.column_config.TextColumn(width="large", disabled=True), # 分析表用 medium
                 "_points": None 
             },
             hide_index=True, 
