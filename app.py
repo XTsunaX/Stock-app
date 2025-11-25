@@ -8,9 +8,6 @@ import time
 import os
 import itertools
 import json
-from datetime import datetime, time as dt_time
-import pytz
-from decimal import Decimal, ROUND_HALF_UP
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -21,7 +18,6 @@ st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 st.title("⚡ 當沖戰略室 ⚡")
 
 CONFIG_FILE = "config.json"
-DATA_CACHE_FILE = "data_cache.json"
 
 def load_config():
     """讀取設定檔"""
@@ -43,39 +39,11 @@ def save_config(font_size, limit_rows):
     except:
         return False
 
-def save_data_cache(df, ignored_set):
-    """儲存資料到硬碟"""
-    try:
-        df_save = df.fillna("") 
-        data_to_save = {
-            "stock_data": df_save.to_dict(orient='records'),
-            "ignored_stocks": list(ignored_set)
-        }
-        with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        pass
-
-def load_data_cache():
-    """從硬碟讀取資料"""
-    if os.path.exists(DATA_CACHE_FILE):
-        try:
-            with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f:
-                data = json.load(f)
-            
-            df = pd.DataFrame(data.get('stock_data', []))
-            ignored = set(data.get('ignored_stocks', []))
-            return df, ignored
-        except Exception as e:
-            return pd.DataFrame(), set()
-    return pd.DataFrame(), set()
-
 # --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored = load_data_cache()
-    st.session_state.stock_data = cached_df
-    st.session_state.ignored_stocks = cached_ignored
+    st.session_state.stock_data = pd.DataFrame()
 
+# 計算機用的 Session State
 if 'calc_base_price' not in st.session_state:
     st.session_state.calc_base_price = 100.0
 
@@ -102,8 +70,7 @@ with st.sidebar:
         key='font_size'
     )
     
-    hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True, help="勾選後將隱藏 00開頭及代號大於4碼之標的。")
-    
+    hide_etf = st.checkbox("隱藏 ETF (00開頭)", value=True)
     st.markdown("---")
     
     current_limit_rows = st.number_input(
@@ -117,30 +84,9 @@ with st.sidebar:
             st.toast("設定已儲存！下次開啟將自動套用。", icon="✅")
         else:
             st.error("設定儲存失敗。")
-            
-    st.markdown("### 資料管理")
-    st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
-    
-    col_restore, col_clear = st.columns([1, 1])
-    
-    with col_restore:
-        if st.button("♻️ 復原忽略"):
-            st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
-            st.toast("已重置忽略名單。", icon="🔄")
-            st.rerun()
-            
-    with col_clear:
-        if st.button("🗑️ 清空資料"):
-            st.session_state.stock_data = pd.DataFrame()
-            st.session_state.ignored_stocks = set()
-            if os.path.exists(DATA_CACHE_FILE):
-                os.remove(DATA_CACHE_FILE)
-            st.toast("資料已全部清空", icon="🗑️")
-            st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選並按 `Delete`，該股票將被隱藏。")
+    st.info("🗑️ **如何刪除股票？**\n\n勾選左側框框後按 `Delete` 鍵。")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
@@ -149,6 +95,7 @@ st.markdown(f"""
     <style>
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
     
+    /* 套用到所有 Streamlit 表格相關元素 */
     div[data-testid="stDataFrame"] table,
     div[data-testid="stDataFrame"] td,
     div[data-testid="stDataFrame"] th,
@@ -164,10 +111,12 @@ st.markdown(f"""
         width: 100%;
     }}
     
+    /* 計算機頁面特定樣式 */
     [data-testid="stMetricValue"] {{
         font-size: 1.2em;
     }}
     
+    /* 隱藏索引列 */
     thead tr th:first-child {{ display:none }}
     tbody th {{ display:none }}
     </style>
@@ -236,14 +185,16 @@ def search_code_online(query):
     return None
 
 # ==========================================
-# 2. 核心計算邏輯
+# 2. 核心計算邏輯 (含台股 Tick 規則)
 # ==========================================
 
 def get_tick_size(price):
+    """取得台股價格對應的跳動檔位"""
     try:
         price = float(price)
     except:
         return 0.01
+        
     if pd.isna(price) or price <= 0: return 0.01
     if price < 10: return 0.01
     if price < 50: return 0.05
@@ -253,20 +204,25 @@ def get_tick_size(price):
     return 5.0
 
 def calculate_limits(price):
+    """計算漲跌停價 (10%)"""
     try:
         p = float(price)
         if math.isnan(p) or p <= 0: return 0, 0
+        
         raw_up = p * 1.10
         tick_up = get_tick_size(raw_up) 
         limit_up = math.floor(raw_up / tick_up) * tick_up
+        
         raw_down = p * 0.90
         tick_down = get_tick_size(raw_down) 
         limit_down = math.ceil(raw_down / tick_down) * tick_down
+        
         return float(f"{limit_up:.2f}"), float(f"{limit_down:.2f}")
     except:
         return 0, 0
 
 def apply_tick_rules(price):
+    """將任意價格修正為符合台股 Tick 規則的價格"""
     try:
         p = float(price)
         if math.isnan(p): return 0.0
@@ -277,6 +233,7 @@ def apply_tick_rules(price):
         return price
 
 def move_tick(price, steps):
+    """計算價格往上或往下 N 檔後的價格"""
     try:
         curr = float(price)
         if steps > 0:
@@ -300,19 +257,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         if hist.empty: 
+            # st.error(f"⚠️ 代號 {code}: 抓取無資料。") # 忽略無資料提示
             return None
 
-        tz = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz)
-        last_date = hist.index[-1].date()
-        
-        is_today_data = (last_date == now.date())
-        is_during_trading = (now.time() < dt_time(13, 45))
-        
-        if is_today_data and is_during_trading:
-            if len(hist) > 1:
-                hist = hist.iloc[:-1]
-        
         today = hist.iloc[-1]
         current_price = today['Close']
         
@@ -326,11 +273,15 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
+        # 1. 欄位顯示用的數據 (以收盤價為基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
+
+        # 2. 戰略備註用的漲跌停參考 (以昨日收盤為基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
+        # 點位收集
         points = []
         ma5 = apply_tick_rules(hist['Close'].tail(5).mean())
         points.append({"val": ma5, "tag": "多" if current_price > ma5 else "空"})
@@ -342,6 +293,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             past_5 = hist.iloc[-6:-1]
         else:
             past_5 = hist.iloc[:-1]
+            
         if not past_5.empty:
             points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
             points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
@@ -351,14 +303,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # 戰略備註整理
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
+            # 備註過濾邏輯：確保顯示的點位不超過收盤價預測的漲跌停範圍
             is_in_range = limit_down_col <= v <= limit_up_col
             is_5ma = "多" in p['tag'] or "空" in p['tag']
             if is_in_range or is_5ma:
                 display_candidates.append({"val": v, "tag": p['tag']})
         
+        # 檢查是否觸及今日漲跌停 (基於昨日收盤價)
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
 
@@ -381,8 +336,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             is_limit_down = "跌停" in tags
             is_high = "高" in tags
             is_low = "低" in tags
+            
             is_close_price = abs(val - current_price) < 0.01
             
+            # --- 漲停高/跌停低 + 延伸計算 ---
             if is_limit_up:
                 if is_high and is_close_price: 
                     final_tag = "漲停高"
@@ -428,8 +385,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
+        
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
+        # 加入燈號到名稱
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
@@ -452,7 +411,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         return None
 
 # ==========================================
-# 主介面
+# 主介面 (Tabs)
 # ==========================================
 
 tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益試算 💰"])
@@ -471,16 +430,17 @@ with tab1:
             try:
                 if uploaded_file.name.endswith('.csv'):
                     xl = None 
+                    # 強制讀取為字串，防止 Excel 自動將 0050 轉為 50
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else:
                     import importlib.util
                     if importlib.util.find_spec("openpyxl") is None:
-                        st.error("❌ 缺少 openpyxl。")
+                        st.error("❌ 缺少 `openpyxl` 套件，無法讀取 Excel 檔。請在 requirements.txt 加入 openpyxl 並重啟 App。")
                         xl = None
                     else:
                         xl = pd.ExcelFile(uploaded_file) 
             except Exception as e:
-                st.error(f"❌ 讀取失敗: {e}")
+                st.error(f"❌ 讀取檔案失敗: {e}")
 
             if xl:
                 default_idx = 0
@@ -490,7 +450,7 @@ with tab1:
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         
-        # 1. 上傳清單 (修復 ETF 補零)
+        # 1. 處理上傳清單
         if uploaded_file:
             uploaded_file.seek(0) 
             try:
@@ -517,9 +477,6 @@ with tab1:
                             # 修正: 針對純數字且長度不足者補零
                             if c.isdigit():
                                 if len(c) <= 3: c = "00" + c
-                            # 修正: 針對含英文的 4 碼代號補零 (如 859B -> 00859B)
-                            elif len(c) == 4 and c[0].isdigit() and c[-1].isalpha():
-                                c = "00" + c
                             
                             n = str(row[n_col]) if n_col else ""
                             if n.lower() == 'nan': n = ""
@@ -527,7 +484,7 @@ with tab1:
             except Exception as e:
                 st.error(f"讀取失敗: {e}")
 
-        # 2. 搜尋輸入
+        # 2. 處理搜尋輸入
         if search_query:
             inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
             for inp in inputs:
@@ -556,13 +513,7 @@ with tab1:
         for i, (code, name, source, extra) in enumerate(targets):
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
-            
-            # 修正：隱藏邏輯
-            if hide_non_stock:
-                # 隱藏 00開頭 (一般ETF + 債券ETF)
-                if code.startswith("00"): continue
-                # 隱藏 長度>4 (權證、特別股等)，但排除含英文的債券已被上面 00 擋掉，這裡主要擋權證
-                if len(code) > 4: continue
+            if hide_etf and code.startswith("00"): continue
             
             if code in fetch_cache:
                 data = fetch_cache[code]
@@ -590,13 +541,8 @@ with tab1:
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
+        # 過濾已忽略的股票
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
-        
-        # 顯示前再次過濾 (即時響應 Checkbox)
-        if hide_non_stock:
-             mask_etf = df_all['代號'].str.startswith('00')
-             mask_len = df_all['代號'].str.len() > 4
-             df_all = df_all[~(mask_etf | mask_len)]
         
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
@@ -626,19 +572,20 @@ with tab1:
                     required=False,
                     width="medium" 
                 ),
-                "當日漲停價": st.column_config.NumberColumn("當日漲停價", format="%.2f", disabled=True),
-                "當日跌停價": st.column_config.NumberColumn("當日跌停價", format="%.2f", disabled=True),
-                "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True),
-                "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True),
+                "當日漲停價": st.column_config.NumberColumn("當日漲停價", format="%.2f", disabled=True, width="small"),
+                "當日跌停價": st.column_config.NumberColumn("當日跌停價", format="%.2f", disabled=True, width="small"),
+                "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True, width="small"),
+                "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True, width="small"),
                 "戰略備註": st.column_config.TextColumn(width="large", disabled=True),
                 "_points": None 
             },
             hide_index=True, 
-            use_container_width=True,
+            use_container_width=False, # 修正：設為False以啟用縮減寬度
             num_rows="dynamic",
             key="main_editor"
         )
         
+        # 偵測刪除
         if len(edited_df) < len(df_display):
             original_codes = set(df_display['代號'])
             new_codes = set(edited_df['代號'])
@@ -660,11 +607,13 @@ with tab1:
                     limit_up = df_display.at[idx, '當日漲停價']
                     limit_down = df_display.at[idx, '當日跌停價']
                     
+                    # 1. 優先檢查是否等於當日漲跌停 (紅/綠)
                     if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
                         hit_type = 'up' 
                     elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
                         hit_type = 'down'
                     else:
+                        # 2. 其次檢查是否在戰略備註點位內 (黃)
                         if isinstance(points, list):
                             for p in points:
                                 if abs(p['val'] - price) < 0.01:
@@ -698,12 +647,12 @@ with tab1:
 
             st.dataframe(
                 display_df.style.apply(highlight_hit_row, axis=1),
-                use_container_width=True,
+                use_container_width=False, # 修正：設為False以啟用縮減寬度
                 hide_index=True, 
                 column_config={
-                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f"),
-                    "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f"),
-                    "防守停損": st.column_config.NumberColumn("-3%", format="%.2f"),
+                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
+                    "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", width="small"),
+                    "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", width="small"),
                     "_hit_type": None 
                 }
             )
@@ -842,7 +791,7 @@ with tab2:
     if not df_calc.empty:
         st.dataframe(
             df_calc.style.apply(style_calc_row, axis=1),
-            use_container_width=True,
+            use_container_width=False, # 修正：設為False以啟用縮減寬度
             hide_index=True,
             column_config={
                 "_profit": None,
