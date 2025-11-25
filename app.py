@@ -124,7 +124,6 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
-    # [修改] 按鈕改為垂直排列 (移除 st.columns)
     if st.button("♻️ 復原忽略", use_container_width=True):
         st.session_state.ignored_stocks.clear()
         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
@@ -620,55 +619,66 @@ with tab1:
         for col in input_cols:
             if col not in df_display.columns and col != "_points": df_display[col] = None
 
-        # [修改] 為解決輸入跳動問題，將可變動的欄位設為固定像素寬度 (width=數字)
-        edited_df = st.data_editor(
-            df_display[input_cols],
-            column_config={
-                "代號": st.column_config.TextColumn(disabled=True, width="small"),
-                "名稱": st.column_config.TextColumn(disabled=True, width="small"),
-                "收盤價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
-                # [修改] 自訂價設為固定 120px
-                "自訂價(可修)": st.column_config.NumberColumn("自訂價 ✏️", format="%.2f", step=0.01, width=120),
-                "當日漲停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                # [修改] 狀態欄設為固定 80px，避免文字出現時擠壓表格造成跳動
-                "狀態": st.column_config.TextColumn(width=80, disabled=True),
-                "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
-                "_points": None 
-            },
-            hide_index=True, 
-            use_container_width=False,
-            num_rows="dynamic",
-            key="main_editor"
-        )
-        
-        if len(edited_df) < len(df_display):
-            original = set(df_display['代號']); new = set(edited_df['代號'])
-            removed = original - new
-            if removed:
-                st.session_state.ignored_stocks.update(removed)
-                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+        # [修改] 使用 st.form 包裹表格，徹底解決 Enter 跳動問題
+        with st.form("stock_table_form"):
+            edited_df = st.data_editor(
+                df_display[input_cols],
+                column_config={
+                    "代號": st.column_config.TextColumn(disabled=True, width="small"),
+                    "名稱": st.column_config.TextColumn(disabled=True, width="small"),
+                    "收盤價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                    "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
+                    "自訂價(可修)": st.column_config.NumberColumn("自訂價 ✏️", format="%.2f", step=0.01, width=120),
+                    "當日漲停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                    "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                    "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                    "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                    "狀態": st.column_config.TextColumn(width=80, disabled=True),
+                    "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
+                    "_points": None 
+                },
+                hide_index=True, 
+                use_container_width=False,
+                num_rows="dynamic",
+                key="main_editor"
+            )
+            
+            col_submit, col_hint = st.columns([2, 8])
+            with col_submit:
+                submitted = st.form_submit_button("💾 儲存並計算狀態", type="primary", use_container_width=True)
+            with col_hint:
+                st.markdown("⚠️ **提示**：表格已鎖定為批次輸入模式。**Enter** 可順暢換行，輸入完畢請按左側按鈕查看結果。")
+
+        # [修改] 只有當按下提交按鈕時，才執行資料處理與更新
+        if submitted:
+            # 1. 處理刪除的列
+            if len(edited_df) < len(df_display):
+                original = set(df_display['代號']); new = set(edited_df['代號'])
+                removed = original - new
+                if removed:
+                    st.session_state.ignored_stocks.update(removed)
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+            
+            # 2. 計算狀態與更新數值
+            updated_rows = []
+            for idx, row in edited_df.iterrows():
+                new_status = recalculate_row(row)
+                if new_status != row['狀態']:
+                    row['狀態'] = new_status
+                updated_rows.append(row)
+                
+            if updated_rows:
+                df_updated = pd.DataFrame(updated_rows)
+                update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態']].to_dict('index')
+                
+                for i, r in st.session_state.stock_data.iterrows():
+                    code = r['代號']
+                    if code in update_map:
+                        st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                        st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
+                
+                # 強制刷新以顯示計算結果
                 st.rerun()
-        
-        updated_rows = []
-        for idx, row in edited_df.iterrows():
-            new_status = recalculate_row(row)
-            if new_status != row['狀態']:
-                row['狀態'] = new_status
-            updated_rows.append(row)
-            
-        if updated_rows:
-            df_updated = pd.DataFrame(updated_rows)
-            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態']].to_dict('index')
-            
-            for i, r in st.session_state.stock_data.iterrows():
-                code = r['代號']
-                if code in update_map:
-                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
-                    st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
