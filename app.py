@@ -124,7 +124,6 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
-    # 3. 修改為上下排列 (直接使用 st.button，不包在 columns 裡)
     if st.button("♻️ 復原忽略", use_container_width=True):
         st.session_state.ignored_stocks.clear()
         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
@@ -292,22 +291,20 @@ def move_tick(price, steps):
     except:
         return price
 
-# 2. 寬度計算優化 (更寬裕的 buffer)
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
         for c in str(s):
-            w += 2.0 if ord(c) > 127 else 1.1 # 增加英數字權重
+            w += 2.0 if ord(c) > 127 else 1.0
         return w
     
     if series.empty: return 200
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 10
-    
-    # 寬度係數與 Buffer 增加，確保不被切到
-    pixel_width = int(max_w * (font_size * 0.75)) + 50
-    return max(250, min(pixel_width, 1800))
+    pixel_width = int(max_w * (font_size * 0.6)) + 40
+    return max(200, min(pixel_width, 1600))
 
+# 修正：只回傳狀態，不更新獲利停損
 def recalculate_row(row):
     custom_price = row.get('自訂價(可修)')
     status = ""
@@ -352,12 +349,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
-        # 1. 盤中不更新：若現在是盤中且抓到今日資料，則切除今日，只用昨日
+        # 盤中不更新：切掉今日資料
         if is_today_data and is_during_trading and len(hist) > 1:
             hist = hist.iloc[:-1]
         
-        today = hist.iloc[-1] # 這會是昨收 (盤中時) 或 今收 (盤後時)
-        current_price = today['Close'] 
+        today = hist.iloc[-1]
+        current_price = today['Close']
         
         if len(hist) >= 2: prev_day = hist.iloc[-2]
         else: prev_day = today
@@ -366,12 +363,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 獲利/停損：完全基於 current_price 計算 (盤中即昨收，盤後即今收)
+        # 1. 獲利目標/停損：以 current_price (收盤價) 為基準，固定不變
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
-        # 戰略備註 (基於 prev_day)
+        # 2. 戰略備註 (昨日收盤基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
@@ -461,7 +458,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
-        
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
         light = "⚪"
@@ -469,6 +465,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         elif "空" in strategy_note: light = "🟢"
         final_name_display = f"{light} {final_name}"
         
+        # 直接使用欄位名稱：+3%, -3%
         return {
             "代號": code,
             "名稱": final_name_display, 
@@ -477,11 +474,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "當日漲停價": limit_up_col,   
             "當日跌停價": limit_down_col,
             "自訂價(可修)": None, 
-            "獲利目標": target_price, 
-            "防守停損": stop_price,   
+            "+3%": target_price,  # 固定值
+            "-3%": stop_price,    # 固定值
+            "狀態": "", 
             "戰略備註": strategy_note,
-            "_points": full_calc_points,
-            "狀態": ""
+            "_points": full_calc_points
         }
     except: return None
 
@@ -614,12 +611,9 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
-        # 1. 自動計算戰略備註寬度 (套用到所有表格)
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
         input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "_points"]
-        df_display = df_display.rename(columns={"獲利目標": "+3%", "防守停損": "-3%"})
-
         for col in input_cols:
             if col not in df_display.columns and col != "_points": df_display[col] = None
 
@@ -636,7 +630,6 @@ with tab1:
                 "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "狀態": st.column_config.TextColumn(width="small", disabled=True),
-                # 應用動態寬度
                 "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
                 "_points": None 
             },
@@ -656,7 +649,6 @@ with tab1:
         
         updated_rows = []
         need_rerun = False
-        
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row)
             if new_status != row['狀態']:
@@ -673,37 +665,6 @@ with tab1:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
             st.rerun()
-
-        mask = final_df_for_res = pd.DataFrame(updated_rows)
-        mask_valid = mask['自訂價(可修)'].notna() & (mask['自訂價(可修)'] != "")
-        
-        if mask_valid.any():
-            st.markdown("### 🎯 計算結果 (命中亮色提示)")
-            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "+3%", "-3%", "狀態"]
-            res_df = pd.DataFrame(updated_rows)[mask_valid]
-            
-            # 計算結果表也套用同樣的動態寬度
-            res_note_width = calculate_note_width(res_df['戰略備註'], current_font_size)
-            
-            def highlight_hit_row(row):
-                s = str(row['狀態'])
-                if "漲停" in s: return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row)
-                elif "跌停" in s: return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row)
-                elif "命中" in s: return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
-                return [''] * len(row)
-
-            st.dataframe(
-                res_df[display_cols].style.apply(highlight_hit_row, axis=1),
-                use_container_width=False,
-                hide_index=True, 
-                column_config={
-                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
-                    "+3%": st.column_config.NumberColumn(format="%.2f", width="small"),
-                    "-3%": st.column_config.NumberColumn(format="%.2f", width="small"),
-                    # 應用動態寬度
-                    "戰略備註": st.column_config.TextColumn(width=res_note_width, disabled=True)
-                }
-            )
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
@@ -747,7 +708,6 @@ with tab2:
     for i in ticks_range:
         p = move_tick(view_p, i)
         if p > limit_up or p < limit_down: continue
-        
         if is_long:
             buy_price = base_p; sell_price = p
             buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
