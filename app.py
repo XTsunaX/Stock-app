@@ -291,7 +291,7 @@ def move_tick(price, steps):
     except:
         return price
 
-# [修改] 優化欄寬計算，確保能容納最長列
+# [修改] 極度緊縮的寬度計算，符合「縮排且不要保留空白」
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -299,13 +299,17 @@ def calculate_note_width(series, font_size):
             w += 2.0 if ord(c) > 127 else 1.0
         return w
     
-    if series.empty: return 150
-    max_w = series.apply(get_width).max()
-    if pd.isna(max_w): max_w = 10
+    # 若無資料，給一個很小的預設值
+    if series.empty: return 50
     
-    # 增加係數與緩衝，移除上限
-    pixel_width = int(max_w * (font_size * 0.65)) + 40
-    return max(200, pixel_width)
+    max_w = series.apply(get_width).max()
+    if pd.isna(max_w): max_w = 0
+    
+    # 緊縮係數，僅保留極少緩衝
+    pixel_width = int(max_w * (font_size * 0.52)) + 10
+    
+    # 移除原本的 200px 下限，改為極小值，確保不留大片空白
+    return max(50, pixel_width)
 
 def recalculate_row(row):
     custom_price = row.get('自訂價(可修)')
@@ -403,7 +407,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         high_90 = apply_tick_rules(hist['High'].max())
         low_90 = apply_tick_rules(hist['Low'].min())
         
-        # [修改] 觸及與特殊條件判斷
+        # 3. 判斷觸及與特殊條件
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
         
@@ -415,9 +419,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         def fmt_v(v): return f"{v:.0f}" if v.is_integer() else f"{v:.2f}"
 
-        # 3. 加入高點 (High 90)
+        # 4. 加入高點 (High 90)
         if cond_limit_up_high:
-            # 特殊格式: 漲停高100-103
+            # 漲停高100-103
             points.append({
                 "val": high_90, 
                 "tag": "漲停高", 
@@ -426,9 +430,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         else:
             points.append({"val": high_90, "tag": "高"})
         
-        # 4. 加入低點 (Low 90)
+        # 5. 加入低點 (Low 90)
         if cond_limit_down_low:
-            # 特殊格式: 97-跌停低100
+            # 97-跌停低100
             points.append({
                 "val": low_90, 
                 "tag": "跌停低",
@@ -437,7 +441,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         else:
             points.append({"val": low_90, "tag": "低"})
 
-        # 5. 一般觸及邏輯 (若非特殊Case，則補上 +3%/-3% 點位)
+        # 6. 一般觸及邏輯 (若非特殊Case，則補上 +3%/-3% 點位)
         if touched_up and not cond_limit_up_high:
             points.append({"val": target_price, "tag": ""})
         
@@ -449,7 +453,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
             if is_force or (limit_down_next <= v <= limit_up_next):
-                 display_candidates.append(p) # 保存完整 dict 以便後續取用 extra_text
+                 display_candidates.append(p) 
             
         display_candidates.sort(key=lambda x: x['val'])
         
@@ -459,7 +463,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             g_list = list(group)
             tags = [x['tag'] for x in g_list if x['tag']]
             
-            # 取出特殊前後綴 (如果有的話)
             prefix = ""
             suffix = ""
             for x in g_list:
@@ -468,7 +471,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
             final_tag = ""
             
-            # 優先權邏輯
+            # 優先權
             if "漲停高" in tags: final_tag = "漲停高"
             elif "跌停低" in tags: final_tag = "跌停低"
             elif "漲停" in tags: final_tag = "漲停"
@@ -480,7 +483,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 elif "空" in tags: final_tag = "空"
                 elif "平" in tags: final_tag = "平"
             
-            # 5MA 補償顯示
             if ("多" in tags or "空" in tags or "平" in tags) and final_tag not in ["漲停", "跌停", "漲停高", "跌停低"]:
                 if "多" in tags: final_tag = "多"
                 elif "空" in tags: final_tag = "空"
@@ -496,7 +498,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         note_parts = []
         seen_vals = set() 
         for p in final_display_points:
-            # 簡單去重：如果數值相同且無Tag且無前後綴，則跳過
             if p['val'] in seen_vals and p['tag'] == "" and not p['prefix'] and not p['suffix']: continue
             seen_vals.add(p['val'])
             
@@ -513,12 +514,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             else: 
                 core = v_str
             
-            # 組合完整字串
             item = f"{pre}{core}{suf}"
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        full_calc_points = final_display_points # 這裡其實只用來做計算判斷，前端顯示不依賴這個結構的細節
+        full_calc_points = final_display_points
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
         light = "⚪"
@@ -675,6 +675,7 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
+        # 計算備註欄寬度，依據目前顯示的資料內容決定
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
         input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "_points"]
