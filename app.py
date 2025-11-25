@@ -124,24 +124,20 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
-    col_restore, col_clear = st.columns([1, 1])
-    
-    # 按鈕上下排列
-    with col_restore.container():
-        if st.button("♻️ 復原忽略", use_container_width=True):
-            st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
-            st.toast("已重置忽略名單。", icon="🔄")
-            st.rerun()
+    # [修改] 按鈕改為上下排列
+    if st.button("♻️ 復原忽略", use_container_width=True):
+        st.session_state.ignored_stocks.clear()
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+        st.toast("已重置忽略名單。", icon="🔄")
+        st.rerun()
             
-    with col_clear.container():
-        if st.button("🗑️ 清空資料", type="primary", use_container_width=True):
-            st.session_state.stock_data = pd.DataFrame()
-            st.session_state.ignored_stocks = set()
-            if os.path.exists(DATA_CACHE_FILE):
-                os.remove(DATA_CACHE_FILE)
-            st.toast("資料已全部清空", icon="🗑️")
-            st.rerun()
+    if st.button("🗑️ 清空資料", type="primary", use_container_width=True):
+        st.session_state.stock_data = pd.DataFrame()
+        st.session_state.ignored_stocks = set()
+        if os.path.exists(DATA_CACHE_FILE):
+            os.remove(DATA_CACHE_FILE)
+        st.toast("資料已全部清空", icon="🗑️")
+        st.rerun()
     
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選並按 `Delete`，該股票將被隱藏。")
@@ -220,7 +216,6 @@ def get_stock_name_online(code):
     except:
         return code
 
-# [修復] 補回 search_code_online 函數
 @st.cache_data(ttl=86400)
 def search_code_online(query):
     query = query.strip()
@@ -297,18 +292,23 @@ def move_tick(price, steps):
     except:
         return price
 
+# [修改] 欄位寬度計算優化：更緊湊
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
         for c in str(s):
+            # 簡單加權：中文 2，其他 1
             w += 2.0 if ord(c) > 127 else 1.0
         return w
     
-    if series.empty: return 200
+    if series.empty: return 100
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 10
-    pixel_width = int(max_w * (font_size * 0.6)) + 40
-    return max(200, min(pixel_width, 1600))
+    
+    # 減少加成係數，讓寬度更貼合
+    pixel_width = int(max_w * (font_size * 0.55)) + 20
+    # 移除過大的最小寬度限制
+    return max(100, min(pixel_width, 1000))
 
 def recalculate_row(row):
     custom_price = row.get('自訂價(可修)')
@@ -576,6 +576,7 @@ with tab1:
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
             
+            # [修改] 這裡的隱藏邏輯是針對「是否抓取」，顯示層的邏輯在下面
             if hide_non_stock:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
@@ -599,15 +600,19 @@ with tab1:
 
     if not st.session_state.stock_data.empty:
         limit = st.session_state.limit_rows
-        df_all = st.session_state.stock_data
+        df_all = st.session_state.stock_data.copy()
         
         rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
         df_all = df_all.rename(columns=rename_map)
         
+        # 確保代號是字串，避免錯誤
+        df_all['代號'] = df_all['代號'].astype(str)
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
         
+        # [修改] 修復隱藏非個股功能 (強制轉換字串後再篩選)
         if hide_non_stock:
              mask_etf = df_all['代號'].str.startswith('00')
+             # 確保判斷長度前是字串型態
              mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
              df_all = df_all[~(mask_etf | mask_warrant)]
         
@@ -618,6 +623,7 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
+        # [修改] 使用優化後的寬度計算
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
         input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "_points"]
@@ -657,52 +663,27 @@ with tab1:
                 st.rerun()
         
         updated_rows = []
-        need_rerun = False
+        # [修改] 移除 need_rerun 標記，改為靜默更新
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row)
             if new_status != row['狀態']:
                 row['狀態'] = new_status
-                need_rerun = True
             updated_rows.append(row)
             
-        if need_rerun:
+        # [修改] 只更新 Session State 但不強制 Rerun，避免輸入焦點跳掉
+        if updated_rows:
             df_updated = pd.DataFrame(updated_rows)
             update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態']].to_dict('index')
+            
+            # 這裡更新原始資料，確保下次操作時狀態會顯示出來
             for i, r in st.session_state.stock_data.iterrows():
                 code = r['代號']
                 if code in update_map:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
-            st.rerun()
+            # 注意：這裡刻意移除了 st.rerun()
 
-        mask = final_df_for_res = pd.DataFrame(updated_rows)
-        mask_valid = mask['自訂價(可修)'].notna() & (mask['自訂價(可修)'] != "")
-        
-        if mask_valid.any():
-            st.markdown("### 🎯 計算結果 (命中亮色提示)")
-            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "+3%", "-3%", "狀態"]
-            res_df = pd.DataFrame(updated_rows)[mask_valid]
-            
-            res_note_width = calculate_note_width(res_df['戰略備註'], current_font_size)
-            
-            def highlight_hit_row(row):
-                s = str(row['狀態'])
-                if "漲停" in s: return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row)
-                elif "跌停" in s: return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row)
-                elif "命中" in s: return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
-                return [''] * len(row)
-
-            st.dataframe(
-                res_df[display_cols].style.apply(highlight_hit_row, axis=1),
-                use_container_width=False,
-                hide_index=True, 
-                column_config={
-                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
-                    "+3%": st.column_config.NumberColumn(format="%.2f", width="small"),
-                    "-3%": st.column_config.NumberColumn(format="%.2f", width="small"),
-                    "戰略備註": st.column_config.TextColumn(width=res_note_width, disabled=True)
-                }
-            )
+        # [修改] 移除了底部的「計算結果」表格，因為已經合併顯示在上方表格的「狀態」欄位中
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
