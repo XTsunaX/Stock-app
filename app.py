@@ -331,6 +331,34 @@ def recalculate_row(row):
     except:
         return status
 
+# ==========================================
+# 請替換 app.py 中對應的函數
+# ==========================================
+
+def calculate_limits(price):
+    """計算漲跌停價 (10%)"""
+    try:
+        p = float(price)
+        if math.isnan(p) or p <= 0: return 0, 0
+        
+        # 台股一般漲跌幅 10%
+        # 需注意：部分ETF或處置股可能不同，此處以標準 10% 計算
+        raw_up = p * 1.10
+        limit_up = apply_tick_rules(raw_up) # 直接使用 tick 規則計算最接近的檔位
+        
+        # 為了確保不超過 10%，通常漲停是無條件捨去到檔位，跌停是無條件進位
+        # 但 apply_tick_rules 是四雪五入。這裡我們用嚴格邏輯：
+        tick_up = get_tick_size(raw_up)
+        limit_up = math.floor(raw_up / tick_up) * tick_up
+        
+        raw_down = p * 0.90
+        tick_down = get_tick_size(raw_down)
+        limit_down = math.ceil(raw_down / tick_down) * tick_down
+        
+        return float(f"{limit_up:.2f}"), float(f"{limit_down:.2f}")
+    except:
+        return 0, 0
+
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
@@ -344,153 +372,166 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
-        last_date = hist.index[-1].date()
-        is_today_data = (last_date == now.date())
-        is_during_trading = (now.time() < dt_time(13, 45))
         
-        # 盤中不更新
-        if is_today_data and is_during_trading and len(hist) > 1:
-            hist = hist.iloc[:-1]
-        
+        # 取得最後一筆資料 (視為當日收盤資料)
+        # 若是盤中執行，需注意 yfinance 可能會包含當下未收盤的資料
+        # 但依據你的需求「以盤後收盤價為準」，我們直接取 hist 的最後一筆
         today = hist.iloc[-1]
-        current_price = today['Close']
+        current_price = float(today['Close']) # 這就是基準收盤價
         
         if len(hist) >= 2: prev_day = hist.iloc[-2]
         else: prev_day = today
         
-        if pd.isna(current_price) or pd.isna(prev_day['Close']): return None
+        if pd.isna(current_price): return None
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # --- 計算指標 ---
-        
-        # 1. 5MA 計算 (以收盤價為準)
+        # --- 1. 5MA 計算與標籤 (規則：必顯，依照與收盤價關係標示多空) ---
         ma5_raw = hist['Close'].tail(5).mean()
         ma5_val = apply_tick_rules(ma5_raw)
         
-        if ma5_val > current_price: ma5_tag = "空"
-        elif ma5_val < current_price: ma5_tag = "多"
-        else: ma5_tag = "平"
+        ma5_suffix = ""
+        if ma5_val > current_price: ma5_suffix = "空"
+        elif ma5_val < current_price: ma5_suffix = "多"
+        else: ma5_suffix = "平"
 
-        # 2. 漲跌停價 (以當日收盤價計算明日)
-        limit_up_col, limit_down_col = calculate_limits(current_price)
-        limit_up_today, limit_down_today = calculate_limits(prev_day['Close']) # 用於顯示，但在戰略備註中使用明日預測值
+        # --- 2. 漲跌停價 (以當日收盤價計算明日) ---
+        limit_up, limit_down = calculate_limits(current_price)
 
-        # 3. 近期高低點
+        # --- 3. 近期高低點 (3個月內) ---
         recent_high = apply_tick_rules(hist['High'].max())
         recent_low = apply_tick_rules(hist['Low'].min())
         
-        # 4. +/- 3% 目標
+        # --- 4. +/- 3% 目標 ---
         target_3pct_up = apply_tick_rules(current_price * 1.03)
         target_3pct_down = apply_tick_rules(current_price * 0.97)
 
-        # 5. 戰略備註點位收集
+        # --- 5. 點位收集與邏輯過濾 ---
+        # 格式: {"val": 數值, "prefix": 前綴字串, "suffix": 後綴字串, "priority": 權重}
         candidates = []
         
         # [A] 5MA (強制顯示)
-        candidates.append({"val": ma5_val, "tag": ma5_tag})
+        candidates.append({"val": ma5_val, "prefix": "", "suffix": ma5_suffix, "prio": 2})
 
-        # [B] 基礎點位
-        candidates.append({"val": apply_tick_rules(today['Open']), "tag": ""}) # 當日開盤
-        candidates.append({"val": apply_tick_rules(today['High']), "tag": ""}) # 當日高點
-        candidates.append({"val": apply_tick_rules(today['Low']), "tag": ""})  # 當日低點
-        candidates.append({"val": apply_tick_rules(prev_day['High']), "tag": ""}) # 昨日高點
-        candidates.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})  # 昨日低點
+        # [B] 基礎點位 (無標籤，僅顯示數值)
+        candidates.append({"val": apply_tick_rules(today['Open']), "prefix": "", "suffix": "", "prio": 1})
+        candidates.append({"val": apply_tick_rules(today['High']), "prefix": "", "suffix": "", "prio": 1})
+        candidates.append({"val": apply_tick_rules(today['Low']), "prefix": "", "suffix": "", "prio": 1})
+        candidates.append({"val": apply_tick_rules(prev_day['High']), "prefix": "", "suffix": "", "prio": 1})
+        candidates.append({"val": apply_tick_rules(prev_day['Low']), "prefix": "", "suffix": "", "prio": 1})
         
         # [C] 5日內低點(不含當日)
         if len(hist) >= 6:
             low_5d = hist['Low'].iloc[-6:-1].min()
-            candidates.append({"val": apply_tick_rules(low_5d), "tag": ""})
-            
-        # [D] 漲跌停與近期高低點 (邏輯合併)
-        # 漲停
-        tag_up = "漲停"
-        if abs(limit_up_col - recent_high) < 0.001: tag_up = "漲停高"
-        candidates.append({"val": limit_up_col, "tag": tag_up})
+            candidates.append({"val": apply_tick_rules(low_5d), "prefix": "", "suffix": "", "prio": 1})
+
+        # [D] 漲跌停 與 近期高低點 (邏輯複雜區)
         
-        # 跌停
-        tag_down = "跌停"
-        if abs(limit_down_col - recent_low) < 0.001: tag_down = "跌停低"
-        candidates.append({"val": limit_down_col, "tag": tag_down})
+        # 標籤邏輯變數
+        show_limit_up = (limit_up > 0)
+        show_limit_down = (limit_down > 0)
         
-        # 近期高/低 (若未與漲跌停重疊則顯示)
-        if abs(limit_up_col - recent_high) >= 0.001:
-            candidates.append({"val": recent_high, "tag": "高"})
-        if abs(limit_down_col - recent_low) >= 0.001:
-            candidates.append({"val": recent_low, "tag": "低"})
+        tag_limit_up = "漲停"
+        tag_limit_down = "跌停"
+
+        # 檢查重疊：若 漲停價 == 近期高點 -> 標示「漲停高」
+        if show_limit_up and abs(limit_up - recent_high) < 0.001:
+            tag_limit_up = "漲停高"
+        
+        # 檢查重疊：若 跌停價 == 近期低點 -> 標示「跌停低」
+        if show_limit_down and abs(limit_down - recent_low) < 0.001:
+            tag_limit_down = "跌停低"
+
+        # 加入漲跌停 (若有)
+        if show_limit_up:
+            candidates.append({"val": limit_up, "prefix": tag_limit_up, "suffix": "", "prio": 4})
+        if show_limit_down:
+            candidates.append({"val": limit_down, "prefix": tag_limit_down, "suffix": "", "prio": 4})
             
-        # [E] +/- 3% (若近期高點小於+3%則顯示，近期低點大於-3%則顯示)
+        # 加入近期高低點 (規則：若明日無法達到則不顯示 -> 即高點 > 漲停 或 低點 < 跌停 則不顯示)
+        # 且若已與漲跌停重疊(上面的邏輯已處理標籤變更)，這裡就不重複加入了，除非數值不同
+        
+        # 近期高
+        if abs(recent_high - limit_up) >= 0.001: # 不重疊才處理，重疊的已經在上面變成「漲停高」了
+            # 判斷可達性：近期高點必須 <= 明日漲停價
+            if show_limit_up and recent_high <= limit_up:
+                 candidates.append({"val": recent_high, "prefix": "高", "suffix": "", "prio": 3})
+            elif not show_limit_up: # 若無漲跌停限制(罕見)，則顯示
+                 candidates.append({"val": recent_high, "prefix": "高", "suffix": "", "prio": 3})
+
+        # 近期低
+        if abs(recent_low - limit_down) >= 0.001: # 不重疊
+            # 判斷可達性：近期低點必須 >= 明日跌停價
+            if show_limit_down and recent_low >= limit_down:
+                 candidates.append({"val": recent_low, "prefix": "低", "suffix": "", "prio": 3})
+            elif not show_limit_down:
+                 candidates.append({"val": recent_low, "prefix": "低", "suffix": "", "prio": 3})
+
+        # [E] +/- 3% (規則：若近期高點小於+3%則顯示...)
+        # 這裡的 "小於" 意味著 +3% 目標價比近期高點還高 (更有肉)，所以顯示 +3%
         if recent_high < target_3pct_up:
-            candidates.append({"val": target_3pct_up, "tag": ""}) # 僅顯示數值
+            candidates.append({"val": target_3pct_up, "prefix": "", "suffix": "", "prio": 1}) 
+        
         if recent_low > target_3pct_down:
-            candidates.append({"val": target_3pct_down, "tag": ""})
+            candidates.append({"val": target_3pct_down, "prefix": "", "suffix": "", "prio": 1})
 
         # --- 排序與去重組裝 ---
+        # 策略：相同價位的點，合併其標籤
+        # 例如：5MA(100)多 與 開盤(100) 重疊 -> 顯示 "100多"
+        # 例如：漲停(110) 與 5MA(110)多 重疊 -> 顯示 "漲停110多"
+        
         candidates.sort(key=lambda x: x['val'])
         
-        final_points = []
-        seen_vals = {} # val -> tag
+        merged_points = {}
         
-        # 去重邏輯：優先保留有意義的 Tag
-        # 優先級：漲跌停 > 高低 > MA > 空白
-        def get_tag_priority(t):
-            if "漲停" in t or "跌停" in t: return 4
-            if "高" in t or "低" in t: return 3
-            if t in ["多", "空", "平"]: return 2
-            return 1
-            
-        temp_dict = {}
         for item in candidates:
             v = item['val']
-            t = item['tag']
-            
-            if v not in temp_dict:
-                temp_dict[v] = t
+            if v not in merged_points:
+                merged_points[v] = item
             else:
-                current_prio = get_tag_priority(temp_dict[v])
-                new_prio = get_tag_priority(t)
-                if new_prio > current_prio:
-                    temp_dict[v] = t
-                # 特殊：若既是 MA 又是其他關鍵位，且用戶要求 5MA 必顯
-                # 我們可以考慮合併，但為了簡潔，若 MA 與漲停重疊，顯示漲停比較重要
-                # 但用戶說 "5MA皆需顯示"。若 5MA=漲停，顯示 "漲停100" 可能會漏掉多空資訊
-                # 這裡做一個微調：若 MA 點位存在，且 Tag 被覆蓋，我們還是保留原 Tag，但後綴加註? 
-                # 鑑於範例簡潔性，這裡維持高優先級覆蓋。但 MA 比較特殊，
-                # 若數值等於 MA，我們還是希望看到多空。
-                # 不過通常 MA 會帶小數點，漲停是 Tick 整數，重疊機率低。
+                # 合併邏輯
+                existing = merged_points[v]
+                
+                # 1. 前綴合併 (取優先級高者，通常是 漲停/高/低)
+                new_prefix = item['prefix'] if item['prefix'] else existing['prefix']
+                if item['prio'] > existing['prio'] and item['prefix']:
+                    new_prefix = item['prefix']
+                
+                # 2. 後綴合併 (通常只有 5MA 有後綴，保留它)
+                new_suffix = item['suffix'] if item['suffix'] else existing['suffix']
+                
+                merged_points[v]['prefix'] = new_prefix
+                merged_points[v]['suffix'] = new_suffix
+                merged_points[v]['prio'] = max(existing['prio'], item['prio'])
         
         # 轉回 List 並排序
-        final_list = [{"val": k, "tag": v} for k, v in temp_dict.items()]
+        final_list = list(merged_points.values())
         final_list.sort(key=lambda x: x['val'])
         
-        # 格式化輸出
+        # 格式化輸出字串
         note_parts = []
         for p in final_list:
             v_str = f"{p['val']:.0f}" if p['val'].is_integer() else f"{p['val']:.2f}"
-            t = p['tag']
             
-            # 格式規則：
-            # 多/空/平 -> 放在數值後面 (例如 68.2空)
-            # 漲停/跌停/高/低 -> 放在數值前面 (例如 漲停139.5)
-            if t in ["多", "空", "平"]:
-                item_str = f"{v_str}{t}"
-            elif t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]:
-                item_str = f"{t}{v_str}"
-            else:
-                item_str = v_str
+            # 組合：前綴 + 數值 + 後綴
+            # 例如: "漲停" + "139.5" + "" -> 漲停139.5
+            # 例如: "" + "68.2" + "空" -> 68.2空
+            item_str = f"{p['prefix']}{v_str}{p['suffix']}"
             note_parts.append(item_str)
         
         strategy_note = "-".join(note_parts)
         
-        # 獲利/停損 (收盤價基準)
-        target_price = apply_tick_rules(current_price * 1.03)
-        stop_price = apply_tick_rules(current_price * 0.97)
+        # 獲利/停損 (顯示用)
+        target_price = target_3pct_up
+        stop_price = target_3pct_down
 
         final_name = name_hint if name_hint else get_stock_name_online(code)
         
+        # 燈號邏輯：如果備註裡面有"多"就紅燈，有"空"就綠燈
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
+        
         final_name_display = f"{light} {final_name}"
         
         return {
@@ -498,8 +539,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "名稱": final_name_display, 
             "收盤價": round(current_price, 2),
             "漲跌幅": pct_change, 
-            "當日漲停價": limit_up_col,   
-            "當日跌停價": limit_down_col,
+            "當日漲停價": limit_up,   
+            "當日跌停價": limit_down,
             "自訂價(可修)": None, 
             "獲利目標": target_price, 
             "防守停損": stop_price,   
@@ -507,7 +548,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "_points": final_list, # 用於命中計算
             "狀態": ""
         }
-    except: return None
+    except Exception as e:
+        # print(f"Error fetching {code}: {e}") # Debug use
+        return None
 
 # ==========================================
 # 主介面 (Tabs)
