@@ -308,53 +308,6 @@ def calculate_note_width(series, font_size):
     pixel_width = int(max_w * (font_size * 0.65))
     return max(200, min(pixel_width, 1500))
 
-# [新增] 計算單行狀態與數值的函數 (用於即時更新)
-def recalculate_row(row):
-    """接收一個 row (Series)，回傳更新後的 獲利, 停損, 狀態"""
-    custom_price = row.get('自訂價(可修)')
-    
-    # 預設回傳空值
-    res = {
-        "獲利目標": None,
-        "防守停損": None,
-        "狀態": ""
-    }
-    
-    if pd.isna(custom_price) or custom_price == "":
-        return res
-        
-    try:
-        price = float(custom_price)
-        points = row.get('_points', [])
-        limit_up = row.get('當日漲停價')
-        limit_down = row.get('當日跌停價')
-        
-        # 1. 計算獲利/停損
-        res["獲利目標"] = apply_tick_rules(price * 1.03)
-        res["防守停損"] = apply_tick_rules(price * 0.97)
-        
-        # 2. 判斷狀態
-        hit_status = ""
-        
-        # 優先檢查漲跌停
-        if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
-            hit_status = "🔴 漲停"
-        elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
-            hit_status = "🟢 跌停"
-        else:
-            # 檢查戰略點位
-            if isinstance(points, list):
-                for p in points:
-                    if abs(p['val'] - price) < 0.01:
-                        hit_status = "🟡 命中"
-                        break
-        
-        res["狀態"] = hit_status
-        return res
-        
-    except:
-        return res
-
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
@@ -385,7 +338,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
+        # 1. 獲利目標/防守停損：基於「收盤價」計算的固定值
+        target_price = apply_tick_rules(current_price * 1.03)
+        stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
+
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
@@ -474,9 +431,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        full_calc_points = final_display_points
-        final_name = name_hint if name_hint else get_stock_name_online(code)
         
+        # _points 只包含顯示的點位，用於亮燈比對
+        full_calc_points = final_display_points
+        
+        final_name = name_hint if name_hint else get_stock_name_online(code)
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
@@ -490,9 +449,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "當日漲停價": limit_up_col,   
             "當日跌停價": limit_down_col,
             "自訂價(可修)": None, 
-            "獲利目標": None, # 預設空，待輸入後計算
-            "防守停損": None, 
-            "狀態": "", # 新增狀態欄位
+            "獲利目標": target_price, 
+            "防守停損": stop_price,   
             "戰略備註": strategy_note,
             "_points": full_calc_points
         }
@@ -570,17 +528,21 @@ with tab1:
                     if code: targets.append((code, inp, 'search', {}))
                     else: st.toast(f"找不到「{inp}」", icon="⚠️")
 
+        results = []
+        seen = set()
+        bar = st.progress(0)
+        total = len(targets)
+        
         existing_data = {}
         if not st.session_state.stock_data.empty:
             for idx, row in st.session_state.stock_data.iterrows():
                 existing_data[row['代號']] = row.to_dict()
 
         fetch_cache = {}
-        bar = st.progress(0)
-        total = len(targets)
-
         for i, (code, name, source, extra) in enumerate(targets):
             if code in st.session_state.ignored_stocks: continue
+            if (code, source) in seen: continue
+            
             if hide_non_stock:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
@@ -593,6 +555,7 @@ with tab1:
             if data:
                 data['_source'] = source
                 existing_data[code] = data
+                seen.add((code, source))
                 
             if total > 0: bar.progress((i+1)/total)
         bar.empty()
@@ -622,14 +585,12 @@ with tab1:
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
-        # 計算備註寬度 (動態)
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
-        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "_points"]
+        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "_points"]
         for col in input_cols:
             if col not in df_display.columns and col != "_points": df_display[col] = None
 
-        # 顯示編輯表格
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -642,7 +603,6 @@ with tab1:
                 "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True, width="small"),
                 "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True, width="small"),
-                "狀態": st.column_config.TextColumn(width="small", disabled=True),
                 "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
                 "_points": None 
             },
@@ -652,7 +612,6 @@ with tab1:
             key="main_editor"
         )
         
-        # 刪除偵測
         if len(edited_df) < len(df_display):
             original = set(df_display['代號']); new = set(edited_df['代號'])
             removed = original - new
@@ -661,85 +620,56 @@ with tab1:
                 save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
                 st.rerun()
         
-        # 檢查是否有變動 (輸入自訂價)
-        # 若輸入自訂價，需更新 獲利、停損、狀態
-        has_changes = False
-        
-        # 遍歷 edited_df 進行計算
-        # 這裡我們比較 edited_df 與 df_display 的自訂價欄位
-        # 但因為 data_editor 已經返回了修改後的值，我們直接計算並更新顯示用的 df_display (或 session_state)
-        # 注意：直接修改 edited_df 並不會反應到 UI，必須寫回 session_state 並 rerun
-        
-        # 為了效能，我們只在檢測到變更時寫回 session state
-        # 但因為 data_editor 的機制，每次修改都會 rerun，所以這裡直接計算即可
-        
-        updated_rows = []
+        results_hit = []
         for idx, row in edited_df.iterrows():
-            # 計算每一行的數值
-            res = recalculate_row(row)
+            custom_price = row['自訂價(可修)']
+            hit_type = 'none'
+            if not (pd.isna(custom_price) or custom_price == ""):
+                try:
+                    price = float(custom_price)
+                    points = row['_points']
+                    if isinstance(points, list):
+                        for p in points:
+                            if abs(p['val'] - price) < 0.01:
+                                if "漲停" in p['tag']: hit_type = 'up'
+                                elif "跌停" in p['tag']: hit_type = 'down'
+                                else: hit_type = 'normal'
+                                break
+                except: pass
+            results_hit.append({"_hit_type": hit_type})
+        
+        res_df_calced = pd.DataFrame(results_hit, index=edited_df.index)
+        final_df = pd.concat([edited_df, res_df_calced], axis=1)
+
+        st.markdown("### 🎯 計算結果 (命中亮色提示)")
+        
+        mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
+        
+        if mask.any():
+            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "獲利目標", "防守停損", "_hit_type"]
+            display_df = final_df[mask][display_cols]
             
-            # 更新 row 的值
-            row['獲利目標'] = res['獲利目標']
-            row['防守停損'] = res['防守停損']
-            row['狀態'] = res['狀態']
-            updated_rows.append(row)
-            
-            # 檢查是否真的有更新 (與原始 session state 比較) - 這裡簡化，直接全量更新
-            
-        # 將計算結果更新回 session_state.stock_data
-        # 這一步很重要，否則下次 rerun 資料會不見
-        # 這裡稍微複雜，因為 df_display 可能是子集
-        # 我們只更新有顯示的這幾筆
-        
-        df_updated = pd.DataFrame(updated_rows)
-        
-        # 將更新後的資料合併回 session_state
-        # 使用代號作為 key 來更新
-        if not df_updated.empty:
-            # 建立代號對映表
-            update_map = df_updated.set_index('代號')[['自訂價(可修)', '獲利目標', '防守停損', '狀態']].to_dict('index')
-            
-            for i, r in st.session_state.stock_data.iterrows():
-                code = r['代號']
-                if code in update_map:
-                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
-                    st.session_state.stock_data.at[i, '獲利目標'] = update_map[code]['獲利目標']
-                    st.session_state.stock_data.at[i, '防守停損'] = update_map[code]['防守停損']
-                    st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
-        
-        # 這裡不手動 rerun，因為 data_editor 修改本身就會觸發 rerun
-        # 我們只需要確保計算結果被正確顯示在畫面上 (edited_df 已經包含計算結果了? 不，recalculate_row 是後算的)
-        # 為了讓本次畫面就顯示計算結果，我們需要再顯示一次嗎？
-        # 不，Streamlit 的 flow 是：
-        # 1. 顯示 table (舊值) -> 2. 用戶修改 -> 3. Rerun -> 4. 顯示 table (新值)
-        # 所以我們在第 4 步之前，要把計算結果算好塞給 table
-        # 上面的程式碼已經是第 4 步了，edited_df 是用戶輸入的值，但尚未經過 recalculate_row 的填充
-        # 修正邏輯：我們應該把 df_updated 顯示出來，或者讓下一次 loop 顯示
-        
-        # 但為了即時性，我們其實可以用 st.experimental_rerun() (或 st.rerun)，但這樣會閃爍
-        # 更好的做法是：在 data_editor 之前就先處理好數據？不行，數據來自 data_editor
-        
-        # 妥協方案：因為已經將結果寫回 session_state，下一次互動會正常。
-        # 若要即時看到計算結果 (獲利/狀態)，我們可以在 data_editor 下方顯示，或者接受一次延遲。
-        # 但您希望合併成單一表格。
-        # 實際上，edited_df 已經拿到了用戶輸入的 Price。
-        # 我們計算完 res 後，如果是第一次輸入，畫面上的 "獲利目標" 欄位還是空的 (因為它是輸入框的一部分)。
-        # 除非我們用 st.rerun() 強制再刷一次。
-        
-        # 檢查是否有「輸入了價格但沒有狀態」的情況，若是則 rerun
-        need_rerun = False
-        for idx, row in df_updated.iterrows():
-            if pd.notna(row['自訂價(可修)']) and (pd.isna(row['狀態']) or row['狀態'] == ""):
-                # 這裡判斷邏輯可能不夠精確，簡單點：
-                # 比較 df_display (舊) 和 df_updated (新計算)
-                # 如果有計算出新東西，就存檔並 rerun
-                orig_status = df_display.loc[df_display['代號'] == row['代號'], '狀態'].values[0] if not df_display.empty else ""
-                if row['狀態'] != orig_status:
-                    need_rerun = True
-                    break
-        
-        if need_rerun:
-            st.rerun()
+            res_note_width = calculate_note_width(display_df['戰略備註'], current_font_size)
+
+            def highlight_hit_row(row):
+                t = row['_hit_type']
+                if t == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row)
+                elif t == 'down': return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row)
+                elif t == 'normal': return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
+                return [''] * len(row)
+
+            st.dataframe(
+                display_df.style.apply(highlight_hit_row, axis=1),
+                use_container_width=False,
+                hide_index=True, 
+                column_config={
+                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
+                    "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", width="small"),
+                    "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", width="small"),
+                    "戰略備註": st.column_config.TextColumn(width=res_note_width, disabled=True),
+                    "_hit_type": None 
+                }
+            )
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
@@ -783,6 +713,7 @@ with tab2:
     for i in ticks_range:
         p = move_tick(view_p, i)
         if p > limit_up or p < limit_down: continue
+        
         if is_long:
             buy_price = base_p; sell_price = p
             buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
@@ -801,6 +732,7 @@ with tab2:
             cost = (buy_price * shares) + buy_fee
             profit = income - cost
             total_fee = buy_fee + sell_fee
+            
         roi = 0
         if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
         diff = p - base_p
