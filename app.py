@@ -101,7 +101,7 @@ with st.sidebar:
     current_font_size = st.slider(
         "字體大小 (表格)", 
         min_value=12, 
-        max_value=72, 
+        max_value=40, 
         key='font_size'
     )
     
@@ -145,14 +145,14 @@ with st.sidebar:
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選並按 `Delete`，該股票將被隱藏。")
 
-# --- 動態 CSS ---
-font_px = f"{st.session_state.font_size}px"
+# --- 動態 CSS (修正字體大小無效問題) ---
 zoom_level = current_font_size / 14.0
 
 st.markdown(f"""
     <style>
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
     
+    /* 針對 Dataframe 容器使用 zoom 進行縮放 */
     div[data-testid="stDataFrame"] {{
         width: 100%;
         zoom: {zoom_level};
@@ -172,6 +172,7 @@ st.markdown(f"""
         font-size: 1.2em;
     }}
     
+    /* 隱藏索引列 */
     thead tr th:first-child {{ display:none }}
     tbody th {{ display:none }}
     </style>
@@ -244,10 +245,8 @@ def search_code_online(query):
 # ==========================================
 
 def get_tick_size(price):
-    try:
-        price = float(price)
-    except:
-        return 0.01
+    try: price = float(price)
+    except: return 0.01
     if pd.isna(price) or price <= 0: return 0.01
     if price < 10: return 0.01
     if price < 50: return 0.05
@@ -277,8 +276,7 @@ def apply_tick_rules(price):
         tick = get_tick_size(p)
         rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
         return float(rounded)
-    except:
-        return price
+    except: return price
 
 def move_tick(price, steps):
     try:
@@ -292,21 +290,49 @@ def move_tick(price, steps):
                 tick = get_tick_size(curr - 0.0001)
                 curr = round(curr - tick, 2)
         return curr
-    except:
-        return price
+    except: return price
 
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
-        for c in str(s):
-            w += 2 if ord(c) > 127 else 1
+        for c in str(s): w += 2 if ord(c) > 127 else 1
         return w
-    
     if series.empty: return 200
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 10
     pixel_width = int(max_w * (font_size * 0.65))
     return max(200, min(pixel_width, 1500))
+
+# [新增] 單行計算邏輯
+def recalculate_row(row):
+    custom_price = row.get('自訂價(可修)')
+    
+    # 預設狀態
+    status = ""
+    
+    if pd.isna(custom_price) or custom_price == "":
+        return status
+        
+    try:
+        price = float(custom_price)
+        points = row.get('_points', [])
+        limit_up = row.get('當日漲停價')
+        limit_down = row.get('當日跌停價')
+        
+        # 狀態判斷
+        if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
+            status = "🔴 漲停"
+        elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
+            status = "🟢 跌停"
+        else:
+            if isinstance(points, list):
+                for p in points:
+                    if abs(p['val'] - price) < 0.01:
+                        status = "🟡 命中"
+                        break
+        return status
+    except:
+        return status
 
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
@@ -316,8 +342,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
-        if hist.empty: 
-            return None
+        if hist.empty: return None
 
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
@@ -338,11 +363,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 1. 獲利目標/防守停損：基於「收盤價」計算的固定值
+        # 1. 獲利目標/停損 (收盤價基準)
         target_price = apply_tick_rules(current_price * 1.03)
         stop_price = apply_tick_rules(current_price * 0.97)
         limit_up_col, limit_down_col = calculate_limits(current_price) 
 
+        # 2. 戰略備註 (昨日收盤基準)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
@@ -431,11 +457,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        
-        # _points 只包含顯示的點位，用於亮燈比對
         full_calc_points = final_display_points
         
         final_name = name_hint if name_hint else get_stock_name_online(code)
+        
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
@@ -452,7 +477,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "獲利目標": target_price, 
             "防守停損": stop_price,   
             "戰略備註": strategy_note,
-            "_points": full_calc_points
+            "_points": full_calc_points,
+            "狀態": "" # 初始化
         }
     except: return None
 
@@ -587,7 +613,10 @@ with tab1:
         
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
 
-        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "_points"]
+        input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "_points"]
+        # 重新命名 獲利/停損 欄位以符合顯示
+        df_display = df_display.rename(columns={"獲利目標": "+3%", "防守停損": "-3%"})
+
         for col in input_cols:
             if col not in df_display.columns and col != "_points": df_display[col] = None
 
@@ -601,8 +630,9 @@ with tab1:
                 "自訂價(可修)": st.column_config.NumberColumn("自訂價 ✏️", format="%.2f", step=0.01, width="small"),
                 "當日漲停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
                 "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", disabled=True, width="small"),
-                "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", disabled=True, width="small"),
+                "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                "狀態": st.column_config.TextColumn(width="small", disabled=True),
                 "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
                 "_points": None 
             },
@@ -620,56 +650,29 @@ with tab1:
                 save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
                 st.rerun()
         
-        results_hit = []
+        # 狀態計算與更新
+        updated_rows = []
+        need_rerun = False
+        
         for idx, row in edited_df.iterrows():
-            custom_price = row['自訂價(可修)']
-            hit_type = 'none'
-            if not (pd.isna(custom_price) or custom_price == ""):
-                try:
-                    price = float(custom_price)
-                    points = row['_points']
-                    if isinstance(points, list):
-                        for p in points:
-                            if abs(p['val'] - price) < 0.01:
-                                if "漲停" in p['tag']: hit_type = 'up'
-                                elif "跌停" in p['tag']: hit_type = 'down'
-                                else: hit_type = 'normal'
-                                break
-                except: pass
-            results_hit.append({"_hit_type": hit_type})
-        
-        res_df_calced = pd.DataFrame(results_hit, index=edited_df.index)
-        final_df = pd.concat([edited_df, res_df_calced], axis=1)
-
-        st.markdown("### 🎯 計算結果 (命中亮色提示)")
-        
-        mask = final_df['自訂價(可修)'].notna() & (final_df['自訂價(可修)'] != "")
-        
-        if mask.any():
-            display_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "獲利目標", "防守停損", "_hit_type"]
-            display_df = final_df[mask][display_cols]
+            new_status = recalculate_row(row)
+            if new_status != row['狀態']:
+                row['狀態'] = new_status
+                need_rerun = True
+            updated_rows.append(row)
             
-            res_note_width = calculate_note_width(display_df['戰略備註'], current_font_size)
-
-            def highlight_hit_row(row):
-                t = row['_hit_type']
-                if t == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold;'] * len(row)
-                elif t == 'down': return ['background-color: #00cc00; color: white; font-weight: bold;'] * len(row)
-                elif t == 'normal': return ['background-color: #fff9c4; color: black; font-weight: bold;'] * len(row)
-                return [''] * len(row)
-
-            st.dataframe(
-                display_df.style.apply(highlight_hit_row, axis=1),
-                use_container_width=False,
-                hide_index=True, 
-                column_config={
-                    "自訂價(可修)": st.column_config.NumberColumn("自訂價", format="%.2f", width="small"),
-                    "獲利目標": st.column_config.NumberColumn("+3%", format="%.2f", width="small"),
-                    "防守停損": st.column_config.NumberColumn("-3%", format="%.2f", width="small"),
-                    "戰略備註": st.column_config.TextColumn(width=res_note_width, disabled=True),
-                    "_hit_type": None 
-                }
-            )
+        if need_rerun:
+            # 更新 Session State
+            df_updated = pd.DataFrame(updated_rows)
+            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態']].to_dict('index')
+            
+            for i, r in st.session_state.stock_data.iterrows():
+                code = r['代號']
+                if code in update_map:
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                    st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
+            
+            st.rerun()
 
 # -------------------------------------------------------
 # Tab 2: 當沖損益試算
@@ -732,7 +735,6 @@ with tab2:
             cost = (buy_price * shares) + buy_fee
             profit = income - cost
             total_fee = buy_fee + sell_fee
-            
         roi = 0
         if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
         diff = p - base_p
