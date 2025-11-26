@@ -291,13 +291,7 @@ def move_tick(price, steps):
     except:
         return price
 
-# [修改] 支撐壓力計算邏輯 (與 5MA 相同)
 def apply_sr_rules(price, base_price):
-    """
-    支撐/壓力計算規則：
-    - 若價格 < 基準價 (下方/支撐)：無條件進位 (Ceil)，靠近收盤價
-    - 若價格 > 基準價 (上方/壓力)：無條件捨去 (Floor)，靠近收盤價
-    """
     try:
         p = float(price)
         if math.isnan(p): return 0.0
@@ -307,17 +301,15 @@ def apply_sr_rules(price, base_price):
         d_tick = Decimal(str(tick))
         
         if p < base_price:
-            # 在下方 -> 支撐 -> 進位 (往上靠近)
             return float(math.ceil(d_val / d_tick) * d_tick)
         elif p > base_price:
-            # 在上方 -> 壓力 -> 捨去 (往下靠近)
             return float(math.floor(d_val / d_tick) * d_tick)
         else:
             return apply_tick_rules(p)
     except:
         return price
 
-# [修改] 極致緊縮的寬度計算，移除所有空白
+# [修改] 極致緊縮計算，移除緩衝與空白
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -329,8 +321,8 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    # 緊縮係數調整為 0.5，並且不加額外 padding
-    pixel_width = int(max_w * (font_size * 0.5))
+    # 係數下調至 0.42，移除額外像素加成
+    pixel_width = int(max_w * (font_size * 0.42))
     return max(50, pixel_width)
 
 def recalculate_row(row):
@@ -390,7 +382,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # [修改] 目標 (+3%) 與 停損 (-3%) 改用新的支撐壓力規則
+        # [修改] 使用 apply_sr_rules 計算
         target_raw = current_price * 1.03
         stop_raw = current_price * 0.97
         target_price = apply_sr_rules(target_raw, current_price)
@@ -401,7 +393,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         points = []
         
-        # 1. 5MA (使用 apply_sr_rules)
+        # 1. 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
         
@@ -813,8 +805,8 @@ with tab2:
         if abs(p - limit_up) < 0.001: note_type = "up"
         elif abs(p - limit_down) < 0.001: note_type = "down"
         
-        # [修改] 標記基準價
-        is_base = (i == 0)
+        # [修改] 標記基準價 (比對價格是否等於基準價)
+        is_base = (abs(p - base_p) < 0.001)
         
         calc_data.append({
             "成交價": f"{p:.2f}", 
@@ -830,8 +822,8 @@ with tab2:
         
     df_calc = pd.DataFrame(calc_data)
     
-    # [修改] 表格樣式：增加基準價標示
     def style_calc_row(row):
+        # [修改] 基準價高亮樣式
         if row['_is_base']:
             return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
             
@@ -844,7 +836,7 @@ with tab2:
         else: return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修改] 動態計算表格高度：(行數 + header) * 行高 + padding
+        # [修改] 動態高度計算
         row_height = 35
         header_height = 40
         table_height = (len(df_calc) + 1) * row_height 
