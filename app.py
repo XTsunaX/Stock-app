@@ -309,7 +309,7 @@ def apply_sr_rules(price, base_price):
     except:
         return price
 
-# [新增] 通用價格格式化：去除多餘的 .00
+# 通用價格格式化：去除多餘的 .00
 def fmt_price(v):
     try:
         if pd.isna(v): return ""
@@ -317,6 +317,7 @@ def fmt_price(v):
     except:
         return str(v)
 
+# [修改] 係數從 0.43 調整為 0.44
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -328,6 +329,7 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
+    # 係數調整為 0.44
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
@@ -344,9 +346,9 @@ def recalculate_row(row):
         limit_up = row.get('當日漲停價')
         limit_down = row.get('當日跌停價')
         
-        if pd.notna(limit_up) and abs(price - limit_up) < 0.01:
+        if pd.notna(limit_up) and abs(price - float(limit_up)) < 0.01:
             status = "🔴 漲停"
-        elif pd.notna(limit_down) and abs(price - limit_down) < 0.01:
+        elif pd.notna(limit_down) and abs(price - float(limit_down)) < 0.01:
             status = "🟢 跌停"
         else:
             if isinstance(points, list):
@@ -493,7 +495,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             if p['val'] in seen_vals and p['tag'] == "": continue
             seen_vals.add(p['val'])
             
-            # [修改] 使用 fmt_price
             v_str = fmt_price(p['val'])
             t = p['tag']
             
@@ -535,7 +536,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 # 主介面 (Tabs)
 # ==========================================
 
-# [修改] 改名為 當沖損益室
 tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
 
 # -------------------------------------------------------
@@ -673,18 +673,25 @@ with tab1:
         for col in input_cols:
             if col not in df_display.columns and col != "_points": df_display[col] = None
 
+        # [修改] 應用精簡數字邏輯到 Tab 1 的表格
+        cols_to_fmt = ["收盤價", "當日漲停價", "當日跌停價", "+3%", "-3%"]
+        for c in cols_to_fmt:
+            if c in df_display.columns:
+                df_display[c] = df_display[c].apply(fmt_price)
+
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
                 "代號": st.column_config.TextColumn(disabled=True, width="small"),
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
-                "收盤價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                # [修改] 這些欄位改為 TextColumn 以顯示精簡後的格式 (100 而非 100.00)
+                "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
                 "自訂價(可修)": st.column_config.NumberColumn("自訂價 ✏️", format="%.2f", step=0.01, width=120),
-                "當日漲停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "當日跌停價": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "+3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
-                "-3%": st.column_config.NumberColumn(format="%.2f", disabled=True, width="small"),
+                "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
+                "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
+                "+3%": st.column_config.TextColumn(width="small", disabled=True),
+                "-3%": st.column_config.TextColumn(width="small", disabled=True),
                 "狀態": st.column_config.TextColumn(width=80, disabled=True),
                 "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
                 "_points": None 
@@ -744,10 +751,9 @@ with tab1:
                 st.rerun()
 
 # -------------------------------------------------------
-# Tab 2: 當沖損益室 (原：當沖損益試算)
+# Tab 2: 當沖損益室
 # -------------------------------------------------------
 with tab2:
-    # [修改] 標題改名
     st.markdown("#### 💰 當沖損益室 💰")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
@@ -809,7 +815,6 @@ with tab2:
         if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
         diff = p - base_p
         
-        # [修改] 漲跌顯示邏輯 (精簡)
         diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
         if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
         
@@ -820,7 +825,6 @@ with tab2:
         is_base = (abs(p - base_p) < 0.001)
         
         calc_data.append({
-            # [修改] 成交價顯示邏輯 (精簡)
             "成交價": fmt_price(p),
             "漲跌": diff_str, 
             "預估損益": int(profit), 
