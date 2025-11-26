@@ -309,6 +309,14 @@ def apply_sr_rules(price, base_price):
     except:
         return price
 
+# [新增] 通用價格格式化：去除多餘的 .00
+def fmt_price(v):
+    try:
+        if pd.isna(v): return ""
+        return f"{float(v):.2f}".rstrip('0').rstrip('.')
+    except:
+        return str(v)
+
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -449,10 +457,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             
         display_candidates.sort(key=lambda x: x['val'])
         
-        # [修改] 格式化函數：去除多餘的 .00
-        def fmt_v(v):
-            return f"{v:.2f}".rstrip('0').rstrip('.')
-
         final_display_points = []
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
@@ -489,7 +493,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             if p['val'] in seen_vals and p['tag'] == "": continue
             seen_vals.add(p['val'])
             
-            v_str = fmt_v(p['val'])
+            # [修改] 使用 fmt_price
+            v_str = fmt_price(p['val'])
             t = p['tag']
             
             if t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]: 
@@ -530,7 +535,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 # 主介面 (Tabs)
 # ==========================================
 
-tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益試算 💰"])
+# [修改] 改名為 當沖損益室
+tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
 
 # -------------------------------------------------------
 # Tab 1: 當沖戰略室
@@ -738,10 +744,11 @@ with tab1:
                 st.rerun()
 
 # -------------------------------------------------------
-# Tab 2: 當沖損益試算
+# Tab 2: 當沖損益室 (原：當沖損益試算)
 # -------------------------------------------------------
 with tab2:
-    st.markdown("#### 💰 當沖損益試算 💰")
+    # [修改] 標題改名
+    st.markdown("#### 💰 當沖損益室 💰")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         calc_price = st.number_input("基準價格", value=float(st.session_state.calc_base_price), step=0.01, format="%.2f", key="input_base_price")
@@ -801,7 +808,11 @@ with tab2:
         roi = 0
         if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
         diff = p - base_p
-        diff_str = f"{diff:+.2f}" if diff != 0 else "0.00"
+        
+        # [修改] 漲跌顯示邏輯 (精簡)
+        diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
+        if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
+        
         note_type = ""
         if abs(p - limit_up) < 0.001: note_type = "up"
         elif abs(p - limit_down) < 0.001: note_type = "down"
@@ -809,7 +820,8 @@ with tab2:
         is_base = (abs(p - base_p) < 0.001)
         
         calc_data.append({
-            "成交價": f"{p:.2f}", 
+            # [修改] 成交價顯示邏輯 (精簡)
+            "成交價": fmt_price(p),
             "漲跌": diff_str, 
             "預估損益": int(profit), 
             "報酬率%": f"{roi:+.2f}%", 
