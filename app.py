@@ -309,7 +309,7 @@ def apply_sr_rules(price, base_price):
     except:
         return price
 
-# [修改] 寬度係數從 0.42 調整為 0.43
+# [修改] 寬度係數從 0.42 調整為 0.45
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -321,8 +321,8 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    # 係數調整為 0.43
-    pixel_width = int(max_w * (font_size * 0.43))
+    # 係數調整為 0.45
+    pixel_width = int(max_w * (font_size * 0.45))
     return max(50, pixel_width)
 
 def recalculate_row(row):
