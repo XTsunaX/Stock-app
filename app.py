@@ -309,7 +309,7 @@ def apply_sr_rules(price, base_price):
     except:
         return price
 
-# [修改] 極致緊縮計算，移除緩衝與空白
+# [修改] 寬度係數從 0.42 調整為 0.43
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -321,8 +321,8 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    # 係數下調至 0.42，移除額外像素加成
-    pixel_width = int(max_w * (font_size * 0.42))
+    # 係數調整為 0.43
+    pixel_width = int(max_w * (font_size * 0.43))
     return max(50, pixel_width)
 
 def recalculate_row(row):
@@ -382,7 +382,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # [修改] 使用 apply_sr_rules 計算
         target_raw = current_price * 1.03
         stop_raw = current_price * 0.97
         target_price = apply_sr_rules(target_raw, current_price)
@@ -408,7 +407,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Open']), "tag": ""})
+        # [修改] 移除了昨日開盤價 prev_day['Open']，除非它等於高低點 (由下面兩行涵蓋)
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
@@ -805,7 +804,6 @@ with tab2:
         if abs(p - limit_up) < 0.001: note_type = "up"
         elif abs(p - limit_down) < 0.001: note_type = "down"
         
-        # [修改] 標記基準價 (比對價格是否等於基準價)
         is_base = (abs(p - base_p) < 0.001)
         
         calc_data.append({
@@ -823,7 +821,6 @@ with tab2:
     df_calc = pd.DataFrame(calc_data)
     
     def style_calc_row(row):
-        # [修改] 基準價高亮樣式
         if row['_is_base']:
             return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
             
@@ -836,7 +833,6 @@ with tab2:
         else: return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修改] 動態高度計算
         row_height = 35
         header_height = 40
         table_height = (len(df_calc) + 1) * row_height 
