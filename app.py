@@ -685,7 +685,7 @@ with tab1:
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
                 # [修改] 2. 自訂價改為 TextColumn 以支援彈性顯示
-                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=90),
+                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=120),
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
                 "+3%": st.column_config.TextColumn(width="small", disabled=True),
