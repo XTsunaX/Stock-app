@@ -327,7 +327,7 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    pixel_width = int(max_w * (font_size * 0.44))
+    pixel_width = int(max_w * (font_size * 0.435))
     return max(50, pixel_width)
 
 def recalculate_row(row):
