@@ -11,7 +11,6 @@ import json
 from datetime import datetime, time as dt_time
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
-import io
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -310,7 +309,6 @@ def apply_sr_rules(price, base_price):
     except:
         return price
 
-# 通用價格格式化：去除多餘的 .00
 def fmt_price(v):
     try:
         if pd.isna(v) or v == "": return ""
@@ -543,55 +541,39 @@ tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
 with tab1:
     col_search, col_file = st.columns([2, 1])
     with col_search:
-        search_query = st.text_input("🔍 快速查詢 (中文/代號)", placeholder="鴻海, 2603, 緯創")
-    with col_file:
-        # [新增] 雲端匯入功能
-        src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
+        # [修改] 1. 準備 Multiselect 資料
+        code_map, name_map = load_local_stock_names()
+        stock_options = [f"{code} {name}" for code, name in sorted(code_map.items())]
         
+        src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
         with src_tab1:
             uploaded_file = st.file_uploader("上傳檔案", type=['xlsx', 'csv'], label_visibility="collapsed")
-        
         with src_tab2:
             cloud_url = st.text_input("輸入連結 (CSV/Excel/Google Sheet)", placeholder="https://...")
             
-        selected_sheet = None
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    xl = None 
-                else:
-                    import importlib.util
-                    if importlib.util.find_spec("openpyxl") is None:
-                        xl = None
-                    else: xl = pd.ExcelFile(uploaded_file) 
-            except: xl = None
-
-            if xl:
-                default_idx = 0
-                if "週轉率" in xl.sheet_names: default_idx = xl.sheet_names.index("週轉率")
-                selected_sheet = st.selectbox("工作表", xl.sheet_names, index=default_idx)
+        # [修改] 2. 替換為 Multiselect
+        search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
 
     if st.button("🚀 執行分析", type="primary"):
         targets = []
         df_up = pd.DataFrame()
         
-        # [修改] 資料讀取邏輯：優先本機，其次雲端
         try:
             if uploaded_file:
                 uploaded_file.seek(0)
                 if uploaded_file.name.endswith('.csv'): df_up = pd.read_csv(uploaded_file, dtype=str)
                 else: 
-                    if 'xl' in locals() and xl: df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
+                    import importlib.util
+                    if importlib.util.find_spec("openpyxl") is None: xl = None
+                    else: xl = pd.ExcelFile(uploaded_file) 
+                    if xl: df_up = pd.read_excel(uploaded_file, sheet_name=0, dtype=str)
             elif cloud_url:
-                # 處理 Google Sheet 連結
                 if "docs.google.com" in cloud_url and "/spreadsheets/" in cloud_url and "/edit" in cloud_url:
                     cloud_url = cloud_url.split("/edit")[0] + "/export?format=csv"
-                
-                try:
-                    df_up = pd.read_csv(cloud_url, dtype=str)
+                try: df_up = pd.read_csv(cloud_url, dtype=str)
                 except:
                     try: df_up = pd.read_excel(cloud_url, dtype=str)
-                    except: st.error("❌ 無法讀取雲端檔案，請確認連結格式。")
+                    except: st.error("❌ 無法讀取雲端檔案。")
         except Exception as e: st.error(f"讀取失敗: {e}")
 
         if not df_up.empty:
@@ -602,25 +584,22 @@ with tab1:
                     c_raw = str(row[c_col]).split('.')[0].strip()
                     if not c_raw or c_raw.lower() == 'nan': continue
                     if len(c_raw) > 10 or any('\u4e00' <= char <= '\u9fff' for char in c_raw): continue
-                    
                     if c_raw.isdigit():
                         if len(c_raw) <= 3: c_raw = "00" + c_raw
                     elif len(c_raw) == 4 and c_raw[0].isdigit() and c_raw[-1].isalpha():
                         c_raw = "00" + c_raw
-
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
                     targets.append((c_raw, n, 'upload', {}))
 
-        if search_query:
-            inputs = [x.strip() for x in search_query.replace('，',',').split(',') if x.strip()]
-            for inp in inputs:
-                if inp.isdigit(): targets.append((inp, "", 'search', {}))
-                else:
-                    with st.spinner(f"搜尋「{inp}」..."):
-                        code = search_code_online(inp)
-                    if code: targets.append((code, inp, 'search', {}))
-                    else: st.toast(f"找不到「{inp}」", icon="⚠️")
+        # [修改] 3. 處理 Multiselect 的選擇結果
+        if search_selection:
+            for item in search_selection:
+                # item 格式為 "3163 波若威"
+                parts = item.split(' ', 1)
+                c_in = parts[0]
+                n_in = parts[1] if len(parts) > 1 else ""
+                targets.append((c_in, n_in, 'search', {}))
 
         results = []
         seen = set()
