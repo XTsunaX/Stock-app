@@ -681,7 +681,7 @@ with tab1:
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
-                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=120),
+                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60),
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
                 "+3%": st.column_config.TextColumn(width="small", disabled=True),
