@@ -418,29 +418,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
-        # 昨日開盤價 (條件顯示)
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-            
         # 昨日收盤價
         points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # [修改] 加回近5日高低 (不含今日)
-        # 取得今日之前的資料
-        if is_today_data:
-            hist_prior = hist.iloc[:-1]
-        else:
-            hist_prior = hist
-            
-        if len(hist_prior) >= 5:
-            past_5 = hist_prior.tail(5)
-            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
-            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
-        
-        # 3. 近期高低 (90日)
+        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -450,7 +431,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 觸及與突破
+        # 4. 判斷觸及
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -470,6 +451,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
+            # 篩選範圍
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
@@ -700,6 +682,7 @@ with tab1:
             if c in df_display.columns:
                 df_display[c] = df_display[c].apply(fmt_price)
 
+        # [修改] 戰略備註開放編輯 (disabled=False)
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -714,7 +697,7 @@ with tab1:
                 "+3%": st.column_config.TextColumn(width="small", disabled=True),
                 "-3%": st.column_config.TextColumn(width="small", disabled=True),
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
-                "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=True),
+                "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=False), # [重點] 開放編輯
                 "_points": None 
             },
             hide_index=True, 
@@ -735,6 +718,7 @@ with tab1:
         
         should_update = False
         if len(edited_df) > 0:
+            # 檢查自訂價變化
             last_idx = len(edited_df) - 1
             last_price = edited_df.iloc[last_idx]['自訂價(可修)']
             orig_last_price = df_display.iloc[last_idx]['自訂價(可修)']
@@ -746,27 +730,42 @@ with tab1:
                 
             if is_diff(last_price, orig_last_price):
                 should_update = True
+            
+            # 檢查戰略備註變化
+            # 由於我們無法輕易知道哪一行的備註變了 (st.data_editor 的回傳是整張表)，
+            # 且手動修改備註不需要觸發重新計算邏輯 (recalculate_row 只算自訂價狀態)，
+            # 所以這裡的 should_update 主要是為了下面的資料回存。
+            # 但為了確保修改能被保存，我們假設只要有互動就可能需要更新資料。
+            pass # 備註修改會自然流到下方 updated_rows
         
         if manual_update:
             should_update = True
             
-        if should_update:
-            updated_rows = []
-            for idx, row in edited_df.iterrows():
-                new_status = recalculate_row(row)
-                row['狀態'] = new_status
-                updated_rows.append(row)
+        # 不論是否 should_update，只要有變動 (包含備註)，都需要更新 Session State
+        # 但為了效能，我們通常只在必要時 rerun。
+        # 不過 st.data_editor 每次互動都會 rerun script，
+        # 所以這裡主要是捕捉 edited_df 的內容回存。
+        
+        updated_rows = []
+        for idx, row in edited_df.iterrows():
+            new_status = recalculate_row(row)
+            row['狀態'] = new_status
+            updated_rows.append(row)
             
-            if updated_rows:
-                df_updated = pd.DataFrame(updated_rows)
-                update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態']].to_dict('index')
-                
-                for i, r in st.session_state.stock_data.iterrows():
-                    code = r['代號']
-                    if code in update_map:
-                        st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
-                        st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
-                
+        if updated_rows:
+            df_updated = pd.DataFrame(updated_rows)
+            # [修改] 將 '戰略備註' 加入回存清單
+            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態', '戰略備註']].to_dict('index')
+            
+            for i, r in st.session_state.stock_data.iterrows():
+                code = r['代號']
+                if code in update_map:
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                    st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
+                    st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註'] # [重點] 回存備註
+            
+            # 如果是按鈕觸發或關鍵資料變動，再強制 rerun
+            if should_update or manual_update:
                 st.rerun()
 
 # -------------------------------------------------------
