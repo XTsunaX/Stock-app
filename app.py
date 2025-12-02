@@ -414,15 +414,33 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # [修改] 加回昨日高低點 (應要求不移除)
+        # 昨日高低點
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
-        # [修改] 移除昨日開盤價邏輯 (只保留昨高/低)
+        # 昨日開盤價 (條件顯示)
+        prev_o = apply_tick_rules(prev_day['Open'])
+        prev_h = apply_tick_rules(prev_day['High'])
+        prev_l = apply_tick_rules(prev_day['Low'])
+        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
+            points.append({"val": prev_o, "tag": ""})
+            
+        # 昨日收盤價
+        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # [修改] 移除 past_5 (近5日) 邏輯，避免產生雜訊
+        # [修改] 加回近5日高低 (不含今日)
+        # 取得今日之前的資料
+        if is_today_data:
+            hist_prior = hist.iloc[:-1]
+        else:
+            hist_prior = hist
+            
+        if len(hist_prior) >= 5:
+            past_5 = hist_prior.tail(5)
+            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
         
-        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
+        # 3. 近期高低 (90日)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -432,8 +450,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 判斷觸及
-        # [修改] 強化判斷：current_price 比對確保盤後或延遲時也能抓到漲跌停
+        # 4. 觸及與突破
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -453,7 +470,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
-            # 篩選範圍：明日的漲跌停範圍內 (或強制顯示)
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
