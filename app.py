@@ -327,7 +327,6 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    # 係數維持 0.44
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
@@ -375,6 +374,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
+        # 盤中不更新：切掉今日資料
         if is_today_data and is_during_trading and len(hist) > 1:
             hist = hist.iloc[:-1]
         
@@ -414,21 +414,34 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
+        points.append({"val": apply_tick_rules(prev_day['Open']), "tag": ""}) # 加回昨開
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
-        # [修改] 加入昨日收盤價 (解決部分股票缺少關鍵點位的問題)
-        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
+        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""}) # 加回昨收
         
-        # [修改] 移除了 past_5 (5日內高低點) 邏輯，避免干擾真正的漲停高或造成雜訊
+        # 3. 近5日高低 (不含今日)
+        # 確保取到的是今日之前的資料
+        if last_date == now.date(): 
+            hist_no_today = hist.iloc[:-1] # 若hist含今日，切掉
+        else:
+            hist_no_today = hist
+            
+        if len(hist_no_today) >= 5:
+            past_5 = hist_no_today.tail(5)
+            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
         
-        # 3. 近期高低 (90日)
-        high_90 = apply_tick_rules(hist['High'].max())
-        low_90 = apply_tick_rules(hist['Low'].min())
+        # 4. 近期高低 (90日) - 修正：強制包含今日 High/Low 及現價，避免 high_90 是舊資料
+        high_90_raw = max(hist['High'].max(), today['High'], current_price)
+        low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
+        
+        high_90 = apply_tick_rules(high_90_raw)
+        low_90 = apply_tick_rules(low_90_raw)
         
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 判斷觸及與是否過高/破低
+        # 5. 判斷觸及與是否過高/破低
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
         
