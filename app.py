@@ -110,7 +110,7 @@ with st.sidebar:
     st.markdown("---")
     
     current_limit_rows = st.number_input(
-        "顯示筆數", 
+        "顯示筆數 (僅用於預設顯示)", 
         min_value=1, 
         key='limit_rows'
     )
@@ -327,6 +327,7 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
+    # 係數維持 0.44
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
@@ -408,26 +409,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-        # 2. 當日 & 昨日 關鍵點
+        # 2. 當日關鍵點
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
+        # [修改] 移除昨日 Open/High/Low/Close，避免顯示非近期高低點的雜訊
         
-        # [修改] 只有當昨日開盤價 等於 昨日高或低 時才加入
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
-        
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-        
-        # [修改] 移除 past_5 (5日高低) 邏輯，避免資料不足時報錯或產生雜訊
-        
-        # 3. 近期高低 (90日)
+        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -665,9 +654,9 @@ with tab1:
              mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
              df_all = df_all[~(mask_etf | mask_warrant)]
         
-        # [修改] 修正顯示邏輯：上傳的資料依 limit 顯示，搜尋的資料接在後面
+        # upload 顯示全部，search 顯示全部
         if '_source' in df_all.columns:
-            df_up = df_all[df_all['_source'] == 'upload'].head(limit)
+            df_up = df_all[df_all['_source'] == 'upload'] 
             df_se = df_all[df_all['_source'] == 'search']
             df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
         else:
