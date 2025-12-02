@@ -316,7 +316,6 @@ def fmt_price(v):
     except:
         return str(v)
 
-# [修改] 係數從 0.375 改回 0.44
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -328,7 +327,7 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
-    # 係數調整為 0.44
+    # 係數維持 0.44
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
@@ -417,23 +416,19 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
+        # [修改] 加入昨日收盤價 (解決部分股票缺少關鍵點位的問題)
+        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # 3. 近5日高低
-        if len(hist) >= 6: past_5 = hist.iloc[-6:-1]
-        else: past_5 = hist.iloc[:-1]
-            
-        if not past_5.empty:
-            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
-            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
+        # [修改] 移除了 past_5 (5日內高低點) 邏輯，避免干擾真正的漲停高或造成雜訊
         
-        # 4. 近期高低 (90日)
+        # 3. 近期高低 (90日)
         high_90 = apply_tick_rules(hist['High'].max())
         low_90 = apply_tick_rules(hist['Low'].min())
         
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 5. 判斷觸及與是否過高/破低
+        # 4. 判斷觸及與是否過高/破低
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
         
@@ -686,14 +681,11 @@ with tab1:
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
-                # [修改] 寬度調整為 30
                 "移除": st.column_config.CheckboxColumn("🗑️", width=30),
-                # [修改] 寬度調整為 50
                 "代號": st.column_config.TextColumn(disabled=True, width=50),
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
-                # [修改] 寬度調整為 60
                 "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60),
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
