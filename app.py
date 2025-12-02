@@ -408,7 +408,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-        # 2. 當日 & 昨日 關鍵點
+        # 2. 當日關鍵點
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
@@ -417,7 +417,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
-        # 3. 近期高低 (90日)
+        # [修改] 強制移除 past_5 (5日高低) 邏輯，徹底解決 3535 的 84.6 問題
+        
+        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價，確保 4939 的漲停高能被觸發
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -447,7 +449,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
-            # [修改] 篩選邏輯：強制顯示(5MA) OR 在明日漲跌停範圍內
+            # 篩選邏輯
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
