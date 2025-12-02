@@ -316,6 +316,7 @@ def fmt_price(v):
     except:
         return str(v)
 
+# [修改] 係數從 0.375 改回 0.44
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
@@ -327,6 +328,7 @@ def calculate_note_width(series, font_size):
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
     
+    # 係數調整為 0.44
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
@@ -415,29 +417,23 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # [修改] 只有當昨日開盤價 等於 昨日高或低 時才加入
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
+        # 3. 近5日高低
+        if len(hist) >= 6: past_5 = hist.iloc[-6:-1]
+        else: past_5 = hist.iloc[:-1]
+            
+        if not past_5.empty:
+            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
         
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-        
-        # [修改] 移除 past_5 (5日高低) 邏輯，避免資料不足時報錯或產生雜訊
-        
-        # 3. 近期高低 (90日)
-        high_90_raw = max(hist['High'].max(), today['High'], current_price)
-        low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
-        
-        high_90 = apply_tick_rules(high_90_raw)
-        low_90 = apply_tick_rules(low_90_raw)
+        # 4. 近期高低 (90日)
+        high_90 = apply_tick_rules(hist['High'].max())
+        low_90 = apply_tick_rules(hist['Low'].min())
         
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 判斷觸及與是否過高/破低
+        # 5. 判斷觸及與是否過高/破低
         touched_up = today['High'] >= limit_up_today - 0.01
         touched_down = today['Low'] <= limit_down_today + 0.01
         
@@ -665,7 +661,6 @@ with tab1:
              mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
              df_all = df_all[~(mask_etf | mask_warrant)]
         
-        # [修改] 修正顯示邏輯：上傳的資料依 limit 顯示，搜尋的資料接在後面
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
@@ -691,11 +686,14 @@ with tab1:
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
+                # [修改] 寬度調整為 30
                 "移除": st.column_config.CheckboxColumn("🗑️", width=30),
+                # [修改] 寬度調整為 50
                 "代號": st.column_config.TextColumn(disabled=True, width=50),
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
+                # [修改] 寬度調整為 60
                 "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60),
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
