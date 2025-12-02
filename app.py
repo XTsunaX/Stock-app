@@ -413,13 +413,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # [修改] 加入昨日高低點
-        points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
+        # [修改] 移除了昨日高低點的強制加入 (解決晶彩科 84.6 問題)
+        # 只有當它們是近期高低點時，才會透過 high_90/low_90 顯示
         
-        # [修改] 強制移除 past_5 (5日高低) 邏輯，徹底解決 3535 的 84.6 問題
-        
-        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價，確保 4939 的漲停高能被觸發
+        # 3. 近期高低 (90日)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -449,7 +446,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
-            # 篩選邏輯
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
