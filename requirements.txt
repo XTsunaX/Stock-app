@@ -6,3 +6,6 @@ beautifulsoup4
 numpy
 openpyxl
 lxml
+FinMind
+twstock
+
