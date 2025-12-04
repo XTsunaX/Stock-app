@@ -85,7 +85,6 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
-# [新增] 初始化 cloud_url
 if 'cloud_url' not in st.session_state:
     st.session_state.cloud_url = ""
 
@@ -364,11 +363,23 @@ def recalculate_row(row):
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        ticker = yf.Ticker(f"{code}.TW")
-        hist = ticker.history(period="3mo") 
-        if hist.empty:
-            ticker = yf.Ticker(f"{code}.TWO")
-            hist = ticker.history(period="3mo")
+        # [新增] 重試機制與延遲，避免 API 限制
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                ticker = yf.Ticker(f"{code}.TW")
+                hist = ticker.history(period="3mo") 
+                if hist.empty:
+                    ticker = yf.Ticker(f"{code}.TWO")
+                    hist = ticker.history(period="3mo")
+                
+                if not hist.empty:
+                    break # 成功抓到
+            except:
+                pass
+            
+            time.sleep(0.5) # 失敗等待
+        
         if hist.empty: 
             return None
 
@@ -424,7 +435,25 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         # 昨日收盤價
         points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
+        # 昨日開盤價 (僅當等於昨日高/低時才顯示)
+        prev_o = apply_tick_rules(prev_day['Open'])
+        prev_h = apply_tick_rules(prev_day['High'])
+        prev_l = apply_tick_rules(prev_day['Low'])
+        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
+            points.append({"val": prev_o, "tag": ""})
+        
+        # 近5日高低 (不含今日)
+        if is_today_data:
+            hist_prior = hist.iloc[:-1]
+        else:
+            hist_prior = hist
+            
+        if len(hist_prior) >= 5:
+            past_5 = hist_prior.tail(5)
+            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
+            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
+        
+        # 3. 近期高低 (90日)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -454,6 +483,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
+            # 篩選範圍
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
@@ -564,13 +594,11 @@ with tab1:
                     pass
 
         with src_tab2:
-            # [修改] 將輸入值與 session_state 綁定
             cloud_url_input = st.text_input(
                 "輸入連結 (CSV/Excel/Google Sheet)", 
                 value=st.session_state.cloud_url, 
                 placeholder="https://..."
             )
-            # [修改] 若輸入有變動，更新 session_state
             if cloud_url_input != st.session_state.cloud_url:
                 st.session_state.cloud_url = cloud_url_input
             
@@ -587,7 +615,7 @@ with tab1:
                     df_up = pd.read_csv(uploaded_file, dtype=str)
                 else: 
                     df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
-            elif st.session_state.cloud_url: # [修改] 使用 session_state 中的 url
+            elif st.session_state.cloud_url:
                 url = st.session_state.cloud_url
                 if "docs.google.com" in url and "/spreadsheets/" in url and "/edit" in url:
                     url = url.split("/edit")[0] + "/export?format=csv"
@@ -639,6 +667,9 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
+            # [新增] 請求延遲，避免 API 封鎖
+            time.sleep(0.1) 
+
             if code in fetch_cache: data = fetch_cache[code]
             else:
                 data = fetch_stock_data_raw(code, name, extra)
