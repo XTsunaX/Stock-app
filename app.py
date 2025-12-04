@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import math
@@ -8,9 +7,17 @@ import time
 import os
 import itertools
 import json
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
+
+# [新增] 引入替代套件
+try:
+    from FinMind.data import DataLoader
+    import twstock
+except ImportError:
+    st.error("⚠️ 請安裝必要套件: pip install FinMind twstock")
+    st.stop()
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -199,24 +206,15 @@ def load_local_stock_names():
 @st.cache_data(ttl=86400)
 def get_stock_name_online(code):
     code = str(code).strip()
-    if not code.isdigit(): return code
+    # 優先嘗試 twstock 內建的名稱 (不需要網路)
+    if code in twstock.codes:
+        return twstock.codes[code].name
+    
+    # 後備方案
     code_map, _ = load_local_stock_names()
     if code in code_map: return code_map[code]
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{code}.TW"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=2)
-        soup = BeautifulSoup(r.text, "html.parser")
-        if soup.title and "(" in soup.title.string:
-            return soup.title.string.split('(')[0].strip()
-        url_two = f"https://tw.stock.yahoo.com/quote/{code}.TWO"
-        r_two = requests.get(url_two, headers=headers, timeout=2)
-        soup_two = BeautifulSoup(r_two.text, "html.parser")
-        if soup_two.title and "(" in soup_two.title.string:
-            return soup_two.title.string.split('(')[0].strip()
-        return code
-    except:
-        return code
+    
+    return code
 
 @st.cache_data(ttl=86400)
 def search_code_online(query):
@@ -224,18 +222,6 @@ def search_code_online(query):
     if query.isdigit(): return query
     _, name_map = load_local_stock_names()
     if query in name_map: return name_map[query]
-    try:
-        url = f"https://tw.stock.yahoo.com/h/kimosearch/search_list.html?keyword={query}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=2)
-        soup = BeautifulSoup(r.text, "html.parser")
-        links = soup.find_all('a', href=True)
-        for link in links:
-            if "/quote/" in link['href'] and ".TW" in link['href']:
-                parts = link['href'].split("/quote/")[1].split(".")
-                if parts[0].isdigit(): return parts[0]
-    except:
-        pass
     return None
 
 # ==========================================
@@ -315,6 +301,7 @@ def apply_sr_rules(price, base_price):
 def fmt_price(v):
     try:
         if pd.isna(v) or v == "": return ""
+        # [修改] 強制轉 float 後再格式化，避免 string 殘留
         return f"{float(v):.2f}".rstrip('0').rstrip('.')
     except:
         return str(v)
@@ -360,59 +347,82 @@ def recalculate_row(row):
     except:
         return status
 
+# [重構] 使用 FinMind (歷史) + twstock (即時) 替代 yfinance
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
+    
+    # 1. 抓取歷史資料 (FinMind) - 確保過去數據準確
     try:
-        # [新增] 重試機制與延遲，避免 API 限制
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                ticker = yf.Ticker(f"{code}.TW")
-                hist = ticker.history(period="3mo") 
-                if hist.empty:
-                    ticker = yf.Ticker(f"{code}.TWO")
-                    hist = ticker.history(period="3mo")
-                
-                if not hist.empty:
-                    break # 成功抓到
-            except:
-                pass
-            
-            time.sleep(0.5) # 失敗等待
+        api = DataLoader()
+        # 抓取過去 120 天以確保有足夠的 90 天資料
+        start_date = (datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
         
-        if hist.empty: 
+        df = api.taiwan_stock_daily(
+            stock_id=code,
+            start_date=start_date
+        )
+        
+        if df.empty:
             return None
 
-        tz = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz)
-        last_date = hist.index[-1].date()
-        is_today_data = (last_date == now.date())
-        is_during_trading = (now.time() < dt_time(13, 45))
+        # 整理 FinMind 資料格式
+        df = df.rename(columns={
+            "date": "Date",
+            "open": "Open",
+            "max": "High",
+            "min": "Low",
+            "close": "Close",
+            "Trading_Volume": "Volume"
+        })
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.set_index('Date')
         
-        if is_today_data and is_during_trading and len(hist) > 1:
-            hist = hist.iloc[:-1]
+        # 2. 抓取即時資料 (twstock) - 確保今日數據即時
+        real = twstock.realtime.get(code)
+        if not real['success']:
+            return None
+            
+        real_data = real['realtime']
         
-        today = hist.iloc[-1]
-        current_price = today['Close']
+        # 若 twstock 沒有最新價 (盤前或剛開盤)，嘗試用開盤價或昨收
+        latest_price = real_data.get('latest_trade_price', None)
+        if latest_price == '-' or latest_price is None:
+             # 盤前試搓或無成交，暫用昨收或開盤
+             latest_price = real_data.get('open', df.iloc[-1]['Close'])
+
+        current_price = float(latest_price)
         
-        if len(hist) >= 2: prev_day = hist.iloc[-2]
-        else: prev_day = today
+        # 構建今日數據 Series
+        today_open = float(real_data['open']) if real_data['open'] != '-' else current_price
+        today_high = float(real_data['high']) if real_data['high'] != '-' else current_price
+        today_low = float(real_data['low']) if real_data['low'] != '-' else current_price
         
-        if pd.isna(current_price) or pd.isna(prev_day['Close']): return None
+        # 檢查 FinMind 是否已經包含今日資料 (若是盤後更新)，避免重複
+        today_date = datetime.now().date()
+        if df.index[-1].date() == today_date:
+            # 如果 FinMind 已經有今日資料，先切除，用即時的取代 (因為即時的最新)
+            df = df.iloc[:-1]
+            
+        hist = df.tail(90) # 取近 90 筆歷史
+        prev_day = hist.iloc[-1] # 昨日 (或最近交易日)
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
+        # 3. 計算關鍵價位
         target_raw = current_price * 1.03
         stop_raw = current_price * 0.97
         target_price = apply_sr_rules(target_raw, current_price)
         stop_price = apply_sr_rules(stop_raw, current_price)
         
-        limit_up_next, limit_down_next = calculate_limits(current_price) 
+        # 今日漲跌停 (基於昨收)
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
+        
+        # 明日漲跌停 (基於今收/現價)
+        limit_up_next, limit_down_next = calculate_limits(current_price) 
 
         points = []
         
-        # 1. 5MA
+        # 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
         
@@ -420,42 +430,23 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if ma5_raw > current_price: ma5_tag = "空"
         elif ma5_raw < current_price: ma5_tag = "多"
         else: ma5_tag = "平"
-        
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-        # 2. 當日關鍵點
-        points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
-        points.append({"val": apply_tick_rules(today['High']), "tag": ""})
-        points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
+        # 當日關鍵點
+        points.append({"val": apply_tick_rules(today_open), "tag": ""})
+        points.append({"val": apply_tick_rules(today_high), "tag": ""})
+        points.append({"val": apply_tick_rules(today_low), "tag": ""})
         
-        # 昨日高低點
+        # 昨日高低 (保留)
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
-        # 昨日收盤價
+        # 昨日收盤 (保留)
         points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # 昨日開盤價 (僅當等於昨日高/低時才顯示)
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-        
-        # 近5日高低 (不含今日)
-        if is_today_data:
-            hist_prior = hist.iloc[:-1]
-        else:
-            hist_prior = hist
-            
-        if len(hist_prior) >= 5:
-            past_5 = hist_prior.tail(5)
-            points.append({"val": apply_tick_rules(past_5['High'].max()), "tag": ""})
-            points.append({"val": apply_tick_rules(past_5['Low'].min()), "tag": ""})
-        
-        # 3. 近期高低 (90日)
-        high_90_raw = max(hist['High'].max(), today['High'], current_price)
-        low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
+        # 近期高低 (90日) - 強制包含今日與現價
+        high_90_raw = max(hist['High'].max(), today_high, current_price)
+        low_90_raw = min(hist['Low'].min(), today_low, current_price)
         
         high_90 = apply_tick_rules(high_90_raw)
         low_90 = apply_tick_rules(low_90_raw)
@@ -463,9 +454,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 判斷觸及
-        touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
-        touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
+        # 判斷觸及
+        touched_up = (today_high >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
+        touched_down = (today_low <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
         if target_price > high_90:
             points.append({"val": target_price, "tag": ""})
@@ -483,7 +474,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
-            # 篩選範圍
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
@@ -539,7 +529,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
-        final_name = name_hint if name_hint else get_stock_name_online(code)
+        
+        # 使用 twstock 內建名稱或搜尋結果
+        stock_info = twstock.codes.get(code)
+        final_name = stock_info.name if stock_info else name_hint
         
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
@@ -560,7 +553,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "_points": full_calc_points,
             "狀態": ""
         }
-    except: return None
+
+    except Exception as e:
+        print(f"Error fetching {code}: {e}")
+        return None
 
 # ==========================================
 # 主介面 (Tabs)
@@ -667,9 +663,9 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
-            # [新增] 請求延遲，避免 API 封鎖
-            time.sleep(0.1) 
-
+            # [重點] 增加延遲避免被封鎖
+            time.sleep(0.8)
+            
             if code in fetch_cache: data = fetch_cache[code]
             else:
                 data = fetch_stock_data_raw(code, name, extra)
@@ -770,7 +766,6 @@ with tab1:
                 
             if is_diff(last_price, orig_last_price):
                 should_update = True
-            pass
         
         if manual_update:
             should_update = True
