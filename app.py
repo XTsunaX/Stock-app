@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import requests
-from bs4 import BeautifulSoup
 import math
 import time
 import os
@@ -84,7 +82,6 @@ if 'font_size' not in st.session_state:
     st.session_state.font_size = saved_config.get('font_size', 15)
 
 if 'limit_rows' not in st.session_state:
-    # [修正] 預設筆數改為 5
     st.session_state.limit_rows = saved_config.get('limit_rows', 5)
 
 # --- 側邊欄設定 ---
@@ -142,7 +139,7 @@ with st.sidebar:
 font_px = f"{st.session_state.font_size}px"
 zoom_level = current_font_size / 14.0
 
-# [修正] 移除所有自訂表格 CSS，避免干擾 Streamlit 原生圖標
+# [修正] 移除所有自訂表格 CSS，避免干擾圖標
 st.markdown(f"""
     <style>
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
@@ -291,7 +288,7 @@ def recalculate_row(row, points_map):
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        # 速度優化：減少延遲至 0.1s
+        # [修正] 快速單檔抓取，延遲 0.1s
         time.sleep(0.1)
         
         ticker = yf.Ticker(f"{code}.TW")
@@ -345,7 +342,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 昨日 (範圍篩選)
+        # 昨日
         p_close = apply_tick_rules(prev_day['Close'])
         p_high = apply_tick_rules(prev_day['High'])
         p_low = apply_tick_rules(prev_day['Low'])
@@ -354,7 +351,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if limit_down_next <= p_high <= limit_up_next: points.append({"val": p_high, "tag": ""})
         if limit_down_next <= p_low <= limit_up_next: points.append({"val": p_low, "tag": ""})
         
-        # 近期高低 (90日) - 強制包含今日
+        # 近期高低 (90日)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         high_90 = apply_tick_rules(high_90_raw)
@@ -385,7 +382,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list if x['tag']]
-            
             final_tag = ""
             has_limit_up = "漲停" in tags
             has_limit_down = "跌停" in tags
@@ -481,7 +477,6 @@ with tab1:
                 uploaded_file.seek(0)
                 fname = uploaded_file.name.lower()
                 
-                # [修正] Goodinfo 格式支援
                 if fname.endswith('.csv'):
                     try: df_up = pd.read_csv(uploaded_file, dtype=str, encoding='cp950')
                     except: 
@@ -493,15 +488,11 @@ with tab1:
                     except:
                         uploaded_file.seek(0)
                         dfs = pd.read_html(uploaded_file, encoding='utf-8')
-                    
-                    # 智慧尋找包含代號的表格
                     for df in dfs:
-                        # 轉字串再搜尋，避免型別問題
                         if df.apply(lambda r: r.astype(str).str.contains('代號').any(), axis=1).any():
                              df_up = df
-                             # 尋找 Header 列
                              for i, row in df.iterrows():
-                                 if "代號" in [str(v) for v in row.values]:
+                                 if "代號" in row.values:
                                      df_up.columns = row
                                      df_up = df_up.iloc[i+1:]
                                      break
@@ -527,12 +518,12 @@ with tab1:
             n_col = next((c for c in df_up.columns if "名稱" in str(c)), None)
             
             if c_col:
+                # [修正] 不限制上傳筆數，全部抓取
                 count = 0
                 for _, row in df_up.iterrows():
                     c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
                     if not c_raw or c_raw.lower() == 'nan': continue
                     
-                    # [修正] 寬鬆過濾，確保 ETF/債券 能進入列表
                     is_valid = False
                     if c_raw.isdigit() and len(c_raw) <= 4: is_valid = True
                     elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True
@@ -541,8 +532,7 @@ with tab1:
                     
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
-                    # 不限制上傳數量，全部加入
-                    targets.append((c_raw, n, 'upload', count))
+                    targets.append((c_raw, n, 'upload', count)) # 加入順序
                     count += 1
 
         if search_selection:
@@ -579,7 +569,7 @@ with tab1:
             
             if data:
                 data['_source'] = source
-                data['_order'] = extra # 保存順序
+                data['_order'] = extra
                 existing_data[code] = data
                 seen.add((code, source))
                 
@@ -595,10 +585,7 @@ with tab1:
     if not st.session_state.stock_data.empty:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data.copy()
-        
-        rename_map = {"漲停價": "當日漲停價", "跌停價": "當日跌停價"}
-        df_all = df_all.rename(columns=rename_map)
-        
+        df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價"})
         df_all['代號'] = df_all['代號'].astype(str)
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
         
@@ -607,12 +594,11 @@ with tab1:
              mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
              df_all = df_all[~(mask_etf | mask_warrant)]
         
-        # [修正] 排序：依來源與原始順序排序
         if '_order' in df_all.columns:
             df_all = df_all.sort_values(by=['_source', '_order'])
         
         if '_source' in df_all.columns:
-            df_up = df_all[df_all['_source'] == 'upload'].head(limit) # 預設顯示前幾筆
+            df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
             df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
         else:
@@ -622,7 +608,6 @@ with tab1:
 
         df_display["移除"] = False
         
-        # 建立 points_map
         points_map = {}
         if '_points' in df_display.columns:
             points_map = df_display.set_index('代號')['_points'].to_dict()
@@ -634,14 +619,16 @@ with tab1:
         cols_to_fmt = ["收盤價", "當日漲停價", "當日跌停價", "+3%", "-3%", "自訂價(可修)"]
         for c in cols_to_fmt:
             if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
-        
-        # [修正] reset_index 再次確保
+
+        # [修正] 強制資料清洗，解決圖標錯誤
         df_display = df_display.reset_index(drop=True)
+        for col in input_cols:
+             if col != "移除": df_display[col] = df_display[col].astype(str)
 
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
-                "移除": st.column_config.CheckboxColumn("刪除", width=30), # 純文字標題
+                "移除": st.column_config.CheckboxColumn("刪除", width=30),
                 "代號": st.column_config.TextColumn(disabled=True, width=50),
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
