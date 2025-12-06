@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import requests
-from bs4 import BeautifulSoup
 import math
 import time
 import os
@@ -11,19 +9,11 @@ import json
 from datetime import datetime, time as dt_time
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
-import io
 
 # ==========================================
-# 0. 頁面設定與套件檢查
+# 0. 頁面設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
-
-try:
-    from FinMind.data import DataLoader
-    import twstock
-except ImportError as e:
-    st.error(f"⚠️ 套件載入失敗: {e}")
-    st.stop()
 
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
@@ -82,10 +72,6 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
-if 'cloud_url' not in st.session_state:
-    st.session_state.cloud_url = ""
-
-# [修正] 3. 讀取設定檔並初始化 Session State
 saved_config = load_config()
 
 if 'font_size' not in st.session_state:
@@ -97,29 +83,10 @@ if 'limit_rows' not in st.session_state:
 # --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    
-    # [修正] 3. value 參數綁定 session_state，確保重整後數值不跑掉
-    current_font_size = st.slider(
-        "字體大小 (表格)", 
-        min_value=12, 
-        max_value=72, 
-        value=st.session_state.font_size,
-        key='font_size_slider' # 使用不同 key 避免衝突
-    )
-    # 同步回 session_state
-    st.session_state.font_size = current_font_size
-    
+    current_font_size = st.slider("字體大小 (表格)", 12, 72, key='font_size')
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
-    
     st.markdown("---")
-    
-    current_limit_rows = st.number_input(
-        "顯示筆數", 
-        min_value=1, 
-        value=st.session_state.limit_rows,
-        key='limit_rows_input'
-    )
-    st.session_state.limit_rows = current_limit_rows
+    current_limit_rows = st.number_input("顯示筆數", min_value=1, key='limit_rows')
     
     if st.button("💾 儲存設定"):
         if save_config(current_font_size, current_limit_rows):
@@ -128,21 +95,19 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
-    col_restore, col_clear = st.columns([1, 1])
-    with col_restore:
-        if st.button("♻️ 復原", use_container_width=True):
-            st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
-            st.toast("已重置忽略名單。", icon="🔄")
-            st.rerun()
-    with col_clear:
-        if st.button("🗑️ 清空", type="primary", use_container_width=True):
-            st.session_state.stock_data = pd.DataFrame()
-            st.session_state.ignored_stocks = set()
-            if os.path.exists(DATA_CACHE_FILE):
-                os.remove(DATA_CACHE_FILE)
-            st.toast("資料已全部清空", icon="🗑️")
-            st.rerun()
+    if st.button("♻️ 復原忽略", use_container_width=True):
+        st.session_state.ignored_stocks.clear()
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+        st.toast("已重置忽略名單。", icon="🔄")
+        st.rerun()
+            
+    if st.button("🗑️ 清空資料", type="primary", use_container_width=True):
+        st.session_state.stock_data = pd.DataFrame()
+        st.session_state.ignored_stocks = set()
+        if os.path.exists(DATA_CACHE_FILE):
+            os.remove(DATA_CACHE_FILE)
+        st.toast("資料已全部清空", icon="🗑️")
+        st.rerun()
     
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「移除」框，該股票將被隱藏。")
@@ -186,55 +151,17 @@ def load_local_stock_names():
 @st.cache_data(ttl=86400)
 def get_stock_name_online(code):
     code = str(code).strip()
-    if code in twstock.codes:
-        return twstock.codes[code].name
     code_map, _ = load_local_stock_names()
     if code in code_map: return code_map[code]
     return code
 
-# [新增] Goodinfo 爬蟲
-@st.cache_data(ttl=1800)
-def scrape_goodinfo_rank(limit=30):
-    url = "https://goodinfo.tw/tw/StockList.asp?MARKET_CAT=熱門排行&INDUSTRY_CAT=週轉率最高"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Referer': 'https://goodinfo.tw/tw/index.asp'}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.encoding = 'utf-8'
-        dfs = pd.read_html(r.text)
-        for df in dfs:
-            if '代號' in df.columns and '名稱' in df.columns:
-                df = df[df['代號'] != '代號']
-                codes = df['代號'].astype(str).tolist()
-                valid_codes = [c for c in codes if c.isdigit()]
-                if valid_codes: return valid_codes[:limit]
-        return []
-    except: return []
-
-# [新增] PChome 爬蟲
-def scrape_pchome_rank(limit=30):
-    urls = ["https://pchome.megatime.com.tw/rank/tse/turnover_ratio.html", "https://pchome.megatime.com.tw/rank/otc/turnover_ratio.html"]
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    codes = []
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all('a', href=True):
-                if "/stock/sid" in a['href']:
-                    code = a['href'].split("sid")[1].split(".")[0]
-                    if code.isdigit() and code not in codes: codes.append(code)
-                    if len(codes) >= limit: break
-        except: continue
-        if len(codes) >= limit: break
-    return codes[:limit]
-
-@st.cache_data(ttl=1800)
-def get_smart_rank(limit=30):
-    codes = scrape_goodinfo_rank(limit)
-    if codes: return codes, "Goodinfo"
-    codes = scrape_pchome_rank(limit)
-    if codes: return codes, "PChome"
-    return ["3535", "4939", "3715", "2317", "2330"], "預設清單(連線失敗)"
+@st.cache_data(ttl=86400)
+def search_code_online(query):
+    query = query.strip()
+    if query.isdigit(): return query
+    _, name_map = load_local_stock_names()
+    if query in name_map: return name_map[query]
+    return None
 
 # ==========================================
 # 2. 核心計算邏輯
@@ -330,31 +257,36 @@ def recalculate_row(row):
         else:
             if isinstance(points, list):
                 for p in points:
-                    if abs(p['val'] - price) < 0.01: status = "🟡 命中"; break
+                    if abs(p['val'] - price) < 0.01:
+                        status = "🟡 命中"; break
         return status
     except: return status
 
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
+        # 使用 yfinance 抓取 (重試機制)
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo") 
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
+        
         if hist.empty: return None
 
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
-        is_today_data = (hist.index[-1].date() == now.date())
+        last_date = hist.index[-1].date()
+        is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
+        # 判斷是否為盤中 (避免使用盤中即時 K 棒做歷史統計，但需顯示當日開高低)
         if is_today_data and is_during_trading and len(hist) > 1:
-            today = hist.iloc[-1]
-            hist_prior = hist.iloc[:-1]
-            prev_day = hist_prior.iloc[-1]
+            today = hist.iloc[-1] # 今日 (盤中)
+            hist_prior = hist.iloc[:-1] # 歷史 (不含今日)
+            prev_day = hist_prior.iloc[-1] # 昨日
         else:
-            today = hist.iloc[-1]
+            today = hist.iloc[-1] # 今日 (盤後)
             if len(hist) >= 2:
                 prev_day = hist.iloc[-2]
                 hist_prior = hist.iloc[:-1]
@@ -374,15 +306,19 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
+        
+        # 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
         ma5_tag = "多" if ma5_raw < current_price else ("空" if ma5_raw > current_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
+        # 當日
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
+        # 昨日 (高/低/收) - 範圍篩選
         p_close = apply_tick_rules(prev_day['Close'])
         p_high = apply_tick_rules(prev_day['High'])
         p_low = apply_tick_rules(prev_day['Low'])
@@ -391,6 +327,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if limit_down_next <= p_high <= limit_up_next: points.append({"val": p_high, "tag": ""})
         if limit_down_next <= p_low <= limit_up_next: points.append({"val": p_low, "tag": ""})
         
+        # 近期高低 (90日) - 強制包含今日
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         high_90 = apply_tick_rules(high_90_raw)
@@ -399,6 +336,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # 觸及判斷
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -420,12 +358,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list if x['tag']]
+            
             final_tag = ""
             has_limit_up = "漲停" in tags
             has_limit_down = "跌停" in tags
             has_high = "高" in tags
             has_low = "低" in tags
             
+            # 合併邏輯
             if has_limit_up and has_high: final_tag = "漲停高"
             elif has_limit_down and has_low: final_tag = "跌停低"
             elif has_limit_up: final_tag = "漲停"
@@ -437,6 +377,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 elif "空" in tags: final_tag = "空"
                 elif "平" in tags: final_tag = "平"
             
+            # 5MA 補償
             if ("多" in tags or "空" in tags or "平" in tags) and final_tag not in ["漲停", "跌停", "漲停高", "跌停低"]:
                 if "多" in tags: final_tag = "多"
                 elif "空" in tags: final_tag = "空"
@@ -458,9 +399,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
+        final_name = name_hint if name_hint else get_stock_name_online(code)
         
-        stock_info = twstock.codes.get(code)
-        final_name = stock_info.name if stock_info else name_hint
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
@@ -472,7 +412,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
             "戰略備註": strategy_note, "_points": full_calc_points, "狀態": ""
         }
-    except: return None
+    except Exception as e: return None
 
 # ==========================================
 # 主介面 (Tabs)
@@ -492,7 +432,7 @@ with tab1:
             selected_sheet = 0
             if uploaded_file:
                 try:
-                    if uploaded_file.name.endswith('.xlsx'):
+                    if not uploaded_file.name.endswith('.csv'):
                         xl_file = pd.ExcelFile(uploaded_file)
                         sheet_options = xl_file.sheet_names
                         default_idx = 0
@@ -501,110 +441,84 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            # [修正] 雲端匯入說明
-            st.info("💡 請直接從 Goodinfo 或 Yahoo 下載 CSV/XLS 檔案後，使用左側「本機」分頁上傳。")
+            st.info("💡 雲端匯入功能已停用，請使用上傳檔案功能。")
             
         search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
 
-    # 雙按鈕 (修正大小)
-    c1, c2 = st.columns(2)
-    with c1:
-        run_analysis = st.button("🚀 執行分析", type="primary", use_container_width=True)
-    with c2:
-        run_turnover = st.button("🔥 抓取週轉率排行", use_container_width=True)
-
-    if run_analysis or run_turnover:
+    if st.button("🚀 執行分析", type="primary", use_container_width=True):
         targets = []
         df_up = pd.DataFrame()
         
-        # 1. 抓取排行
-        if run_turnover:
-            limit_count = st.session_state.limit_rows
-            with st.spinner(f"🔥 正在抓取週轉率排行 (前 {limit_count} 筆)..."):
-                rank_codes, source_name = get_smart_rank(limit=limit_count)
-                if source_name.startswith("預設"):
-                    st.warning(f"⚠️ 網路抓取失敗，已切換至預設熱門股清單。")
-                else:
-                    st.toast(f"已從 {source_name} 抓取 {len(rank_codes)} 檔股票", icon="✅")
-                
-                for code in rank_codes:
-                    targets.append((code, "", 'rank', {}))
-                    
-        # 2. 執行分析
-        if run_analysis:
-            # [修正] 2.1 讀取上傳檔案 (CSV/HTML/XLS)
+        try:
             if uploaded_file:
-                try:
-                    uploaded_file.seek(0)
-                    fname = uploaded_file.name.lower()
-                    
-                    if fname.endswith('.csv'):
-                        # 嘗試讀取 Goodinfo 格式 (Big5/cp950)
-                        try:
-                            df_up = pd.read_csv(uploaded_file, dtype=str, encoding='cp950')
-                        except:
-                            uploaded_file.seek(0)
-                            df_up = pd.read_csv(uploaded_file, dtype=str) # 預設 utf-8
-                    
-                    elif fname.endswith('.html') or fname.endswith('.htm') or fname.endswith('.xls'):
-                        # Goodinfo xls 也是 html
-                        try:
-                            dfs = pd.read_html(uploaded_file, encoding='cp950')
-                        except:
-                            uploaded_file.seek(0)
-                            dfs = pd.read_html(uploaded_file, encoding='utf-8')
-                        
-                        # 尋找正確表格
-                        for df in dfs:
-                            # 檢查是否包含關鍵欄位
-                            if df.apply(lambda r: r.astype(str).str.contains('代號').any(), axis=1).any():
-                                df_up = df
-                                # 修正 header
-                                if '代號' not in df_up.columns:
-                                    new_header = df_up.iloc[0]
-                                    df_up = df_up[1:]
-                                    df_up.columns = new_header
-                                break
-                        if df_up.empty and dfs: df_up = dfs[0]
-                        
-                    elif fname.endswith('.xlsx'):
-                        df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
-
-                except Exception as e:
-                    st.error(f"檔案讀取失敗: {e}")
-            
-            # 處理匯入資料
-            if not df_up.empty:
-                # 尋找代號與名稱欄位
-                c_col = next((c for c in df_up.columns if "代號" in str(c)), None)
-                n_col = next((c for c in df_up.columns if "名稱" in str(c)), None)
+                uploaded_file.seek(0)
+                fname = uploaded_file.name.lower()
                 
-                if c_col:
-                    limit_rows = st.session_state.limit_rows
-                    count = 0
-                    for _, row in df_up.iterrows():
-                        # 清洗資料 ="xxxx"
-                        c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
-                        if not c_raw or c_raw.lower() == 'nan': continue
+                # [修正] Goodinfo 檔案解析
+                if fname.endswith('.csv'):
+                    # 嘗試 cp950 (Big5)
+                    try: df_up = pd.read_csv(uploaded_file, dtype=str, encoding='cp950')
+                    except: 
+                        uploaded_file.seek(0)
+                        df_up = pd.read_csv(uploaded_file, dtype=str)
                         
-                        # [修正] 寬鬆過濾：允許字母 (ETF/債券)
-                        is_valid = False
-                        if c_raw.isdigit() and len(c_raw) <= 4: is_valid = True
-                        elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True # 簡單判斷
-                        
-                        if not is_valid: continue
-                        
-                        if count >= limit_rows: break
-                        
-                        n = str(row[n_col]) if n_col else ""
-                        if n.lower() == 'nan': n = ""
-                        targets.append((c_raw, n, 'upload', {}))
-                        count += 1
+                elif fname.endswith('.html') or fname.endswith('.htm') or fname.endswith('.xls'):
+                    try:
+                        dfs = pd.read_html(uploaded_file, encoding='cp950')
+                    except:
+                        uploaded_file.seek(0)
+                        dfs = pd.read_html(uploaded_file, encoding='utf-8')
+                    
+                    # 尋找正確表格
+                    for df in dfs:
+                        if df.apply(lambda r: r.astype(str).str.contains('代號').any(), axis=1).any():
+                             df_up = df
+                             # 修正 header: 找到包含 "代號" 的那一列作為 header
+                             for i, row in df.iterrows():
+                                 if "代號" in row.values:
+                                     df_up.columns = row
+                                     df_up = df_up.iloc[i+1:]
+                                     break
+                             break
+                    if df_up.empty and dfs: df_up = dfs[0]
+                
+                elif fname.endswith('.xlsx'):
+                    df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
 
-            if search_selection:
-                for item in search_selection:
-                    parts = item.split(' ', 1)
-                    targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', {}))
+        except Exception as e: st.error(f"檔案讀取失敗: {e}")
+
+        if not df_up.empty:
+            # 欄位名稱標準化
+            df_up.columns = df_up.columns.astype(str).str.strip()
+            
+            c_col = next((c for c in df_up.columns if "代號" in c), None)
+            n_col = next((c for c in df_up.columns if "名稱" in c), None)
+            
+            if c_col:
+                limit_rows = st.session_state.limit_rows
+                count = 0
+                for _, row in df_up.iterrows():
+                    c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
+                    if not c_raw or c_raw.lower() == 'nan': continue
+                    
+                    # 寬鬆過濾
+                    is_valid = False
+                    if c_raw.isdigit():
+                         if len(c_raw) <= 4: is_valid = True
+                    elif len(c_raw) > 0: is_valid = True # 允許非純數字 (ETF)
+                    
+                    if not is_valid: continue
+                    if count >= limit_rows: break
+                    
+                    n = str(row[n_col]) if n_col else ""
+                    if n.lower() == 'nan': n = ""
+                    targets.append((c_raw, n, 'upload', {}))
+                    count += 1
+
+        if search_selection:
+            for item in search_selection:
+                parts = item.split(' ', 1)
+                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', {}))
 
         results = []
         seen = set()
@@ -664,8 +578,7 @@ with tab1:
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
-            df_rank = df_all[df_all['_source'] == 'rank'].head(limit)
-            df_display = pd.concat([df_up, df_se, df_rank]).reset_index(drop=True)
+            df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
         else:
             df_display = df_all.head(limit).reset_index(drop=True)
         
@@ -712,6 +625,13 @@ with tab1:
                 st.rerun()
         
         updated_rows = []
+        should_update = False
+        if len(edited_df) > 0:
+            last_idx = len(edited_df) - 1
+            last_price = edited_df.iloc[last_idx]['自訂價(可修)']
+            orig_last_price = df_display.iloc[last_idx]['自訂價(可修)']
+            if str(last_price) != str(orig_last_price): should_update = True
+
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row)
             row['狀態'] = new_status
@@ -728,7 +648,8 @@ with tab1:
                     st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
                     st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
             
-            if manual_update: st.rerun()
+            if should_update or manual_update:
+                st.rerun()
 
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
