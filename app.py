@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import math
@@ -8,14 +7,21 @@ import time
 import os
 import itertools
 import json
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
 
 # ==========================================
-# 0. 頁面設定與初始化
+# 0. 頁面設定與套件檢查
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
+
+try:
+    from FinMind.data import DataLoader
+    import twstock
+except ImportError as e:
+    st.error(f"⚠️ 套件載入失敗: {e}")
+    st.stop()
 
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
@@ -24,27 +30,20 @@ CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
 
 def load_config():
-    """讀取設定檔"""
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
+            with open(CONFIG_FILE, "r") as f: return json.load(f)
+        except: return {}
     return {}
 
 def save_config(font_size, limit_rows):
-    """儲存設定檔"""
     try:
         config = {"font_size": font_size, "limit_rows": limit_rows}
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f)
+        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
         return True
-    except:
-        return False
+    except: return False
 
 def save_data_cache(df, ignored_set):
-    """儲存資料到硬碟"""
     try:
         df_save = df.fillna("") 
         data_to_save = {
@@ -53,21 +52,17 @@ def save_data_cache(df, ignored_set):
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        pass
+    except: pass
 
 def load_data_cache():
-    """從硬碟讀取資料"""
     if os.path.exists(DATA_CACHE_FILE):
         try:
             with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
-            
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
             return df, ignored
-        except Exception as e:
-            return pd.DataFrame(), set()
+        except: return pd.DataFrame(), set()
     return pd.DataFrame(), set()
 
 # --- 初始化 Session State ---
@@ -88,7 +83,6 @@ if 'calc_view_price' not in st.session_state:
 if 'cloud_url' not in st.session_state:
     st.session_state.cloud_url = ""
 
-# 優先從設定檔讀取
 saved_config = load_config()
 
 if 'font_size' not in st.session_state:
@@ -100,29 +94,14 @@ if 'limit_rows' not in st.session_state:
 # --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    
-    current_font_size = st.slider(
-        "字體大小 (表格)", 
-        min_value=12, 
-        max_value=72, 
-        key='font_size'
-    )
-    
-    hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True, help="勾選後將隱藏 00開頭及代號大於4碼之標的。")
-    
+    current_font_size = st.slider("字體大小 (表格)", 12, 72, key='font_size')
+    hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     st.markdown("---")
-    
-    current_limit_rows = st.number_input(
-        "顯示筆數", 
-        min_value=1, 
-        key='limit_rows'
-    )
+    current_limit_rows = st.number_input("顯示筆數", min_value=1, key='limit_rows')
     
     if st.button("💾 儲存設定"):
         if save_config(current_font_size, current_limit_rows):
-            st.toast("設定已儲存！下次開啟將自動套用。", icon="✅")
-        else:
-            st.error("設定儲存失敗。")
+            st.toast("設定已儲存！", icon="✅")
             
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
@@ -151,26 +130,11 @@ zoom_level = current_font_size / 14.0
 st.markdown(f"""
     <style>
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
-    
-    div[data-testid="stDataFrame"] {{
-        width: 100%;
-        zoom: {zoom_level};
-    }}
-    
-    div[data-testid="stDataFrame"] table,
-    div[data-testid="stDataFrame"] td,
-    div[data-testid="stDataFrame"] th,
-    div[data-testid="stDataFrame"] input,
-    div[data-testid="stDataFrame"] div,
-    div[data-testid="stDataFrame"] span,
-    div[data-testid="stDataFrame"] p {{
+    div[data-testid="stDataFrame"] {{ width: 100%; zoom: {zoom_level}; }}
+    div[data-testid="stDataFrame"] table, td, th, input, div, span, p {{
         font-family: 'Microsoft JhengHei', sans-serif !important;
     }}
-    
-    [data-testid="stMetricValue"] {{
-        font-size: 1.2em;
-    }}
-    
+    [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
     thead tr th:first-child {{ display:none }}
     tbody th {{ display:none }}
     </style>
@@ -192,31 +156,17 @@ def load_local_stock_names():
                 n = str(row['name']).strip()
                 code_map[c] = n
                 name_map[n] = c
-        except Exception as e:
-            pass
+        except: pass
     return code_map, name_map
 
 @st.cache_data(ttl=86400)
 def get_stock_name_online(code):
     code = str(code).strip()
-    if not code.isdigit(): return code
+    if code in twstock.codes:
+        return twstock.codes[code].name
     code_map, _ = load_local_stock_names()
     if code in code_map: return code_map[code]
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{code}.TW"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=2)
-        soup = BeautifulSoup(r.text, "html.parser")
-        if soup.title and "(" in soup.title.string:
-            return soup.title.string.split('(')[0].strip()
-        url_two = f"https://tw.stock.yahoo.com/quote/{code}.TWO"
-        r_two = requests.get(url_two, headers=headers, timeout=2)
-        soup_two = BeautifulSoup(r_two.text, "html.parser")
-        if soup_two.title and "(" in soup_two.title.string:
-            return soup_two.title.string.split('(')[0].strip()
-        return code
-    except:
-        return code
+    return code
 
 @st.cache_data(ttl=86400)
 def search_code_online(query):
@@ -224,21 +174,34 @@ def search_code_online(query):
     if query.isdigit(): return query
     _, name_map = load_local_stock_names()
     if query in name_map: return name_map[query]
-    try:
-        url = f"https://tw.stock.yahoo.com/h/kimosearch/search_list.html?keyword={query}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=2)
-        soup = BeautifulSoup(r.text, "html.parser")
-        links = soup.find_all('a', href=True)
-        for link in links:
-            if "/quote/" in link['href'] and ".TW" in link['href']:
-                parts = link['href'].split("/quote/")[1].split(".")
-                if parts[0].isdigit(): return parts[0]
-    except:
-        pass
     return None
 
-# [新增] 1. HiStock 爬蟲 (優先使用，可驗證表格內容)
+# [新增] 1. Goodinfo 爬蟲 (通常資料最穩，但需要 header)
+def scrape_goodinfo_rank(limit=30):
+    url = "https://goodinfo.tw/tw/StockList.asp?MARKET_CAT=熱門排行&INDUSTRY_CAT=週轉率最高"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://goodinfo.tw/tw/index.asp'
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.encoding = 'utf-8'
+        # 使用 pandas 讀取所有表格
+        dfs = pd.read_html(r.text)
+        for df in dfs:
+            # Goodinfo 的表格通常有 "代號", "名稱", "週轉率"
+            if '代號' in df.columns and '名稱' in df.columns:
+                # 排除重複的 header 列
+                df = df[df['代號'] != '代號']
+                codes = df['代號'].astype(str).tolist()
+                valid_codes = [c for c in codes if c.isdigit()]
+                if len(valid_codes) > 0:
+                    return valid_codes[:limit]
+        return []
+    except:
+        return []
+
+# [優化] 2. HiStock 爬蟲
 def scrape_histock_rank(limit=30):
     url = "https://histock.tw/stock/rank.aspx?p=tr"
     headers = {
@@ -246,53 +209,31 @@ def scrape_histock_rank(limit=30):
     }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        # 驗證是否為週轉率頁面
-        if "週轉率" not in r.text:
-            return []
+        # 嘗試使用 pandas
+        try:
+            dfs = pd.read_html(r.text)
+            for df in dfs:
+                if '代號' in df.columns:
+                    codes = df['代號'].dropna().astype(str).tolist()
+                    valid_codes = [c for c in codes if c.isdigit()]
+                    if valid_codes: return valid_codes[:limit]
+        except: pass
 
-        # 使用 pandas 讀取表格
-        dfs = pd.read_html(r.text)
-        for df in dfs:
-            # HiStock 表格通常包含 '代號' 和 '週轉率'
-            if '代號' in df.columns and '週轉率' in df.columns:
-                # 排除 NaN 並轉為字串
-                codes = df['代號'].dropna().astype(str).tolist()
-                # 過濾非數字代號
-                valid_codes = [c for c in codes if c.isdigit()]
-                return valid_codes[:limit]
-        return []
+        # 如果 pandas 失敗，嘗試 BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        codes = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if href.startswith("/stock/") and len(href) > 7:
+                code = href.split("/")[-1]
+                if code.isdigit() and code not in codes:
+                    codes.append(code)
+                if len(codes) >= limit: break
+        return codes
     except:
         return []
 
-# [新增] 2. PChome 爬蟲 (備援，分上市櫃)
-def scrape_pchome_rank(limit=30):
-    urls = [
-        "https://pchome.megatime.com.tw/rank/tse/turnover_ratio.html", # 上市
-        "https://pchome.megatime.com.tw/rank/otc/turnover_ratio.html"  # 上櫃
-    ]
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    codes = []
-    
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=8)
-            if "週轉率" not in r.text: continue
-            
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                # /stock/sid2330.html
-                if "/stock/sid" in href:
-                    code = href.split("sid")[1].split(".")[0]
-                    if code.isdigit() and code not in codes:
-                        codes.append(code)
-                    if len(codes) >= limit: break
-        except: continue
-        if len(codes) >= limit: break
-        
-    return codes[:limit]
-
-# [修改] 3. Yahoo 爬蟲 (最後備援，因為容易擋)
+# [保留] 3. Yahoo 爬蟲
 def scrape_yahoo_rank(limit=30):
     url = "https://tw.stock.yahoo.com/rank/turnover-ratio"
     headers = {
@@ -300,8 +241,6 @@ def scrape_yahoo_rank(limit=30):
     }
     try:
         r = requests.get(url, headers=headers, timeout=5)
-        if "週轉率" not in r.text: return [] # 驗證頁面內容
-        
         soup = BeautifulSoup(r.text, "html.parser")
         codes = []
         for a in soup.find_all('a', href=True):
@@ -316,18 +255,45 @@ def scrape_yahoo_rank(limit=30):
         return codes
     except: return []
 
-# [整合] 智慧型排行抓取
+# [保留] 4. PChome 爬蟲
+def scrape_pchome_rank(limit=30):
+    urls = [
+        "https://pchome.megatime.com.tw/rank/tse/turnover_ratio.html",
+        "https://pchome.megatime.com.tw/rank/otc/turnover_ratio.html"
+    ]
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    codes = []
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(r.text, "html.parser")
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if "/stock/sid" in href:
+                    code = href.split("sid")[1].split(".")[0]
+                    if code.isdigit() and code not in codes:
+                        codes.append(code)
+                    if len(codes) >= limit: break
+        except: continue
+        if len(codes) >= limit: break
+    return codes[:limit]
+
+# [整合] 智慧型排行抓取 (增加 Goodinfo)
 @st.cache_data(ttl=1800)
 def get_smart_rank(limit=30):
-    # 策略 1: HiStock (結構最穩，易驗證)
+    # 策略 1: Goodinfo (最強)
+    codes = scrape_goodinfo_rank(limit)
+    if codes: return codes, "Goodinfo"
+    
+    # 策略 2: HiStock
     codes = scrape_histock_rank(limit)
     if codes: return codes, "HiStock"
     
-    # 策略 2: Yahoo
+    # 策略 3: Yahoo
     codes = scrape_yahoo_rank(limit)
     if codes: return codes, "Yahoo"
     
-    # 策略 3: PChome
+    # 策略 4: PChome
     codes = scrape_pchome_rank(limit)
     if codes: return codes, "PChome"
     
@@ -338,10 +304,8 @@ def get_smart_rank(limit=30):
 # ==========================================
 
 def get_tick_size(price):
-    try:
-        price = float(price)
-    except:
-        return 0.01
+    try: price = float(price)
+    except: return 0.01
     if pd.isna(price) or price <= 0: return 0.01
     if price < 10: return 0.01
     if price < 50: return 0.05
@@ -361,8 +325,7 @@ def calculate_limits(price):
         tick_down = get_tick_size(raw_down) 
         limit_down = math.ceil(raw_down / tick_down) * tick_down
         return float(f"{limit_up:.2f}"), float(f"{limit_down:.2f}")
-    except:
-        return 0, 0
+    except: return 0, 0
 
 def apply_tick_rules(price):
     try:
@@ -371,8 +334,7 @@ def apply_tick_rules(price):
         tick = get_tick_size(p)
         rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
         return float(rounded)
-    except:
-        return price
+    except: return price
 
 def move_tick(price, steps):
     try:
@@ -386,87 +348,66 @@ def move_tick(price, steps):
                 tick = get_tick_size(curr - 0.0001)
                 curr = round(curr - tick, 2)
         return curr
-    except:
-        return price
+    except: return price
 
 def apply_sr_rules(price, base_price):
     try:
         p = float(price)
         if math.isnan(p): return 0.0
-        
         tick = get_tick_size(p)
         d_val = Decimal(str(p))
         d_tick = Decimal(str(tick))
-        
-        if p < base_price:
-            return float(math.ceil(d_val / d_tick) * d_tick)
-        elif p > base_price:
-            return float(math.floor(d_val / d_tick) * d_tick)
-        else:
-            return apply_tick_rules(p)
-    except:
-        return price
+        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
+        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
+        else: return apply_tick_rules(p)
+    except: return price
 
 def fmt_price(v):
     try:
         if pd.isna(v) or v == "": return ""
         return f"{float(v):.2f}".rstrip('0').rstrip('.')
-    except:
-        return str(v)
+    except: return str(v)
 
 def calculate_note_width(series, font_size):
     def get_width(s):
         w = 0
-        for c in str(s):
-            w += 2.0 if ord(c) > 127 else 1.0
+        for c in str(s): w += 2.0 if ord(c) > 127 else 1.0
         return w
-    
     if series.empty: return 50
     max_w = series.apply(get_width).max()
     if pd.isna(max_w): max_w = 0
-    
     pixel_width = int(max_w * (font_size * 0.44))
     return max(50, pixel_width)
 
 def recalculate_row(row):
     custom_price = row.get('自訂價(可修)')
     status = ""
-    
-    if pd.isna(custom_price) or str(custom_price).strip() == "":
-        return status
-        
+    if pd.isna(custom_price) or str(custom_price).strip() == "": return status
     try:
         price = float(custom_price)
         points = row.get('_points', [])
         limit_up = row.get('當日漲停價')
         limit_down = row.get('當日跌停價')
-        
-        if pd.notna(limit_up) and abs(price - float(limit_up)) < 0.01:
-            status = "🔴 漲停"
-        elif pd.notna(limit_down) and abs(price - float(limit_down)) < 0.01:
-            status = "🟢 跌停"
+        if pd.notna(limit_up) and abs(price - float(limit_up)) < 0.01: status = "🔴 漲停"
+        elif pd.notna(limit_down) and abs(price - float(limit_down)) < 0.01: status = "🟢 跌停"
         else:
             if isinstance(points, list):
                 for p in points:
                     if abs(p['val'] - price) < 0.01:
-                        status = "🟡 命中"
-                        break
+                        status = "🟡 命中"; break
         return status
-    except:
-        return status
+    except: return status
 
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        # yfinance 重試機制 (增加到 3 次)
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo") 
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         
-        if hist.empty: 
-            return None
+        if hist.empty: return None
 
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
@@ -474,7 +415,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
-        # 盤中不更新：切掉今日資料
         if is_today_data and is_during_trading and len(hist) > 1:
             hist = hist.iloc[:-1]
         
@@ -498,39 +438,25 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         points = []
         
-        # 1. 5MA
+        # 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
-        
-        ma5_tag = ""
-        if ma5_raw > current_price: ma5_tag = "空"
-        elif ma5_raw < current_price: ma5_tag = "多"
-        else: ma5_tag = "平"
-        
+        ma5_tag = "多" if ma5_raw < current_price else ("空" if ma5_raw > current_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-        # 2. 當日關鍵點
+        # 當日
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 昨日高低點
+        # 昨日高低
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
-        # 昨日收盤價
+        # 昨日收盤
         points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        # 昨日開盤價 (僅當等於昨日高/低時才顯示)
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-        
-        # [修正] 移除 past_5，避免晶彩科 84.6 雜訊
-        
-        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
+        # 近期高低 (90日)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -540,27 +466,19 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 4. 判斷觸及與是否過高/破低
+        # 觸及
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
-        if target_price > high_90:
-            points.append({"val": target_price, "tag": ""})
-
-        if stop_price < low_90:
-            points.append({"val": stop_price, "tag": ""})
-
-        if touched_up:
-            points.append({"val": limit_up_today, "tag": "漲停"})
-        
-        if touched_down:
-            points.append({"val": limit_down_today, "tag": "跌停"})
+        if target_price > high_90: points.append({"val": target_price, "tag": ""})
+        if stop_price < low_90: points.append({"val": stop_price, "tag": ""})
+        if touched_up: points.append({"val": limit_up_today, "tag": "漲停"})
+        if touched_down: points.append({"val": limit_down_today, "tag": "跌停"})
             
         display_candidates = []
         for p in points:
             v = float(f"{p['val']:.2f}")
             is_force = p.get('force', False)
-            # 篩選範圍
             if is_force or (limit_down_next <= v <= limit_up_next):
                  display_candidates.append(p) 
             
@@ -572,7 +490,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             tags = [x['tag'] for x in g_list if x['tag']]
             
             final_tag = ""
-            
             has_limit_up = "漲停" in tags
             has_limit_down = "跌停" in tags
             has_high = "高" in tags
@@ -601,43 +518,30 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for p in final_display_points:
             if p['val'] in seen_vals and p['tag'] == "": continue
             seen_vals.add(p['val'])
-            
             v_str = fmt_price(p['val'])
             t = p['tag']
-            
-            if t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]: 
-                item = f"{t}{v_str}"
-            elif t: 
-                item = f"{v_str}{t}"
-            else: 
-                item = v_str
-            
+            if t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]: item = f"{t}{v_str}"
+            elif t: item = f"{v_str}{t}"
+            else: item = v_str
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
-        final_name = name_hint if name_hint else get_stock_name_online(code)
         
+        stock_info = twstock.codes.get(code)
+        final_name = stock_info.name if stock_info else name_hint
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
         final_name_display = f"{light} {final_name}"
         
         return {
-            "代號": code,
-            "名稱": final_name_display, 
-            "收盤價": round(current_price, 2),
-            "漲跌幅": pct_change, 
-            "當日漲停價": limit_up_next,
-            "當日跌停價": limit_down_next,
-            "自訂價(可修)": None, 
-            "獲利目標": target_price, 
-            "防守停損": stop_price,   
-            "戰略備註": strategy_note,
-            "_points": full_calc_points,
-            "狀態": ""
+            "代號": code, "名稱": final_name_display, "收盤價": round(current_price, 2),
+            "漲跌幅": pct_change, "當日漲停價": limit_up_next, "當日跌停價": limit_down_next,
+            "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
+            "戰略備註": strategy_note, "_points": full_calc_points, "狀態": ""
         }
-    except: return None
+    except Exception as e: return None
 
 # ==========================================
 # 主介面 (Tabs)
@@ -681,19 +585,17 @@ with tab1:
         targets = []
         df_up = pd.DataFrame()
         
-        # 1. 抓取排行
         if run_turnover:
             limit_count = st.session_state.limit_rows
             with st.spinner(f"🔥 正在抓取週轉率排行 (前 {limit_count} 筆)..."):
                 rank_codes, source_name = get_smart_rank(limit=limit_count)
                 if not rank_codes:
-                    st.error("⚠️ 無法抓取排行資料，請檢查網路或稍後再試。")
+                    st.error("⚠️ 無法抓取排行資料，請稍後再試或檢查網路。")
                 else:
                     st.toast(f"已從 {source_name} 抓取 {len(rank_codes)} 檔股票", icon="✅")
                     for code in rank_codes:
                         targets.append((code, "", 'rank', {}))
                     
-        # 2. 執行分析
         if run_analysis:
             try:
                 if uploaded_file:
@@ -752,7 +654,6 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
-            # 延遲 1 秒
             time.sleep(1.0)
             
             if code in fetch_cache: data = fetch_cache[code]
