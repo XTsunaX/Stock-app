@@ -238,18 +238,29 @@ def search_code_online(query):
         pass
     return None
 
-# [新增] 爬取 Yahoo 週轉率排行
+# [修改] 強化版 Yahoo 爬蟲，避免 403 錯誤
 @st.cache_data(ttl=1800)
 def scrape_yahoo_rank(limit=30):
     url = "https://tw.stock.yahoo.com/rank/turnover-ratio"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # 使用更完整的 User-Agent
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
     try:
-        r = requests.get(url, headers=headers, timeout=5)
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return [] # 失敗回傳空清單
+            
         soup = BeautifulSoup(r.text, "html.parser")
         codes = []
         for a in soup.find_all('a', href=True):
             href = a['href']
+            # Yahoo 連結特徵
             if "/quote/" in href and (".TW" in href or ".TWO" in href):
+                # 排除一些非個股的廣告連結
+                if "news" in href or "forum" in href: continue
+                
                 parts = href.split("/quote/")[1].split(".")
                 code = parts[0]
                 if code.isdigit() and code not in codes:
@@ -401,16 +412,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_during_trading = (now.time() < dt_time(13, 45))
         
         if is_today_data and is_during_trading and len(hist) > 1:
-            hist = hist.iloc[:-1]
+            # 先保留今日資料
+            today = hist.iloc[-1]
+            # 切掉今日，讓 hist 變成「直到昨日」
+            hist_prior = hist.iloc[:-1]
+            prev_day = hist_prior.iloc[-1]
+        else:
+            # 收盤後或無今日資料
+            today = hist.iloc[-1]
+            if len(hist) >= 2:
+                prev_day = hist.iloc[-2]
+            else:
+                prev_day = today
         
-        today = hist.iloc[-1]
         current_price = today['Close']
-        
-        if len(hist) >= 2: prev_day = hist.iloc[-2]
-        else: prev_day = today
-        
-        if pd.isna(current_price) or pd.isna(prev_day['Close']): return None
-
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
         target_raw = current_price * 1.03
@@ -423,6 +438,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         points = []
         
+        # 1. 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
         
@@ -433,21 +449,19 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
+        # 2. 當日關鍵點
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
+        # 昨日高低
         points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
         points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
         
+        # 昨日收盤價
         points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
         
-        prev_o = apply_tick_rules(prev_day['Open'])
-        prev_h = apply_tick_rules(prev_day['High'])
-        prev_l = apply_tick_rules(prev_day['Low'])
-        if abs(prev_o - prev_h) < 0.01 or abs(prev_o - prev_l) < 0.01:
-            points.append({"val": prev_o, "tag": ""})
-        
+        # 3. 近期高低 (90日) - 強制包含今日 High/Low 及現價
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         
@@ -457,6 +471,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # 4. 判斷觸及與是否過高/破低
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -612,6 +627,8 @@ with tab1:
             limit_count = st.session_state.limit_rows # 使用設定的筆數
             with st.spinner(f"🔥 正在抓取週轉率排行 (前 {limit_count} 筆)..."):
                 rank_codes = scrape_yahoo_rank(limit=limit_count)
+                if not rank_codes:
+                    st.error("⚠️ 無法抓取排行資料，請稍後再試或檢查網路。")
                 for code in rank_codes:
                     targets.append((code, "", 'rank', {}))
                     
@@ -679,7 +696,7 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
-            time.sleep(1.0)
+            time.sleep(1.0) # 防止封鎖
             
             if code in fetch_cache: data = fetch_cache[code]
             else:
@@ -718,7 +735,6 @@ with tab1:
         if '_source' in df_all.columns:
             df_up = df_all[df_all['_source'] == 'upload'].head(limit)
             df_se = df_all[df_all['_source'] == 'search']
-            # [修正] 排行榜也套用 limit 限制顯示
             df_rank = df_all[df_all['_source'] == 'rank'].head(limit)
             df_display = pd.concat([df_up, df_se, df_rank]).reset_index(drop=True)
         else:
@@ -785,6 +801,7 @@ with tab1:
                 
             if is_diff(last_price, orig_last_price):
                 should_update = True
+            
             pass
         
         if manual_update:
