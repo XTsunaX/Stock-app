@@ -694,7 +694,7 @@ with tab1:
                         st.session_state.stock_data.at[src_idx, col] = val
                         df_display.at[idx, col] = val
                 
-                # C. 如果是最後一列修改了自訂價 -> 標記需要重算
+                # C. [重點邏輯] 如果是「最後一列」修改了自訂價 -> 標記需要重算全表
                 if idx == last_row_idx and '自訂價(可修)' in changes:
                     need_recalc_all = True
             
@@ -737,12 +737,14 @@ with tab1:
             on_change=on_editor_change
         )
         
-        col_btn, _ = st.columns([2, 8])
-        if st.button("⚡ 強制更新狀態", use_container_width=True):
-             for i, row in st.session_state.stock_data.iterrows():
-                new_status = recalculate_row(row, points_map)
-                st.session_state.stock_data.at[i, '狀態'] = new_status
-             st.rerun()
+        # [修改] 按鈕縮小並調整位置
+        col_btn, _ = st.columns([1, 10])
+        with col_btn:
+             if st.button("⚡ 更新狀態", help="手動重新計算狀態"):
+                 for i, row in st.session_state.stock_data.iterrows():
+                    new_status = recalculate_row(row, points_map)
+                    st.session_state.stock_data.at[i, '狀態'] = new_status
+                 st.rerun()
 
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
