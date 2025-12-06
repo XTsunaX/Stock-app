@@ -655,6 +655,9 @@ with tab1:
         for col in input_cols:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
+       # ... (前段設定 column_config 等程式碼保持不變) ...
+
+        # 顯示表格並獲取使用者輸入
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -677,6 +680,7 @@ with tab1:
         col_btn, _ = st.columns([2, 8])
         manual_update = col_btn.button("⚡ 立即更新狀態", use_container_width=True)
         
+        # 處理刪除勾選
         if edited_df['移除'].any():
             removed_codes = edited_df[edited_df['移除']]['代號'].unique()
             if len(removed_codes) > 0:
@@ -684,63 +688,62 @@ with tab1:
                 save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
                 st.rerun()
         
-        # [修正 2] 
-        # 1. 手動更新
-        # 2. 自動偵測「最後一列」自訂價是否有值 (且之前沒值，或者只是簡單地檢查最後一列有無變動)
-        # 簡單邏輯：檢查是否有任何自訂價變動，如果有 -> 更新狀態但不 rerun (除非按按鈕)
-        # 為了滿足「打完最後一列自動更新」，我們檢查最後一列是否非空
+        # --- [關鍵邏輯開始] 狀態更新機制 ---
         
+        # 1. 先根據目前表格上的所有價格，預先計算好每一列的新狀態
         updated_rows = []
         for idx, row in edited_df.iterrows():
+            # 使用目前的自訂價來計算狀態 (就算還沒顯示在畫面上，也會先算好)
             new_status = recalculate_row(row, points_map)
             row['狀態'] = new_status
             updated_rows.append(row)
 
-        # 檢查最後一列是否有自訂價
-        is_last_filled = False
-        if len(edited_df) > 0:
-            last_val = str(edited_df.iloc[-1]['自訂價(可修)']).strip()
-            if last_val and last_val != "nan" and last_val != "None":
-                is_last_filled = True
-        
-        # 只有在 (按按鈕) 或 (最後一列已填寫且狀態尚未計算) 時才 Rerun
-        # 這裡簡化為：若按按鈕，強制重算存檔。若無，僅計算顯示 (不存檔/不重整) 以保持流暢
-        # 但使用者要求「自動更新」，即「最後一列打完 -> 自動觸發重整」
-        
-        # 為了達成「不中斷輸入」，我們不能在中間列 rerun
-        # 我們檢查：如果最後一列有值，且原本的狀態是空的 (代表剛打完)，則重整
-        
+        # 2. 判斷是否需要「自動重整」
         should_auto_rerun = False
+        
+        # 只有當表格有資料時才檢查
         if len(edited_df) > 0:
+            # 取得「最後一列」的索引
             last_row_idx = len(edited_df) - 1
+            
+            # 取得最後一列目前輸入的價格
             last_price = str(edited_df.iloc[last_row_idx]['自訂價(可修)']).strip()
-            last_status = str(df_display.iloc[last_row_idx]['狀態']).strip()
-            # 如果最後一列有價錢，但狀態還是空的(或舊的)，且這個價錢跟原本不一樣 -> 觸發
+            
+            # 檢查最後一列是否有輸入價格 (不是空的)
             if last_price and last_price != "nan" and last_price != "None":
-                 # 簡單判斷：最後一列有值就視為完成，可以更新全表
-                 # 但為了不一直刷，我們比較 edited_df 和 df_display 的最後一列價格是否不同
+                 # 比對「原本顯示的價格」和「現在輸入的價格」
+                 # orig_last_price 來自 df_display (尚未更新前的狀態)
                  orig_last_price = str(df_display.iloc[last_row_idx]['自訂價(可修)']).strip()
+                 
+                 # 如果最後一列的價格發生了變化 (代表使用者剛打完最後一檔)
                  if last_price != orig_last_price:
                      should_auto_rerun = True
 
+        # 3. 執行更新動作
         if manual_update or should_auto_rerun:
+            # 情況 A: 按下按鈕 或 修改了最後一列 -> 全面更新並重整頁面
             df_updated = pd.DataFrame(updated_rows)
-            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態', '戰略備註']].to_dict('index')
             
+            # 將計算好的「狀態」和「價格」寫回 session_state
+            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態', '戰略備註']].to_dict('index')
             for i, r in st.session_state.stock_data.iterrows():
                 code = r['代號']
                 if code in update_map:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
                     st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
+            
+            # 觸發頁面刷新，讓使用者看到所有狀態
             st.rerun()
+            
         else:
-            # 靜默保存自訂價 (不重整，避免中斷輸入)
-            # 這樣切換分頁再回來資料還在
+            # 情況 B: 修改中間的列 (第 1~4 檔) -> 靜默儲存，不重整
+            # 這樣做可以確保資料不會遺失，且輸入焦點不會跑掉
             temp_map = pd.DataFrame(updated_rows).set_index('代號')['自訂價(可修)'].to_dict()
             for i, r in st.session_state.stock_data.iterrows():
                 code = r['代號']
                 if code in temp_map:
+                    # 只更新價格，不更新狀態，也不 rerun
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = temp_map[code]
 
 with tab2:
