@@ -152,13 +152,13 @@ with st.sidebar:
             st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，並在最後一列按下 Enter。")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，並在最後一列按下 Enter (或手機的完成)。")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
 zoom_level = current_font_size / 14.0
 
-# [修正] 在 f-string 中 CSS 的大括號必須使用雙括號 {{ }} 來跳脫
+# [修正] f-string 中 CSS 的大括號使用雙括號 {{ }} 跳脫
 st.markdown(f"""
     <style>
     /* 表格容器縮放 */
@@ -193,7 +193,7 @@ st.markdown(f"""
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
     [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
     
-    /* 調整按鈕間距 (修正了這裡的括號問題) */
+    /* 修正按鈕容器 padding */
     div[data-testid="column"] {{
         padding: 0;
     }}
@@ -514,25 +514,28 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            # 使用 gap="small" 讓按鈕緊靠
-            c_url, c_save, c_del = st.columns([12, 1, 1], gap="small")
+            # [修正] 版面配置：左側輸入框寬，右側兩個按鈕窄，讓它們緊靠
+            c_url, c_save, c_del = st.columns([5, 1, 1], gap="small")
             
             with c_url:
                 st.text_input(
                     "輸入連結 (CSV/Excel/Google Sheet)", 
                     key="cloud_url_input",
                     placeholder="https://...",
-                    label_visibility="collapsed"
+                    # [需求] 保留原本標題文字
                 )
             
+            # [需求] 圖標附上文字
             with c_save:
-                if st.button("💾", help="記憶此連結 (清空資料時會保留)"):
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True) # 調整垂直對齊
+                if st.button("💾 記憶", help="記憶此連結 (清空資料時會保留)"):
                     url_to_save = st.session_state.cloud_url_input
                     if save_saved_url(url_to_save):
                         st.toast("連結已記憶！", icon="💾")
             
             with c_del:
-                if st.button("🗑️", help="刪除記憶的連結"):
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True) # 調整垂直對齊
+                if st.button("🗑️ 刪除", help="刪除記憶的連結"):
                     if save_saved_url(""):
                         st.session_state.cloud_url_input = ""
                         st.toast("連結記憶已清除。", icon="🗑️")
@@ -695,11 +698,13 @@ with tab1:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
         # ------------------------------------------------------------------
-        # [核心] 使用 Callback + 智慧判斷 (與上個版本相同，這部分邏輯不變)
+        # [核心] 使用 Callback + 智慧判斷 (Enter 即更新)
         # ------------------------------------------------------------------
         def on_editor_change():
             """
             當表格內容變動時觸發此函數。
+            1. 中間列修改：靜默存檔，不刷新。
+            2. 最後一列修改：觸發全表重算 (Enter/Done)。
             """
             state = st.session_state["main_editor"]
             edited_rows = state.get("edited_rows", {})
