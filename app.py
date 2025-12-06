@@ -152,7 +152,7 @@ with st.sidebar:
             st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，並在最後一列按下 Enter。")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，並點擊更新按鈕。")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
@@ -192,9 +192,10 @@ st.markdown(f"""
     .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
     [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
     
-    /* 修正按鈕容器 padding，讓雲端連結按鈕更緊湊 */
+    /* [修正] 移除按鈕列的內距，讓圖標緊靠 */
     div[data-testid="column"] {{
-        padding: 0;
+        padding-left: 0.2rem !important;
+        padding-right: 0.2rem !important;
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -513,8 +514,7 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            # [修改] 使用 [10, 1, 1] 比例，讓按鈕佔比極小，自然緊靠左側
-            # 並使用 gap="small" 縮小間距
+            # [修正] 欄位比例調整：[10, 1, 1] 確保圖標緊靠
             c_url, c_save, c_del = st.columns([10, 1, 1], gap="small")
             
             with c_url:
@@ -522,22 +522,22 @@ with tab1:
                     "輸入連結 (CSV/Excel/Google Sheet)", 
                     key="cloud_url_input",
                     placeholder="https://...",
-                    # 保留原標題，若要隱藏可設 label_visibility="collapsed"
-                    label_visibility="visible" 
+                    # [需求] 保留上方標題文字
+                    label_visibility="visible"
                 )
             
-            # [修改] 圖標附上文字，並調整垂直位置使其對齊輸入框
+            # [修正] 移除留白與文字
             with c_save:
-                # 使用 invisible 的標題來推擠按鈕位置，使其與 Input 對齊
+                # 使用 Margin 微調，使按鈕與 Input 對齊
                 st.markdown("<div style='margin-top: 29px'></div>", unsafe_allow_html=True)
-                if st.button("💾 記憶", help="記憶此連結"):
+                if st.button("💾", help="記憶此連結"):
                     url_to_save = st.session_state.cloud_url_input
                     if save_saved_url(url_to_save):
                         st.toast("連結已記憶！", icon="💾")
             
             with c_del:
                 st.markdown("<div style='margin-top: 29px'></div>", unsafe_allow_html=True)
-                if st.button("🗑️ 刪除", help="刪除記憶"):
+                if st.button("🗑️", help="刪除記憶"):
                     if save_saved_url(""):
                         st.session_state.cloud_url_input = ""
                         st.toast("已清除。", icon="🗑️")
@@ -700,63 +700,10 @@ with tab1:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
         # ------------------------------------------------------------------
-        # [核心] 使用 Callback + 智慧判斷 (Enter 即更新)
+        # [核心] 不使用 on_change Callback，避免強制 Rerun
         # ------------------------------------------------------------------
-        def on_editor_change():
-            """
-            當表格內容變動時觸發此函數。
-            1. 中間列修改：靜默存檔，不刷新。
-            2. 最後一列修改：觸發全表重算 (Enter/Done)。
-            """
-            state = st.session_state["main_editor"]
-            edited_rows = state.get("edited_rows", {})
-            
-            display_to_source_map = {} 
-            for disp_idx, row in df_display.iterrows():
-                code = row['代號']
-                src_indices = st.session_state.stock_data.index[st.session_state.stock_data['代號'] == code].tolist()
-                if src_indices:
-                    display_to_source_map[disp_idx] = src_indices[0]
-
-            need_recalc_all = False
-            last_row_idx = len(df_display) - 1
-
-            for idx, changes in edited_rows.items():
-                idx = int(idx)
-                if idx not in display_to_source_map: continue
-                src_idx = display_to_source_map[idx]
-                
-                # A. 刪除
-                if "移除" in changes and changes["移除"] is True:
-                     code_to_remove = df_display.at[idx, '代號']
-                     st.session_state.ignored_stocks.add(code_to_remove)
-                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
-                
-                # B. 修改內容
-                for col, val in changes.items():
-                    if col in ['自訂價(可修)', '戰略備註']:
-                        st.session_state.stock_data.at[src_idx, col] = val
-                        df_display.at[idx, col] = val
-                
-                # C. [關鍵邏輯]
-                # 判斷是否為「最後一列 (Visible Rows)」
-                # 當在最後一列輸入時 (包含手機按完成)，判定為輸入結束 -> 觸發重算
-                if idx == last_row_idx and '自訂價(可修)' in changes:
-                    need_recalc_all = True
-            
-            # 防呆：若最後一列有值但無狀態，重算
-            last_val = df_display.at[last_row_idx, '自訂價(可修)']
-            last_status = df_display.at[last_row_idx, '狀態']
-            if pd.notna(last_val) and str(last_val).strip() != "" and str(last_val).strip() != "None" and (pd.isna(last_status) or str(last_status) == ""):
-                need_recalc_all = True
-
-            # D. 若需要重算
-            if need_recalc_all:
-                for i, row in st.session_state.stock_data.iterrows():
-                    new_status = recalculate_row(row, points_map)
-                    st.session_state.stock_data.at[i, '狀態'] = new_status
-
-        st.data_editor(
+        # 直接使用 st.data_editor 獲取當前編輯狀態
+        edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
                 "移除": st.column_config.CheckboxColumn("刪除", width=30),
@@ -775,16 +722,81 @@ with tab1:
             hide_index=True, 
             use_container_width=False, 
             num_rows="fixed", 
-            key="main_editor",
-            on_change=on_editor_change
+            key="main_editor"
         )
         
-        # 手動更新按鈕 (保留作為備用)
+        # ------------------------------------------------------------------
+        # [邏輯] 檢查是否需要更新資料庫
+        # ------------------------------------------------------------------
+        # 比對 edited_df 和原始 session state (df_display 是從 session state 來的)
+        # 只有在滿足特定條件時，我們才將 edited_df 的內容寫回 session_state 並觸發 Rerun
+        
+        need_update = False
+        
+        # 1. 取得最後一列的「自訂價」
+        if not edited_df.empty:
+            last_idx = len(edited_df) - 1
+            last_row_price = str(edited_df.iloc[last_idx]['自訂價(可修)']).strip()
+            
+            # 2. 判斷最後一列是否有值 (且不為 None/nan)
+            if last_row_price and last_row_price.lower() != 'nan' and last_row_price.lower() != 'none':
+                # 3. 檢查目前 Session State 中該列是否已經有狀態 (避免無限迴圈)
+                # 或是檢查值是否改變了
+                
+                # 我們需要對應回原始資料的 index (因為有篩選過)
+                current_code = edited_df.iloc[last_idx]['代號']
+                original_row = st.session_state.stock_data[st.session_state.stock_data['代號'] == current_code]
+                
+                if not original_row.empty:
+                    orig_status = str(original_row.iloc[0]['狀態']).strip()
+                    orig_price = str(original_row.iloc[0]['自訂價(可修)']).strip()
+                    
+                    # 條件：
+                    # A. 最後一列有價格
+                    # B. 但是狀態是空的 (代表剛輸入完，還沒算過)
+                    # C. 或者價格跟原本存的不一樣 (代表修改了最後一列)
+                    if (not orig_status or orig_status == 'nan') or (last_row_price != orig_price):
+                        need_update = True
+        
+        # 4. 如果滿足「最後一列輸入完成」，執行全表更新
+        if need_update:
+            # 將 edited_df 的內容同步回 session_state
+            # 這裡需要小心對應代號
+            update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註', '移除']].to_dict('index')
+            
+            for i, row in st.session_state.stock_data.iterrows():
+                code = row['代號']
+                if code in update_map:
+                    # 更新移除狀態
+                    if update_map[code]['移除']:
+                        st.session_state.ignored_stocks.add(code)
+                        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+                    
+                    # 更新數值
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                    st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
+                    
+                    # 重算狀態
+                    new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
+                    st.session_state.stock_data.at[i, '狀態'] = new_status
+            
+            st.rerun()
+            
+        # 注意：如果沒有觸發 update，則本次 Rerun 結束，畫面顯示 edited_df (Streamlit 自動維護狀態)
+        # Session State 中的資料還是舊的，但 UI 是新的，這樣就不會發生「跳掉」或「重整」
+        # 直到最後一列觸發 update -> Rerun -> UI 與 Session State 同步。
+
         col_btn, _ = st.columns([1, 10])
         with col_btn:
              if st.button("⚡ 更新狀態", help="手動重新計算狀態"):
+                 # 手動按鈕：強制同步 UI 資料並重算
+                 update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
                  for i, row in st.session_state.stock_data.iterrows():
-                    new_status = recalculate_row(row, points_map)
+                    code = row['代號']
+                    if code in update_map:
+                        st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                        st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
+                    new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                     st.session_state.stock_data.at[i, '狀態'] = new_status
                  st.rerun()
 
