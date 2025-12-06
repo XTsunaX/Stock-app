@@ -18,6 +18,26 @@ import io
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 
+# [CSS 修復] 強制隱藏錯誤圖標，改用自定義箭頭
+st.markdown("""
+    <style>
+    /* 隱藏側邊欄收合按鈕內的預設內容 */
+    [data-testid="stSidebarCollapsedControl"] svg, 
+    [data-testid="stSidebarCollapsedControl"] i {
+        display: none !important;
+    }
+    /* 插入自定義箭頭 */
+    [data-testid="stSidebarCollapsedControl"]::after {
+        content: "➤";
+        font-size: 20px;
+        color: #555;
+        padding-left: 6px;
+        line-height: 40px;
+    }
+    .block-container { padding-top: 4.5rem; padding-bottom: 1rem; }
+    </style>
+""", unsafe_allow_html=True)
+
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
 
@@ -75,6 +95,7 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
+# [修正] 網址記憶
 if 'cloud_url' not in st.session_state:
     st.session_state.cloud_url = ""
 
@@ -90,25 +111,14 @@ if 'limit_rows' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    current_font_size = st.slider(
-        "字體大小 (表格)", 
-        min_value=12, 
-        max_value=72, 
-        value=st.session_state.font_size,
-        key='font_size_slider'
-    )
+    current_font_size = st.slider("字體大小 (表格)", 12, 72, value=st.session_state.font_size, key='font_size_slider')
     st.session_state.font_size = current_font_size
     
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     
     st.markdown("---")
     
-    current_limit_rows = st.number_input(
-        "顯示筆數 (分析上限)", 
-        min_value=1, 
-        value=st.session_state.limit_rows,
-        key='limit_rows_input'
-    )
+    current_limit_rows = st.number_input("顯示筆數 (上傳限制)", min_value=1, value=st.session_state.limit_rows, key='limit_rows_input')
     st.session_state.limit_rows = current_limit_rows
     
     if st.button("💾 儲存設定"):
@@ -141,35 +151,13 @@ with st.sidebar:
 font_px = f"{st.session_state.font_size}px"
 zoom_level = current_font_size / 14.0
 
-# [修正] 改回嚴格限定的 CSS 選擇器，只針對 data-testid="stDataFrame" 內部的元素
-# 這樣就不會汙染到側邊欄的按鈕圖標 (KEYBOARD_DOUBLE_ARROW_RIGHT)
 st.markdown(f"""
     <style>
-    .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
-    
-    div[data-testid="stDataFrame"] {{
-        width: 100%;
-        zoom: {zoom_level};
-    }}
-    
-    /* [關鍵修正] 每個選擇器都必須加上前綴，避免全站汙染 */
-    div[data-testid="stDataFrame"] table,
-    div[data-testid="stDataFrame"] td,
-    div[data-testid="stDataFrame"] th,
-    div[data-testid="stDataFrame"] input,
-    div[data-testid="stDataFrame"] div,
-    div[data-testid="stDataFrame"] span,
-    div[data-testid="stDataFrame"] p {{
+    div[data-testid="stDataFrame"] {{ width: 100%; zoom: {zoom_level}; }}
+    div[data-testid="stDataFrame"] table, td, th, input, div, span, p {{
         font-family: 'Microsoft JhengHei', sans-serif !important;
     }}
-    
-    [data-testid="stMetricValue"] {{
-        font-size: 1.2em;
-    }}
-    
-    /* 隱藏索引列 */
-    thead tr th:first-child {{ display:none }}
-    tbody th {{ display:none }}
+    [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -310,7 +298,7 @@ def recalculate_row(row, points_map):
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        time.sleep(0.1) 
+        time.sleep(0.1)
         
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo") 
@@ -363,7 +351,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 昨日 (範圍篩選)
+        # 昨日
         p_close = apply_tick_rules(prev_day['Close'])
         p_high = apply_tick_rules(prev_day['High'])
         p_low = apply_tick_rules(prev_day['Low'])
@@ -403,7 +391,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
             g_list = list(group)
             tags = [x['tag'] for x in g_list if x['tag']]
-            
             final_tag = ""
             has_limit_up = "漲停" in tags
             has_limit_down = "跌停" in tags
@@ -449,6 +436,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         elif "空" in strategy_note: light = "🟢"
         final_name_display = f"{light} {final_name}"
         
+        # [修正] 回傳字典的 key 必須對應 input_cols 和 rename
         return {
             "代號": code, "名稱": final_name_display, "收盤價": round(current_price, 2),
             "漲跌幅": pct_change, "當日漲停價": limit_up_next, "當日跌停價": limit_down_next,
@@ -471,7 +459,7 @@ with tab1:
         
         src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
         with src_tab1:
-            uploaded_file = st.file_uploader("上傳檔案 (CSV/XLS/HTML)", type=['xlsx', 'csv', 'html', 'xls'], label_visibility="collapsed")
+            uploaded_file = st.file_uploader("上傳檔案", type=['xlsx', 'csv', 'html', 'xls'], label_visibility="collapsed")
             selected_sheet = 0
             if uploaded_file:
                 try:
@@ -484,8 +472,9 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            cloud_url_input = st.text_input("輸入連結 (CSV/Excel/Google Sheet)", value=st.session_state.cloud_url, placeholder="https://...")
-            if cloud_url_input != st.session_state.cloud_url: st.session_state.cloud_url = cloud_url_input
+            # [修正] 使用 key 來綁定 session_state 網址，防止重整消失
+            cloud_url_input = st.text_input("輸入連結", value=st.session_state.cloud_url, key="cloud_url_input_widget")
+            if cloud_url_input: st.session_state.cloud_url = cloud_url_input
             
         search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
 
@@ -539,8 +528,9 @@ with tab1:
             n_col = next((c for c in df_up.columns if "名稱" in str(c)), None)
             
             if c_col:
-                # [修正] 限制只分析前 N 筆 (加速關鍵)
+                # [修正] 只取前 N 筆進行分析 (limit_rows)
                 limit_rows = st.session_state.limit_rows
+                
                 count = 0
                 for _, row in df_up.iterrows():
                     c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
@@ -551,16 +541,19 @@ with tab1:
                     elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True
                     if not is_valid: continue
                     
-                    if count >= limit_rows: break # 達到筆數即停止
+                    if count >= limit_rows: break # 限制筆數
                     
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
+                    
+                    # source='upload' (順序 1)
                     targets.append((c_raw, n, 'upload', count))
                     count += 1
 
         if search_selection:
             for item in search_selection:
                 parts = item.split(' ', 1)
+                # source='search' (順序 2)
                 targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
 
         results = []
@@ -570,9 +563,8 @@ with tab1:
         total = len(targets)
         
         existing_data = {}
-        if not st.session_state.stock_data.empty:
-            for idx, row in st.session_state.stock_data.iterrows():
-                existing_data[row['代號']] = row.to_dict()
+        # 清空資料
+        st.session_state.stock_data = pd.DataFrame()
 
         fetch_cache = {}
         for i, (code, name, source, extra) in enumerate(targets):
@@ -580,9 +572,6 @@ with tab1:
             
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
-            
-            # [修正] 無論是否隱藏非個股，都先抓取，最後顯示再過濾，確保資料完整性
-            # 也不要跳過，避免排序錯誤
             
             time.sleep(0.1)
             
@@ -609,7 +598,9 @@ with tab1:
     if not st.session_state.stock_data.empty:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data.copy()
-        df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價"})
+        # [修正] 欄位重新命名以對應 +3% / -3%
+        df_all = df_all.rename(columns={"獲利目標": "+3%", "防守停損": "-3%", "漲停價": "當日漲停價", "跌停價": "當日跌停價"})
+        
         df_all['代號'] = df_all['代號'].astype(str)
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
         
@@ -621,7 +612,7 @@ with tab1:
         if '_order' in df_all.columns:
             df_all = df_all.sort_values(by=['_source', '_order'])
         
-        # 直接顯示 (已在抓取時限制數量)
+        # 直接顯示 (數量已由迴圈控制)
         df_display = df_all.reset_index(drop=True)
         
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
@@ -639,8 +630,7 @@ with tab1:
         cols_to_fmt = ["收盤價", "當日漲停價", "當日跌停價", "+3%", "-3%", "自訂價(可修)"]
         for c in cols_to_fmt:
             if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
-            
-        # [修正] 再次確保轉型
+
         df_display = df_display.reset_index(drop=True)
         for col in input_cols:
              if col != "移除": df_display[col] = df_display[col].astype(str)
@@ -674,13 +664,6 @@ with tab1:
                 save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
                 st.rerun()
         
-        should_update = False
-        if len(edited_df) > 0:
-            last_idx = len(edited_df) - 1
-            last_price = edited_df.iloc[last_idx]['自訂價(可修)']
-            orig_last_price = df_display.iloc[last_idx]['自訂價(可修)']
-            if str(last_price) != str(orig_last_price): should_update = True
-
         updated_rows = []
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row, points_map)
