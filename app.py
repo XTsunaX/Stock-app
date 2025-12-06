@@ -411,4 +411,360 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             t = p['tag']
             if t in ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]: item = f"{t}{v_str}"
             elif t: item = f"{v_str}{t}"
-            else: item = v
+            else: item = v_str
+            note_parts.append(item)
+        
+        strategy_note = "-".join(note_parts)
+        full_calc_points = final_display_points
+        
+        final_name = name_hint if name_hint else get_stock_name_online(code)
+        light = "⚪"
+        if "多" in strategy_note: light = "🔴"
+        elif "空" in strategy_note: light = "🟢"
+        final_name_display = f"{light} {final_name}"
+        
+        return {
+            "代號": code, "名稱": final_name_display, "收盤價": round(current_price, 2),
+            "漲跌幅": pct_change, "當日漲停價": limit_up_next, "當日跌停價": limit_down_next,
+            "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
+            "戰略備註": strategy_note, "_points": full_calc_points, "狀態": ""
+        }
+    except Exception as e: return None
+
+# ==========================================
+# 主介面 (Tabs)
+# ==========================================
+
+tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
+
+with tab1:
+    col_search, col_file = st.columns([2, 1])
+    with col_search:
+        code_map, name_map = load_local_stock_names()
+        stock_options = [f"{code} {name}" for code, name in sorted(code_map.items())]
+        
+        src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
+        with src_tab1:
+            uploaded_file = st.file_uploader("上傳檔案 (CSV/XLS/HTML)", type=['xlsx', 'csv', 'html', 'xls'], label_visibility="collapsed")
+            selected_sheet = 0
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.xlsx'):
+                        xl_file = pd.ExcelFile(uploaded_file)
+                        sheet_options = xl_file.sheet_names
+                        default_idx = 0
+                        if "週轉率" in sheet_options: default_idx = sheet_options.index("週轉率")
+                        selected_sheet = st.selectbox("選擇工作表", sheet_options, index=default_idx)
+                except: pass
+
+        with src_tab2:
+            cloud_url_input = st.text_input("輸入連結 (CSV/Excel/Google Sheet)", value=st.session_state.cloud_url, placeholder="https://...")
+            if cloud_url_input != st.session_state.cloud_url: st.session_state.cloud_url = cloud_url_input
+            
+        search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
+
+    # [修正] 按鈕大小還原
+    if st.button("🚀 執行分析"):
+        targets = []
+        df_up = pd.DataFrame()
+        
+        try:
+            if uploaded_file:
+                uploaded_file.seek(0)
+                fname = uploaded_file.name.lower()
+                
+                if fname.endswith('.csv'):
+                    try: df_up = pd.read_csv(uploaded_file, dtype=str, encoding='cp950')
+                    except: 
+                        uploaded_file.seek(0)
+                        df_up = pd.read_csv(uploaded_file, dtype=str)
+                        
+                elif fname.endswith('.html') or fname.endswith('.htm') or fname.endswith('.xls'):
+                    try: dfs = pd.read_html(uploaded_file, encoding='cp950')
+                    except:
+                        uploaded_file.seek(0)
+                        dfs = pd.read_html(uploaded_file, encoding='utf-8')
+                    for df in dfs:
+                        if df.apply(lambda r: r.astype(str).str.contains('代號').any(), axis=1).any():
+                             df_up = df
+                             for i, row in df.iterrows():
+                                 if "代號" in row.values:
+                                     df_up.columns = row
+                                     df_up = df_up.iloc[i+1:]
+                                     break
+                             break
+                    if df_up.empty and dfs: df_up = dfs[0]
+                
+                elif fname.endswith('.xlsx'):
+                    df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
+
+            elif st.session_state.cloud_url:
+                url = st.session_state.cloud_url
+                if "docs.google.com" in url and "/spreadsheets/" in url and "/edit" in url:
+                    url = url.split("/edit")[0] + "/export?format=csv"
+                try: df_up = pd.read_csv(url, dtype=str)
+                except:
+                    try: df_up = pd.read_excel(url, dtype=str)
+                    except: st.error("❌ 無法讀取雲端檔案。")
+        except Exception as e: st.error(f"讀取失敗: {e}")
+
+        if not df_up.empty:
+            # 標準化欄位
+            df_up.columns = df_up.columns.astype(str).str.strip()
+            c_col = next((c for c in df_up.columns if "代號" in c), None)
+            n_col = next((c for c in df_up.columns if "名稱" in c), None)
+            
+            if c_col:
+                limit_rows = st.session_state.limit_rows
+                count = 0
+                for _, row in df_up.iterrows():
+                    c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
+                    if not c_raw or c_raw.lower() == 'nan': continue
+                    is_valid = False
+                    if c_raw.isdigit() and len(c_raw) <= 4: is_valid = True
+                    elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True
+                    if not is_valid: continue
+                    
+                    if count >= limit_rows: break
+                    
+                    n = str(row[n_col]) if n_col else ""
+                    if n.lower() == 'nan': n = ""
+                    targets.append((c_raw, n, 'upload', {}))
+                    count += 1
+
+        if search_selection:
+            for item in search_selection:
+                parts = item.split(' ', 1)
+                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', {}))
+
+        results = []
+        seen = set()
+        status_text = st.empty()
+        bar = st.progress(0)
+        total = len(targets)
+        
+        existing_data = {}
+        if not st.session_state.stock_data.empty:
+            for idx, row in st.session_state.stock_data.iterrows():
+                existing_data[row['代號']] = row.to_dict()
+
+        fetch_cache = {}
+        for i, (code, name, source, extra) in enumerate(targets):
+            status_text.text(f"正在分析 {i+1}/{total}: {code} {name} ...")
+            
+            if code in st.session_state.ignored_stocks: continue
+            if (code, source) in seen: continue
+            
+            if hide_non_stock:
+                if code.startswith("00"): continue
+                if len(code) > 4 and code.isdigit(): continue
+            
+            time.sleep(0.8)
+            
+            if code in fetch_cache: data = fetch_cache[code]
+            else:
+                data = fetch_stock_data_raw(code, name, extra)
+                if data: fetch_cache[code] = data
+            
+            if data:
+                data['_source'] = source
+                existing_data[code] = data
+                seen.add((code, source))
+                
+            if total > 0: bar.progress((i+1)/total)
+        
+        bar.empty()
+        status_text.empty()
+        
+        if existing_data:
+            st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+
+    if not st.session_state.stock_data.empty:
+        limit = st.session_state.limit_rows
+        df_all = st.session_state.stock_data.copy()
+        df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價"})
+        df_all['代號'] = df_all['代號'].astype(str)
+        df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
+        
+        if hide_non_stock:
+             mask_etf = df_all['代號'].str.startswith('00')
+             mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
+             df_all = df_all[~(mask_etf | mask_warrant)]
+        
+        if '_source' in df_all.columns:
+            df_up = df_all[df_all['_source'] == 'upload'].head(limit)
+            df_se = df_all[df_all['_source'] == 'search']
+            df_display = pd.concat([df_up, df_se]).reset_index(drop=True)
+        else:
+            df_display = df_all.head(limit).reset_index(drop=True)
+        
+        note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
+
+        df_display["移除"] = False
+        
+        # [修正] 移除 _points 避免前端錯誤，並在後續對照
+        # 建立 points_map 供計算使用
+        points_map = df_display.set_index('代號')['_points'].to_dict()
+
+        input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅"]
+        for col in input_cols:
+            if col not in df_display.columns: df_display[col] = None
+
+        cols_to_fmt = ["收盤價", "當日漲停價", "當日跌停價", "+3%", "-3%", "自訂價(可修)"]
+        for c in cols_to_fmt:
+            if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
+
+        # 重置索引
+        df_display = df_display.reset_index(drop=True)
+
+        edited_df = st.data_editor(
+            df_display[input_cols],
+            column_config={
+                "移除": st.column_config.CheckboxColumn("🗑️", width=30),
+                "代號": st.column_config.TextColumn(disabled=True, width=50),
+                "名稱": st.column_config.TextColumn(disabled=True, width="small"),
+                "收盤價": st.column_config.TextColumn(width="small", disabled=True),
+                "漲跌幅": st.column_config.NumberColumn(format="%.2f%%", disabled=True, width="small"),
+                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60),
+                "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
+                "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
+                "+3%": st.column_config.TextColumn(width="small", disabled=True),
+                "-3%": st.column_config.TextColumn(width="small", disabled=True),
+                "狀態": st.column_config.TextColumn(width=60, disabled=True),
+                "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=False),
+                # _points 已移除
+            },
+            hide_index=True, use_container_width=False, num_rows="fixed", key="main_editor"
+        )
+        
+        col_btn, _ = st.columns([2, 8])
+        manual_update = col_btn.button("⚡ 立即更新狀態 (或輸入完最後一列自動更新)", use_container_width=True)
+        
+        if edited_df['移除'].any():
+            removed_codes = edited_df[edited_df['移除']]['代號'].unique()
+            if len(removed_codes) > 0:
+                st.session_state.ignored_stocks.update(removed_codes)
+                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+                st.rerun()
+        
+        should_update = False
+        if len(edited_df) > 0:
+            last_idx = len(edited_df) - 1
+            last_price = edited_df.iloc[last_idx]['自訂價(可修)']
+            orig_last_price = df_display.iloc[last_idx]['自訂價(可修)']
+            if str(last_price) != str(orig_last_price): should_update = True
+
+        updated_rows = []
+        for idx, row in edited_df.iterrows():
+            # [修正] 傳入 points_map
+            new_status = recalculate_row(row, points_map)
+            row['狀態'] = new_status
+            updated_rows.append(row)
+            
+        if updated_rows:
+            df_updated = pd.DataFrame(updated_rows)
+            update_map = df_updated.set_index('代號')[['自訂價(可修)', '狀態', '戰略備註']].to_dict('index')
+            
+            for i, r in st.session_state.stock_data.iterrows():
+                code = r['代號']
+                if code in update_map:
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
+                    st.session_state.stock_data.at[i, '狀態'] = update_map[code]['狀態']
+                    st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
+            
+            if should_update or manual_update:
+                st.rerun()
+
+with tab2:
+    st.markdown("#### 💰 當沖損益室 💰")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        calc_price = st.number_input("基準價格", value=float(st.session_state.calc_base_price), step=0.01, format="%.2f", key="input_base_price")
+        if calc_price != st.session_state.calc_base_price:
+            st.session_state.calc_base_price = calc_price
+            st.session_state.calc_view_price = apply_tick_rules(calc_price)
+    with c2: shares = st.number_input("股數", value=1000, step=1000)
+    with c3: discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
+    with c4: min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
+    with c5: tick_count = st.number_input("顯示檔數 (檔)", value=5, min_value=1, max_value=50, step=1)
+    direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
+    limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
+    b1, b2, _ = st.columns([1, 1, 6])
+    with b1:
+        if st.button("🔼 向上", use_container_width=True):
+            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
+            if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
+            st.rerun()
+    with b2:
+        if st.button("🔽 向下", use_container_width=True):
+            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
+            if st.session_state.calc_view_price < limit_down: st.session_state.calc_view_price = limit_down
+            st.rerun()
+    
+    ticks_range = range(tick_count, -(tick_count + 1), -1)
+    calc_data = []
+    base_p = st.session_state.calc_base_price
+    if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = base_p
+    view_p = st.session_state.calc_view_price
+    is_long = "多" in direction
+    fee_rate = 0.001425; tax_rate = 0.0015 
+    
+    for i in ticks_range:
+        p = move_tick(view_p, i)
+        if p > limit_up or p < limit_down: continue
+        
+        if is_long:
+            buy_price = base_p; sell_price = p
+            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
+            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
+            tax = math.floor(sell_price * shares * tax_rate)
+            cost = (buy_price * shares) + buy_fee
+            income = (sell_price * shares) - sell_fee - tax
+            profit = income - cost
+            total_fee = buy_fee + sell_fee
+        else: 
+            sell_price = base_p; buy_price = p
+            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
+            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
+            tax = math.floor(sell_price * shares * tax_rate)
+            income = (sell_price * shares) - sell_fee - tax
+            cost = (buy_price * shares) + buy_fee
+            profit = income - cost
+            total_fee = buy_fee + sell_fee
+        roi = 0
+        if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
+        diff = p - base_p
+        
+        diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
+        if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
+        
+        note_type = ""
+        if abs(p - limit_up) < 0.001: note_type = "up"
+        elif abs(p - limit_down) < 0.001: note_type = "down"
+        is_base = (abs(p - base_p) < 0.001)
+        
+        calc_data.append({
+            "成交價": fmt_price(p), "漲跌": diff_str, "預估損益": int(profit), "報酬率%": f"{roi:+.2f}%",
+            "手續費": int(total_fee), "交易稅": int(tax), "_profit": profit, "_note_type": note_type, "_is_base": is_base
+        })
+        
+    df_calc = pd.DataFrame(calc_data)
+    def style_calc_row(row):
+        if row['_is_base']: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+        nt = row['_note_type']
+        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+        elif nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+        prof = row['_profit']
+        if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
+        elif prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+        else: return ['color: gray'] * len(row)
+
+    if not df_calc.empty:
+        table_height = (len(df_calc) + 1) * 35 
+        st.dataframe(
+            df_calc.style.apply(style_calc_row, axis=1), use_container_width=False, hide_index=True, height=table_height,
+            column_config={"_profit": None, "_note_type": None, "_is_base": None}
+        )
