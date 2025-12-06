@@ -176,128 +176,62 @@ def search_code_online(query):
     if query in name_map: return name_map[query]
     return None
 
-# [新增] 1. Goodinfo 爬蟲 (通常資料最穩，但需要 header)
-def scrape_goodinfo_rank(limit=30):
-    url = "https://goodinfo.tw/tw/StockList.asp?MARKET_CAT=熱門排行&INDUSTRY_CAT=週轉率最高"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://goodinfo.tw/tw/index.asp'
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.encoding = 'utf-8'
-        # 使用 pandas 讀取所有表格
-        dfs = pd.read_html(r.text)
-        for df in dfs:
-            # Goodinfo 的表格通常有 "代號", "名稱", "週轉率"
-            if '代號' in df.columns and '名稱' in df.columns:
-                # 排除重複的 header 列
-                df = df[df['代號'] != '代號']
-                codes = df['代號'].astype(str).tolist()
-                valid_codes = [c for c in codes if c.isdigit()]
-                if len(valid_codes) > 0:
-                    return valid_codes[:limit]
-        return []
-    except:
-        return []
-
-# [優化] 2. HiStock 爬蟲
-def scrape_histock_rank(limit=30):
-    url = "https://histock.tw/stock/rank.aspx?p=tr"
+# [強化] 抓取 Yahoo 週轉率排行 (使用 pandas)
+def scrape_yahoo_rank(limit=30):
+    url = "https://tw.stock.yahoo.com/rank/turnover-ratio"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        # 嘗試使用 pandas
-        try:
-            dfs = pd.read_html(r.text)
-            for df in dfs:
-                if '代號' in df.columns:
-                    codes = df['代號'].dropna().astype(str).tolist()
-                    valid_codes = [c for c in codes if c.isdigit()]
-                    if valid_codes: return valid_codes[:limit]
-        except: pass
-
-        # 如果 pandas 失敗，嘗試 BeautifulSoup
-        soup = BeautifulSoup(r.text, "html.parser")
-        codes = []
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if href.startswith("/stock/") and len(href) > 7:
-                code = href.split("/")[-1]
-                if code.isdigit() and code not in codes:
-                    codes.append(code)
-                if len(codes) >= limit: break
-        return codes
+        # 使用 pandas 直接讀取表格，這通常比 requests + bs4 更能繞過簡單的防爬
+        dfs = pd.read_html(url, encoding='utf-8')
+        for df in dfs:
+            # 尋找包含 "代號" 或 "名稱" 的表格
+            cols = str(df.columns)
+            if "名次" in cols or "代號" in cols or "股名" in cols:
+                # 嘗試提取代號
+                codes = []
+                for item in df.iloc[:, 1]: # 通常第二欄是代號或名稱
+                    # 嘗試清理出代號
+                    raw = str(item).split(' ')[0].strip()
+                    if raw.isdigit():
+                        codes.append(raw)
+                    elif '.TW' in raw:
+                        codes.append(raw.split('.')[0])
+                
+                # 如果這招沒效，嘗試遍歷所有欄位找數字代號
+                if not codes:
+                    for col in df.columns:
+                        for val in df[col]:
+                            s = str(val).split(' ')[0]
+                            if s.isdigit() and len(s) == 4:
+                                codes.append(s)
+                                
+                # 去重並回傳
+                unique_codes = []
+                for c in codes:
+                    if c not in unique_codes: unique_codes.append(c)
+                
+                if len(unique_codes) > 0:
+                    return unique_codes[:limit]
+        return []
     except:
         return []
 
-# [保留] 3. Yahoo 爬蟲
-def scrape_yahoo_rank(limit=30):
-    url = "https://tw.stock.yahoo.com/rank/turnover-ratio"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(r.text, "html.parser")
-        codes = []
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if "/quote/" in href and (".TW" in href or ".TWO" in href):
-                if "news" in href or "forum" in href: continue
-                parts = href.split("/quote/")[1].split(".")
-                code = parts[0]
-                if code.isdigit() and code not in codes:
-                    codes.append(code)
-                if len(codes) >= limit: break
-        return codes
-    except: return []
-
-# [保留] 4. PChome 爬蟲
-def scrape_pchome_rank(limit=30):
-    urls = [
-        "https://pchome.megatime.com.tw/rank/tse/turnover_ratio.html",
-        "https://pchome.megatime.com.tw/rank/otc/turnover_ratio.html"
-    ]
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    codes = []
-    for url in urls:
-        try:
-            r = requests.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                if "/stock/sid" in href:
-                    code = href.split("sid")[1].split(".")[0]
-                    if code.isdigit() and code not in codes:
-                        codes.append(code)
-                    if len(codes) >= limit: break
-        except: continue
-        if len(codes) >= limit: break
-    return codes[:limit]
-
-# [整合] 智慧型排行抓取 (增加 Goodinfo)
+# [整合] 智慧型排行抓取 (含預設名單)
 @st.cache_data(ttl=1800)
 def get_smart_rank(limit=30):
-    # 策略 1: Goodinfo (最強)
-    codes = scrape_goodinfo_rank(limit)
-    if codes: return codes, "Goodinfo"
-    
-    # 策略 2: HiStock
-    codes = scrape_histock_rank(limit)
-    if codes: return codes, "HiStock"
-    
-    # 策略 3: Yahoo
+    # 1. 嘗試 Yahoo (Pandas)
     codes = scrape_yahoo_rank(limit)
     if codes: return codes, "Yahoo"
     
-    # 策略 4: PChome
-    codes = scrape_pchome_rank(limit)
-    if codes: return codes, "PChome"
-    
-    return [], "Fail"
+    # 2. 預設熱門清單 (最後防線，確保一定有資料)
+    # 包含使用者常看的 亞電, 晶彩科, 定穎投控 等熱門股
+    fallback = [
+        "3535", "4939", "3715", "2317", "2330", "2603", "2609", "3231", "2382", "2454",
+        "3037", "3035", "2356", "2363", "2303", "2891", "2881", "2882", "1513", "1519"
+    ]
+    return fallback[:limit], "預設清單(網路連線異常)"
 
 # ==========================================
 # 2. 核心計算邏輯
@@ -401,30 +335,40 @@ def recalculate_row(row):
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        ticker = yf.Ticker(f"{code}.TW")
-        hist = ticker.history(period="3mo") 
-        if hist.empty:
-            ticker = yf.Ticker(f"{code}.TWO")
-            hist = ticker.history(period="3mo")
+        # 1. 歷史 (FinMind)
+        api = DataLoader()
+        start_date = (datetime.now() - timedelta(days=150)).strftime('%Y-%m-%d')
+        df = pd.DataFrame()
+        # 增加重試
+        for _ in range(3):
+            try:
+                df = api.taiwan_stock_daily(stock_id=code, start_date=start_date)
+                if not df.empty: break
+            except: time.sleep(0.5)
         
-        if hist.empty: return None
+        if df.empty: return None
 
-        tz = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz)
-        last_date = hist.index[-1].date()
-        is_today_data = (last_date == now.date())
-        is_during_trading = (now.time() < dt_time(13, 45))
+        df = df.rename(columns={"date": "Date", "open": "Open", "max": "High", "min": "Low", "close": "Close", "Trading_Volume": "Volume"})
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.set_index('Date')
         
-        if is_today_data and is_during_trading and len(hist) > 1:
-            hist = hist.iloc[:-1]
+        # 2. 即時 (twstock)
+        real = twstock.realtime.get(code)
+        if not real['success']: return None
+        real_data = real['realtime']
         
-        today = hist.iloc[-1]
-        current_price = today['Close']
+        latest_price = real_data.get('latest_trade_price', None)
+        if latest_price == '-' or latest_price is None:
+             latest_price = real_data.get('open', df.iloc[-1]['Close'])
+        current_price = float(latest_price)
         
-        if len(hist) >= 2: prev_day = hist.iloc[-2]
-        else: prev_day = today
+        today_open = float(real_data['open']) if real_data['open'] != '-' else current_price
+        today_high = float(real_data['high']) if real_data['high'] != '-' else current_price
+        today_low = float(real_data['low']) if real_data['low'] != '-' else current_price
         
-        if pd.isna(current_price) or pd.isna(prev_day['Close']): return None
+        if df.index[-1].date() == datetime.now().date(): df = df.iloc[:-1]
+        hist = df.tail(90)
+        prev_day = hist.iloc[-1]
 
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
@@ -445,20 +389,26 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
         # 當日
-        points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
-        points.append({"val": apply_tick_rules(today['High']), "tag": ""})
-        points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
+        points.append({"val": apply_tick_rules(today_open), "tag": ""})
+        points.append({"val": apply_tick_rules(today_high), "tag": ""})
+        points.append({"val": apply_tick_rules(today_low), "tag": ""})
         
-        # 昨日高低
-        points.append({"val": apply_tick_rules(prev_day['High']), "tag": ""})
-        points.append({"val": apply_tick_rules(prev_day['Low']), "tag": ""})
+        # [修正] 昨日高低點與收盤 (僅當其在合理範圍內時顯示，避免過舊的雜訊)
+        p_close = apply_tick_rules(prev_day['Close'])
+        p_high = apply_tick_rules(prev_day['High'])
+        p_low = apply_tick_rules(prev_day['Low'])
         
-        # 昨日收盤
-        points.append({"val": apply_tick_rules(prev_day['Close']), "tag": ""})
+        points.append({"val": p_close, "tag": ""})
+        
+        # 判斷是否顯示昨高/昨低 (篩選：如果在明日漲跌停範圍內)
+        if limit_down_next <= p_high <= limit_up_next:
+            points.append({"val": p_high, "tag": ""})
+        if limit_down_next <= p_low <= limit_up_next:
+            points.append({"val": p_low, "tag": ""})
         
         # 近期高低 (90日)
-        high_90_raw = max(hist['High'].max(), today['High'], current_price)
-        low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
+        high_90_raw = max(hist['High'].max(), today_high, current_price)
+        low_90_raw = min(hist['Low'].min(), today_low, current_price)
         
         high_90 = apply_tick_rules(high_90_raw)
         low_90 = apply_tick_rules(low_90_raw)
@@ -467,8 +417,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": low_90, "tag": "低"})
 
         # 觸及
-        touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
-        touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
+        touched_up = (today_high >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
+        touched_down = (today_low <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
         if target_price > high_90: points.append({"val": target_price, "tag": ""})
         if stop_price < low_90: points.append({"val": stop_price, "tag": ""})
@@ -526,8 +476,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             note_parts.append(item)
         
         strategy_note = "-".join(note_parts)
-        full_calc_points = final_display_points
-        
         stock_info = twstock.codes.get(code)
         final_name = stock_info.name if stock_info else name_hint
         light = "⚪"
@@ -589,12 +537,14 @@ with tab1:
             limit_count = st.session_state.limit_rows
             with st.spinner(f"🔥 正在抓取週轉率排行 (前 {limit_count} 筆)..."):
                 rank_codes, source_name = get_smart_rank(limit=limit_count)
-                if not rank_codes:
-                    st.error("⚠️ 無法抓取排行資料，請稍後再試或檢查網路。")
+                # 如果是預設清單，顯示警告
+                if source_name.startswith("預設"):
+                    st.warning(f"⚠️ 網路抓取失敗，已切換至 {source_name}，請稍後再試。")
                 else:
                     st.toast(f"已從 {source_name} 抓取 {len(rank_codes)} 檔股票", icon="✅")
-                    for code in rank_codes:
-                        targets.append((code, "", 'rank', {}))
+                
+                for code in rank_codes:
+                    targets.append((code, "", 'rank', {}))
                     
         if run_analysis:
             try:
@@ -654,7 +604,8 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
-            time.sleep(1.0)
+            # 智慧延遲
+            time.sleep(0.8)
             
             if code in fetch_cache: data = fetch_cache[code]
             else:
