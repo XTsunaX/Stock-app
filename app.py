@@ -102,6 +102,7 @@ with st.sidebar:
     )
     st.session_state.font_size = current_font_size
     
+    # 這是使用者勾選的隱藏選項
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     
     st.markdown("---")
@@ -559,7 +560,10 @@ with tab1:
             if c_col:
                 limit_rows = st.session_state.limit_rows
                 count = 0
+                
+                # --- [修正邏輯] 預先過濾，確保補齊顯示筆數 ---
                 for _, row in df_up.iterrows():
+                    # 1. 解析代號
                     c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
                     if not c_raw or c_raw.lower() == 'nan': continue
                     is_valid = False
@@ -567,8 +571,19 @@ with tab1:
                     elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True
                     if not is_valid: continue
                     
+                    # 2. 檢查是否在「忽略名單」中 (若在則跳過)
+                    if c_raw in st.session_state.ignored_stocks: continue
+                    
+                    # 3. 檢查「隱藏非個股」設定 (若開啟且符合非個股特徵則跳過)
+                    if hide_non_stock:
+                        is_etf = c_raw.startswith('00')
+                        is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
+                        if is_etf or is_warrant: continue
+                    
+                    # 4. 如果名額已滿，則停止搜尋
                     if count >= limit_rows: break 
                     
+                    # 5. 通過所有檢查，加入分析清單
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
                     targets.append((c_raw, n, 'upload', count))
@@ -710,9 +725,7 @@ with tab1:
                     new_status = recalculate_row(row, points_map)
                     st.session_state.stock_data.at[i, '狀態'] = new_status
             
-            # Callback 結束後，Streamlit 會自動執行一次 Rerun，
-            # 若 need_recalc_all 為 False，因為沒有修改其他 state 觸發組件重繪，
-            # 通常不會造成全頁重整，僅會默默更新資料。
+            # Callback 結束後，Streamlit 會自動執行一次 Rerun
 
         st.data_editor(
             df_display[input_cols],
