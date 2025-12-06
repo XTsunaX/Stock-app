@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
 import math
 import time
 import os
@@ -71,6 +73,10 @@ if 'calc_base_price' not in st.session_state:
 
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
+
+# [還原] 雲端網址狀態
+if 'cloud_url' not in st.session_state:
+    st.session_state.cloud_url = ""
 
 saved_config = load_config()
 
@@ -151,9 +157,24 @@ def load_local_stock_names():
 @st.cache_data(ttl=86400)
 def get_stock_name_online(code):
     code = str(code).strip()
+    if not code.isdigit(): return code
     code_map, _ = load_local_stock_names()
     if code in code_map: return code_map[code]
-    return code
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{code}.TW"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=2)
+        soup = BeautifulSoup(r.text, "html.parser")
+        if soup.title and "(" in soup.title.string:
+            return soup.title.string.split('(')[0].strip()
+        url_two = f"https://tw.stock.yahoo.com/quote/{code}.TWO"
+        r_two = requests.get(url_two, headers=headers, timeout=2)
+        soup_two = BeautifulSoup(r_two.text, "html.parser")
+        if soup_two.title and "(" in soup_two.title.string:
+            return soup_two.title.string.split('(')[0].strip()
+        return code
+    except:
+        return code
 
 @st.cache_data(ttl=86400)
 def search_code_online(query):
@@ -161,6 +182,18 @@ def search_code_online(query):
     if query.isdigit(): return query
     _, name_map = load_local_stock_names()
     if query in name_map: return name_map[query]
+    try:
+        url = f"https://tw.stock.yahoo.com/h/kimosearch/search_list.html?keyword={query}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=2)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.find_all('a', href=True)
+        for link in links:
+            if "/quote/" in link['href'] and ".TW" in link['href']:
+                parts = link['href'].split("/quote/")[1].split(".")
+                if parts[0].isdigit(): return parts[0]
+    except:
+        pass
     return None
 
 # ==========================================
@@ -265,7 +298,8 @@ def recalculate_row(row):
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     try:
-        # 使用 yfinance 抓取 (重試機制)
+        time.sleep(0.8) # 智慧延遲
+        
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo") 
         if hist.empty:
@@ -280,13 +314,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         is_today_data = (last_date == now.date())
         is_during_trading = (now.time() < dt_time(13, 45))
         
-        # 判斷是否為盤中 (避免使用盤中即時 K 棒做歷史統計，但需顯示當日開高低)
         if is_today_data and is_during_trading and len(hist) > 1:
-            today = hist.iloc[-1] # 今日 (盤中)
-            hist_prior = hist.iloc[:-1] # 歷史 (不含今日)
-            prev_day = hist_prior.iloc[-1] # 昨日
+            today = hist.iloc[-1]
+            hist_prior = hist.iloc[:-1]
+            prev_day = hist_prior.iloc[-1]
         else:
-            today = hist.iloc[-1] # 今日 (盤後)
+            today = hist.iloc[-1]
             if len(hist) >= 2:
                 prev_day = hist.iloc[-2]
                 hist_prior = hist.iloc[:-1]
@@ -307,18 +340,15 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
         points = []
         
-        # 5MA
         ma5_raw = hist['Close'].tail(5).mean()
         ma5 = apply_sr_rules(ma5_raw, current_price)
         ma5_tag = "多" if ma5_raw < current_price else ("空" if ma5_raw > current_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-        # 當日
         points.append({"val": apply_tick_rules(today['Open']), "tag": ""})
         points.append({"val": apply_tick_rules(today['High']), "tag": ""})
         points.append({"val": apply_tick_rules(today['Low']), "tag": ""})
         
-        # 昨日 (高/低/收) - 範圍篩選
         p_close = apply_tick_rules(prev_day['Close'])
         p_high = apply_tick_rules(prev_day['High'])
         p_low = apply_tick_rules(prev_day['Low'])
@@ -327,7 +357,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if limit_down_next <= p_high <= limit_up_next: points.append({"val": p_high, "tag": ""})
         if limit_down_next <= p_low <= limit_up_next: points.append({"val": p_low, "tag": ""})
         
-        # 近期高低 (90日) - 強制包含今日
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         high_90 = apply_tick_rules(high_90_raw)
@@ -336,7 +365,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 觸及判斷
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -365,7 +393,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             has_high = "高" in tags
             has_low = "低" in tags
             
-            # 合併邏輯
             if has_limit_up and has_high: final_tag = "漲停高"
             elif has_limit_down and has_low: final_tag = "跌停低"
             elif has_limit_up: final_tag = "漲停"
@@ -377,7 +404,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 elif "空" in tags: final_tag = "空"
                 elif "平" in tags: final_tag = "平"
             
-            # 5MA 補償
             if ("多" in tags or "空" in tags or "平" in tags) and final_tag not in ["漲停", "跌停", "漲停高", "跌停低"]:
                 if "多" in tags: final_tag = "多"
                 elif "空" in tags: final_tag = "空"
@@ -399,8 +425,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         
         strategy_note = "-".join(note_parts)
         full_calc_points = final_display_points
-        final_name = name_hint if name_hint else get_stock_name_online(code)
         
+        final_name = name_hint if name_hint else get_stock_name_online(code)
         light = "⚪"
         if "多" in strategy_note: light = "🔴"
         elif "空" in strategy_note: light = "🟢"
@@ -426,13 +452,14 @@ with tab1:
         code_map, name_map = load_local_stock_names()
         stock_options = [f"{code} {name}" for code, name in sorted(code_map.items())]
         
+        # [還原] 恢復雲端匯入 Tab
         src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
         with src_tab1:
             uploaded_file = st.file_uploader("上傳檔案 (CSV/XLS/HTML)", type=['xlsx', 'csv', 'html', 'xls'], label_visibility="collapsed")
             selected_sheet = 0
             if uploaded_file:
                 try:
-                    if not uploaded_file.name.endswith('.csv'):
+                    if uploaded_file.name.endswith('.xlsx'):
                         xl_file = pd.ExcelFile(uploaded_file)
                         sheet_options = xl_file.sheet_names
                         default_idx = 0
@@ -441,7 +468,14 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            st.info("💡 雲端匯入功能已停用，請使用上傳檔案功能。")
+            # [還原] 雲端連結輸入框
+            cloud_url_input = st.text_input(
+                "輸入連結 (CSV/Excel/Google Sheet)", 
+                value=st.session_state.cloud_url, 
+                placeholder="https://..."
+            )
+            if cloud_url_input != st.session_state.cloud_url:
+                st.session_state.cloud_url = cloud_url_input
             
         search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
 
@@ -450,21 +484,19 @@ with tab1:
         df_up = pd.DataFrame()
         
         try:
+            # [修復] 處理 Goodinfo 檔案 (CSV/HTML/XLS)
             if uploaded_file:
                 uploaded_file.seek(0)
                 fname = uploaded_file.name.lower()
                 
-                # [修正] Goodinfo 檔案解析
                 if fname.endswith('.csv'):
-                    # 嘗試 cp950 (Big5)
                     try: df_up = pd.read_csv(uploaded_file, dtype=str, encoding='cp950')
                     except: 
                         uploaded_file.seek(0)
                         df_up = pd.read_csv(uploaded_file, dtype=str)
-                        
+                
                 elif fname.endswith('.html') or fname.endswith('.htm') or fname.endswith('.xls'):
-                    try:
-                        dfs = pd.read_html(uploaded_file, encoding='cp950')
+                    try: dfs = pd.read_html(uploaded_file, encoding='cp950')
                     except:
                         uploaded_file.seek(0)
                         dfs = pd.read_html(uploaded_file, encoding='utf-8')
@@ -473,7 +505,7 @@ with tab1:
                     for df in dfs:
                         if df.apply(lambda r: r.astype(str).str.contains('代號').any(), axis=1).any():
                              df_up = df
-                             # 修正 header: 找到包含 "代號" 的那一列作為 header
+                             # 尋找 header 列
                              for i, row in df.iterrows():
                                  if "代號" in row.values:
                                      df_up.columns = row
@@ -481,11 +513,19 @@ with tab1:
                                      break
                              break
                     if df_up.empty and dfs: df_up = dfs[0]
-                
+                    
                 elif fname.endswith('.xlsx'):
                     df_up = pd.read_excel(uploaded_file, sheet_name=selected_sheet, dtype=str)
 
-        except Exception as e: st.error(f"檔案讀取失敗: {e}")
+            elif st.session_state.cloud_url:
+                url = st.session_state.cloud_url
+                if "docs.google.com" in url and "/spreadsheets/" in url and "/edit" in url:
+                    url = url.split("/edit")[0] + "/export?format=csv"
+                try: df_up = pd.read_csv(url, dtype=str)
+                except:
+                    try: df_up = pd.read_excel(url, dtype=str)
+                    except: st.error("❌ 無法讀取雲端檔案。")
+        except Exception as e: st.error(f"讀取失敗: {e}")
 
         if not df_up.empty:
             # 欄位名稱標準化
@@ -501,11 +541,10 @@ with tab1:
                     c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
                     if not c_raw or c_raw.lower() == 'nan': continue
                     
-                    # 寬鬆過濾
+                    # 寬鬆過濾：允許 ETF/債券
                     is_valid = False
-                    if c_raw.isdigit():
-                         if len(c_raw) <= 4: is_valid = True
-                    elif len(c_raw) > 0: is_valid = True # 允許非純數字 (ETF)
+                    if c_raw.isdigit() and len(c_raw) <= 4: is_valid = True
+                    elif len(c_raw) > 0 and (c_raw[0].isdigit() or c_raw[0] in ['0','00']): is_valid = True
                     
                     if not is_valid: continue
                     if count >= limit_rows: break
@@ -542,7 +581,7 @@ with tab1:
                 if code.startswith("00"): continue
                 if len(code) > 4 and code.isdigit(): continue
             
-            time.sleep(0.8) # 智慧延遲
+            time.sleep(0.8)
             
             if code in fetch_cache: data = fetch_cache[code]
             else:
@@ -624,7 +663,6 @@ with tab1:
                 save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
                 st.rerun()
         
-        updated_rows = []
         should_update = False
         if len(edited_df) > 0:
             last_idx = len(edited_df) - 1
@@ -632,6 +670,7 @@ with tab1:
             orig_last_price = df_display.iloc[last_idx]['自訂價(可修)']
             if str(last_price) != str(orig_last_price): should_update = True
 
+        updated_rows = []
         for idx, row in edited_df.iterrows():
             new_status = recalculate_row(row)
             row['狀態'] = new_status
