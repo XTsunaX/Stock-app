@@ -12,6 +12,7 @@ from datetime import datetime, time as dt_time
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
+import twstock  # [新增] 引入 twstock 作為備援資料源
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -338,19 +339,56 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
+# [修正] 整合了 twstock 備援機制的資料抓取函數
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
+    hist = pd.DataFrame()
+    
     try:
         time.sleep(0.1)
         
+        # 1. 優先嘗試 yfinance
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo") 
         if hist.empty:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
         
+        # 2. 如果 yfinance 失敗，改用 twstock
+        if hist.empty:
+            try:
+                stock = twstock.Stock(code)
+                # 抓取最近 31 天資料
+                tw_data = stock.fetch_31()
+                
+                if tw_data:
+                    # 轉換為 yfinance 格式的 DataFrame
+                    df_tw = pd.DataFrame(tw_data)
+                    df_tw['Date'] = pd.to_datetime(df_tw['date'])
+                    df_tw = df_tw.set_index('Date')
+                    
+                    rename_map = {
+                        'open': 'Open',
+                        'high': 'High',
+                        'low': 'Low',
+                        'close': 'Close',
+                        'capacity': 'Volume'
+                    }
+                    df_tw = df_tw.rename(columns=rename_map)
+                    
+                    # 確保數值型別正確
+                    cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    for c in cols:
+                        df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
+                        
+                    hist = df_tw[cols]
+            except Exception as e:
+                # 備援也失敗，就真的略過
+                pass
+
         if hist.empty: return None
 
+        # --- 以下計算邏輯保持不變 ---
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
         last_date = hist.index[-1].date()
