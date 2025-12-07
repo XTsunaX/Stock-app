@@ -6,4 +6,4 @@ beautifulsoup4
 numpy
 openpyxl
 lxml
-pip install twstock
+twstock
