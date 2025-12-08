@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
 import math
 import time
 import os
@@ -123,7 +125,6 @@ if 'limit_rows' not in st.session_state:
 if 'auto_update_last_row' not in st.session_state:
     st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
 
-# [修正] 預設緩衝改為 4 秒
 if 'update_delay_sec' not in st.session_state:
     st.session_state.update_delay_sec = saved_config.get('delay_sec', 4.0)
 
@@ -179,6 +180,11 @@ with st.sidebar:
     
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，並在最後一列按下 Enter。")
+    
+    # [新增] 外部連結區塊
+    st.markdown("---")
+    st.markdown("### 🔗 外部資源")
+    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
 
 # --- 動態 CSS ---
 font_px = f"{st.session_state.font_size}px"
@@ -248,6 +254,35 @@ def search_code_online(query):
     if query.isdigit(): return query
     _, name_map = load_local_stock_names()
     if query in name_map: return name_map[query]
+    return None
+
+def get_live_price(code):
+    """
+    抓取當下即時成交價 (雙重備援)。
+    """
+    # 1. 嘗試 twstock
+    try:
+        realtime_data = twstock.realtime.get(code)
+        if realtime_data and realtime_data.get('success'):
+            price_str = realtime_data['realtime'].get('latest_trade_price')
+            if price_str and price_str != '-' and float(price_str) > 0:
+                return float(price_str)
+            bids = realtime_data['realtime'].get('best_bid_price', [])
+            if bids and bids[0] and bids[0] != '-':
+                 return float(bids[0])
+    except: pass
+
+    # 2. 備援 yfinance fast_info
+    try:
+        ticker = yf.Ticker(f"{code}.TW")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+        
+        ticker = yf.Ticker(f"{code}.TWO")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+    except: pass
+    
     return None
 
 # ==========================================
@@ -415,16 +450,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         target_price = apply_sr_rules(target_raw, current_price)
         stop_price = apply_sr_rules(stop_raw, current_price)
         
-        # [修正] 盤中盤後漲跌停價邏輯
-        # 盤中: 基準是「昨日收盤」 (因為今天是動態的，限制也是基於昨日)
-        # 盤後: 基準是「今日收盤」 (為明天做準備)
+        # 盤中盤後漲跌停價邏輯
         if is_during_trading:
             base_price_for_limit = prev_day['Close']
         else:
             base_price_for_limit = current_price
             
         limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
-        limit_up_today, limit_down_today = calculate_limits(prev_day['Close']) # For touch detection
+        limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
 
         points = []
         
@@ -457,7 +490,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 觸及 (判斷是否碰到今日的漲跌停)
+        # 觸及
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -524,7 +557,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         elif "空" in strategy_note: light = "🟢"
         final_name_display = f"{light} {final_name}"
         
-        # 回傳
         return {
             "代號": code, "名稱": final_name_display, "收盤價": round(current_price, 2),
             "漲跌幅": pct_change, "當日漲停價": limit_up_show, "當日跌停價": limit_down_show,
@@ -815,31 +847,30 @@ with tab1:
                     st.session_state.stock_data.at[i, '狀態'] = new_status
             st.rerun()
 
-        # [UI調整] 1.按鈕 2.開關 3.緩衝秒數 (垂直排序)
+        # [UI] 垂直排序: 1.更新鈕 2.自動更新開關 3.緩衝設定 (在2下方)
         st.markdown("---")
         
-        # 1. 執行更新按鈕 (縮小版)
+        # 1. 執行更新按鈕
         col_btn, _ = st.columns([2, 8])
         with col_btn:
             btn_update = st.button("⚡ 執行更新", use_container_width=False, type="primary")
         
-        # 2. 自動更新設定 (垂直堆疊)
+        # 2. 自動更新開關
         auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
             value=st.session_state.auto_update_last_row,
             key="toggle_auto_update")
         st.session_state.auto_update_last_row = auto_update
         
-        # 3. 緩衝秒數 (如果有啟用自動更新才顯示)
+        # 3. 緩衝秒數 (垂直置於下方)
         if auto_update:
-            # 調整數字輸入框的寬度，不要佔滿整行
-            c_delay, _ = st.columns([2, 8])
-            with c_delay:
-                delay_val = st.number_input("⏳ 緩衝秒數 (Enter後等待)", 
+            col_delay, _ = st.columns([2, 8])
+            with col_delay:
+                delay_val = st.number_input("⏳ 緩衝秒數", 
                     min_value=0.0, max_value=5.0, step=0.1, 
                     value=st.session_state.update_delay_sec)
                 st.session_state.update_delay_sec = delay_val
 
-        # 按鈕邏輯 (單純重算，不抓股價)
+        # 按鈕邏輯
         if btn_update:
              update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
              for i, row in st.session_state.stock_data.iterrows():
