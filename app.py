@@ -67,19 +67,33 @@ def load_data_cache():
         except: return pd.DataFrame(), set()
     return pd.DataFrame(), set()
 
-def load_saved_url():
+# [修改] 網址記憶功能：改為讀取列表
+def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
         try:
             with open(URL_CACHE_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
-                return data.get("url", "")
-        except: return ""
-    return ""
+                # 相容性處理：如果舊版是存單一字串，轉為列表
+                if "url" in data and isinstance(data["url"], str) and data["url"]:
+                    return [data["url"]]
+                return data.get("urls", [])
+        except: return []
+    return []
 
-def save_saved_url(url):
+# [修改] 網址記憶功能：儲存列表
+def save_url_history(urls):
     try:
+        # 去除空值與重複 (保持順序)
+        unique_urls = []
+        seen = set()
+        for u in urls:
+            u_clean = u.strip()
+            if u_clean and u_clean not in seen:
+                unique_urls.append(u_clean)
+                seen.add(u_clean)
+        
         with open(URL_CACHE_FILE, "w", encoding='utf-8') as f:
-            json.dump({"url": url}, f)
+            json.dump({"urls": unique_urls}, f)
         return True
     except: return False
 
@@ -98,8 +112,13 @@ if 'calc_base_price' not in st.session_state:
 if 'calc_view_price' not in st.session_state:
     st.session_state.calc_view_price = 100.0
 
+# 載入歷史網址列表
+if 'url_history' not in st.session_state:
+    st.session_state.url_history = load_url_history()
+
+# 初始化 cloud_url_input，預設為歷史紀錄的第一筆 (若有)
 if 'cloud_url_input' not in st.session_state:
-    st.session_state.cloud_url_input = load_saved_url()
+    st.session_state.cloud_url_input = st.session_state.url_history[0] if st.session_state.url_history else ""
 
 saved_config = load_config()
 
@@ -140,7 +159,6 @@ with st.sidebar:
     )
     st.session_state.limit_rows = current_limit_rows
     
-    # 側邊欄移除自動更新開關，改到主介面
     if st.button("💾 儲存設定"):
         if save_config(current_font_size, current_limit_rows, 
                       st.session_state.auto_update_last_row, 
@@ -249,23 +267,17 @@ def search_code_online(query):
     if query in name_map: return name_map[query]
     return None
 
-# [修正] 強化版：抓取即時股價 (雙重備援)
 def get_live_price(code):
     """
-    抓取當下即時成交價。
-    優先: twstock (證交所 MIS)
-    備援: yfinance fast_info (Yahoo)
+    抓取當下即時成交價 (雙重備援)。
     """
     # 1. 嘗試 twstock
     try:
         realtime_data = twstock.realtime.get(code)
         if realtime_data and realtime_data.get('success'):
             price_str = realtime_data['realtime'].get('latest_trade_price')
-            # 確保價格不是 "-" 或 0
             if price_str and price_str != '-' and float(price_str) > 0:
                 return float(price_str)
-            
-            # 若無成交價，嘗試抓最佳買價 (best_bid_price)
             bids = realtime_data['realtime'].get('best_bid_price', [])
             if bids and bids[0] and bids[0] != '-':
                  return float(bids[0])
@@ -585,33 +597,55 @@ with tab1:
                 except: pass
 
         with src_tab2:
-            c_url, c_save, c_del = st.columns([6, 1, 1], gap="small")
-            with c_url:
-                st.text_input(
-                    "輸入連結 (CSV/Excel/Google Sheet)", 
-                    key="cloud_url_input",
-                    placeholder="https://...",
-                    label_visibility="visible"
+            # 1. 歷史紀錄下拉選單 (佔滿一行)
+            # 使用 callback 當選單改變時更新 input
+            def on_history_change():
+                st.session_state.cloud_url_input = st.session_state.history_selected
+
+            # 建立選項 (包含預設空選項)
+            history_opts = st.session_state.url_history if st.session_state.url_history else ["(無紀錄)"]
+            
+            # 使用 columns 來放置選單和刪除按鈕
+            c_sel, c_del = st.columns([8, 1], gap="small")
+            
+            with c_sel:
+                selected = st.selectbox(
+                    "📜 歷史紀錄 (選取自動填入)", 
+                    options=history_opts,
+                    key="history_selected",
+                    index=None,
+                    placeholder="請選擇...",
+                    on_change=on_history_change,
+                    label_visibility="collapsed"
                 )
-            with c_save:
-                st.markdown("<div style='margin-top: 29px'></div>", unsafe_allow_html=True)
-                if st.button("💾 記憶", help="記憶此連結", use_container_width=True):
-                    url_to_save = st.session_state.cloud_url_input
-                    if save_saved_url(url_to_save):
-                        st.toast("連結已記憶！", icon="💾")
+            
             with c_del:
-                st.markdown("<div style='margin-top: 29px'></div>", unsafe_allow_html=True)
-                if st.button("🗑️ 刪除", help="刪除記憶", use_container_width=True):
-                    if save_saved_url(""):
-                        st.session_state.cloud_url_input = ""
-                        st.toast("已清除。", icon="🗑️")
+                if st.button("🗑️", help="刪除選取的歷史紀錄"):
+                    if st.session_state.history_selected and st.session_state.history_selected in st.session_state.url_history:
+                        st.session_state.url_history.remove(st.session_state.history_selected)
+                        save_url_history(st.session_state.url_history)
+                        st.toast("已刪除。", icon="🗑️")
                         st.rerun()
+
+            # 2. 輸入框 (在選單下方)
+            st.text_input(
+                "輸入連結 (CSV/Excel/Google Sheet)", 
+                key="cloud_url_input",
+                placeholder="https://..."
+            )
 
         search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
 
     if st.button("🚀 執行分析"):
         targets = []
         df_up = pd.DataFrame()
+        
+        # [新增] 自動儲存網址至歷史紀錄
+        current_url = st.session_state.cloud_url_input.strip()
+        if current_url:
+            if current_url not in st.session_state.url_history:
+                st.session_state.url_history.insert(0, current_url) # 加在最前面
+                save_url_history(st.session_state.url_history)
         
         try:
             if uploaded_file:
@@ -790,7 +824,6 @@ with tab1:
         
         need_update = False
         
-        # 自動更新判斷
         if st.session_state.auto_update_last_row and not edited_df.empty:
             last_idx = len(edited_df) - 1
             last_row_price = str(edited_df.iloc[last_idx]['自訂價(可修)']).strip()
@@ -807,7 +840,6 @@ with tab1:
                         need_update = True
         
         if need_update:
-            # 延遲緩衝 (給使用者一點時間後悔或確認)
             if st.session_state.update_delay_sec > 0:
                 time.sleep(st.session_state.update_delay_sec)
                 
@@ -826,21 +858,23 @@ with tab1:
                     st.session_state.stock_data.at[i, '狀態'] = new_status
             st.rerun()
 
-        # [UI配置] 依照指示：1.按鈕 2.自動更新開關(含延遲) 3.同步開關，垂直排序
+        # [UI調整] 垂直排序: 1.按鈕 2.自動更新設定 3.同步設定
         st.markdown("---")
         
-        # 1. 執行更新按鈕 (放在最上方，符合您的「上下排序」要求)
-        btn_update = st.button("⚡ 執行更新", use_container_width=True, type="primary")
+        # 1. 執行更新按鈕 (縮小版)
+        col_btn, _ = st.columns([2, 8])
+        with col_btn:
+            btn_update = st.button("⚡ 執行更新", use_container_width=False, type="primary")
         
-        # 2. 自動更新設定 (含延遲)
-        # 使用 columns 讓延遲設定緊跟在 Checkbox 後面
-        c_auto, c_delay = st.columns([1, 1])
+        # 2. 自動更新設定 (使用極小間距)
+        # 用 columns 將 checkbox 和 number_input 放同一行緊密排列
+        c_auto, c_buff, _ = st.columns([2.5, 1.5, 6], gap="small")
         with c_auto:
             auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
                 value=st.session_state.auto_update_last_row,
                 key="toggle_auto_update")
             st.session_state.auto_update_last_row = auto_update
-        with c_delay:
+        with c_buff:
             if auto_update:
                 delay_val = st.number_input("⏳ 緩衝秒數", 
                     min_value=0.0, max_value=5.0, step=0.1, 
@@ -850,19 +884,16 @@ with tab1:
         # 3. 同步股價設定
         sync_price = st.checkbox("同步當下股價至自訂價", 
             key="toggle_sync_price",
-            help="勾選後，按下上方「執行更新」按鈕，將自動抓取即時成交價填入")
+            help="勾選後，按下「執行更新」按鈕，將自動抓取即時成交價填入")
 
-        # 按鈕邏輯 (放在 UI 定義之後，才能讀取到最新的 checkbox 狀態)
+        # 按鈕邏輯
         if btn_update:
-             # 1. 取得當前編輯器狀態 (確保手動輸入不遺失)
              update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
              
              for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
                 
-                # [新增] 同步即時股價邏輯
                 if sync_price:
-                    # 這裡使用新函數抓取 real-time
                     live_p = get_live_price(code)
                     if live_p is not None:
                         st.session_state.stock_data.at[i, '自訂價(可修)'] = live_p
@@ -872,7 +903,6 @@ with tab1:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
                 
-                # 只更新狀態，不動其他欄位
                 new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                 st.session_state.stock_data.at[i, '狀態'] = new_status
              
