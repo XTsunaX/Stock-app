@@ -158,10 +158,11 @@ with st.sidebar:
     st.markdown("---")
     
     current_limit_rows = st.number_input(
-        "顯示筆數 (分析上限)", 
+        "顯示筆數 (僅限檔案上傳)", 
         min_value=1, 
         value=st.session_state.limit_rows,
-        key='limit_rows_input'
+        key='limit_rows_input',
+        help="此設定僅限制「檔案/雲端」來源的股票數量。快速查詢的股票會額外顯示。"
     )
     st.session_state.limit_rows = current_limit_rows
     
@@ -689,13 +690,13 @@ with tab1:
                     except: st.error("❌ 無法讀取雲端檔案。")
         except Exception as e: st.error(f"讀取失敗: {e}")
 
-        # [修正順序 1] 先將 Search 的項目加入 targets (確保優先被 fetch)
+        # [修正順序 1] 先將 Search 的項目加入 targets
         if search_selection:
             for item in search_selection:
                 parts = item.split(' ', 1)
                 targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
 
-        # [修正順序 2] 再將 Upload 的項目加入 targets (排隊在後)
+        # [修正順序 2] 再將 Upload 的項目加入 targets
         if not df_up.empty:
             df_up.columns = df_up.columns.astype(str).str.strip()
             c_col = next((c for c in df_up.columns if "代號" in str(c)), None)
@@ -733,22 +734,31 @@ with tab1:
         status_text = st.empty()
         bar = st.progress(0)
         
-        # 只取前 limit_rows 個進行實際分析
-        fetch_limit = st.session_state.limit_rows
-        fetched_count = 0
-        total_for_bar = min(len(targets), fetch_limit) if targets else 1
+        # [修復] 分別計算上傳數量與總數量
+        upload_limit = st.session_state.limit_rows
+        upload_current = 0
+        total_fetched = 0
+        
+        # 預估總數(用於進度條)：搜尋的全部 + 上傳的限制數量
+        total_for_bar = len(search_selection) if search_selection else 0
+        total_for_bar += min(len([t for t in targets if t[2]=='upload']), upload_limit)
+        if total_for_bar == 0: total_for_bar = 1
         
         existing_data = {}
         st.session_state.stock_data = pd.DataFrame()
 
         fetch_cache = {}
         
-        # 遍歷 targets 直到抓滿 limit_rows
         for i, (code, name, source, extra) in enumerate(targets):
-            if fetched_count >= fetch_limit:
-                break
-                
-            status_text.text(f"正在分析 {fetched_count+1}/{fetch_limit}: {code} {name} ...")
+            # 判斷邏輯：
+            # 1. 搜尋的 (search) -> 永遠抓取，不佔用上傳額度
+            # 2. 上傳的 (upload) -> 只有在 upload_current < upload_limit 時才抓取
+            
+            if source == 'upload':
+                if upload_current >= upload_limit:
+                    continue # 額度已滿，跳過
+            
+            status_text.text(f"正在分析: {code} {name} ...")
             
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
@@ -766,9 +776,12 @@ with tab1:
                 data['_source_rank'] = 1 if source == 'upload' else 2
                 existing_data[code] = data
                 seen.add((code, source))
-                fetched_count += 1
                 
-            bar.progress(min(fetched_count / fetch_limit, 1.0))
+                total_fetched += 1
+                if source == 'upload':
+                    upload_current += 1
+                
+            bar.progress(min(total_fetched / total_for_bar, 1.0))
         
         bar.empty()
         status_text.empty()
@@ -780,6 +793,11 @@ with tab1:
     if not st.session_state.stock_data.empty:
         limit = st.session_state.limit_rows
         df_all = st.session_state.stock_data.copy()
+        
+        # 確保有 _source 欄位 (相容性檢查)
+        if '_source' not in df_all.columns:
+            df_all['_source'] = 'upload'
+
         df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價", "獲利目標": "+3%", "防守停損": "-3%"})
         df_all['代號'] = df_all['代號'].astype(str)
         df_all = df_all[~df_all['代號'].isin(st.session_state.ignored_stocks)]
@@ -837,7 +855,7 @@ with tab1:
             key="main_editor"
         )
 
-        # [處理刪除邏輯 + 自動遞補]
+        # [處理刪除邏輯 + 自動遞補 (修正版: 只遞補 upload)]
         if not edited_df.empty and "移除" in edited_df.columns:
             to_remove = edited_df[edited_df["移除"] == True]
             if not to_remove.empty:
@@ -851,15 +869,22 @@ with tab1:
                     ~st.session_state.stock_data["代號"].isin(remove_codes)
                 ]
                 
-                # 3. 檢查是否需要遞補 (目前的數量 < 設定的上限)
-                current_len = len(st.session_state.stock_data)
+                # 3. 檢查是否需要遞補 (只看 upload 的數量)
+                # 先取得目前剩下的資料
+                df_curr = st.session_state.stock_data
+                if '_source' not in df_curr.columns:
+                    # 如果舊資料沒此欄位，預設為 upload (相容性)
+                    upload_count = len(df_curr)
+                else:
+                    upload_count = len(df_curr[df_curr['_source'] == 'upload'])
+                
                 limit = st.session_state.limit_rows
                 
-                if current_len < limit and st.session_state.all_candidates:
-                    needed = limit - current_len
+                # 只有當「上傳類」的股票少於限制時，才進行遞補
+                if upload_count < limit and st.session_state.all_candidates:
+                    needed = limit - upload_count
                     replenished_count = 0
                     
-                    # 取得目前已存在的代號，避免重複
                     existing_codes = set(st.session_state.stock_data['代號'].astype(str))
                     
                     with st.spinner("正在遞補新股票..."):
@@ -870,6 +895,9 @@ with tab1:
                              c_source = cand[2]
                              c_extra = cand[3]
                              
+                             # 只遞補 upload 的，search 的不用補
+                             if c_source != 'upload': continue
+                             
                              if c_code in st.session_state.ignored_stocks: continue
                              if c_code in existing_codes: continue
                              
@@ -878,9 +906,8 @@ with tab1:
                              if data:
                                  data['_source'] = c_source
                                  data['_order'] = c_extra
-                                 data['_source_rank'] = 1 if c_source == 'upload' else 2
+                                 data['_source_rank'] = 1  # upload rank
                                  
-                                 # 附加到目前的 dataframe
                                  st.session_state.stock_data = pd.concat([
                                      st.session_state.stock_data, 
                                      pd.DataFrame([data])
