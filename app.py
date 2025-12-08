@@ -359,7 +359,7 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
-# [核心] 三層備援資料抓取邏輯 (yfinance -> twstock -> FinMind)
+# [修正] 強化版資料抓取邏輯 (yfinance -> twstock -> FinMind 三層備援)
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     code = str(code).strip()
     hist = pd.DataFrame()
@@ -367,24 +367,24 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     try:
         time.sleep(0.1)
         
-        # 1. 優先嘗試 yfinance (歷史分析用)
+        # 1. 優先嘗試 yfinance
         ticker = yf.Ticker(f"{code}.TW")
         hist = ticker.history(period="3mo")
         
-        # 檢查資料有效性
-        is_invalid = hist.empty or len(hist) < 5 or hist['Close'].isna().all()
+        # 檢查有效性 (寬鬆判斷：只要有2筆資料就算成功)
+        is_invalid = hist.empty or len(hist) < 2 or hist['Close'].isna().all()
         
         if is_invalid:
             ticker = yf.Ticker(f"{code}.TWO")
             hist = ticker.history(period="3mo")
-            is_invalid = hist.empty or len(hist) < 5 or hist['Close'].isna().all()
+            is_invalid = hist.empty or len(hist) < 2 or hist['Close'].isna().all()
         
         # 2. 第二備援: twstock
         if is_invalid:
             try:
                 stock = twstock.Stock(code)
                 tw_data = stock.fetch_31()
-                if tw_data and len(tw_data) > 5:
+                if tw_data and len(tw_data) >= 2:
                     df_tw = pd.DataFrame(tw_data)
                     df_tw['Date'] = pd.to_datetime(df_tw['date'])
                     df_tw = df_tw.set_index('Date')
@@ -393,12 +393,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                     cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                     for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
                     hist = df_tw[cols]
-                    is_invalid = False # twstock 成功
+                    is_invalid = False
             except: pass
 
         # 3. 終極備援: FinMind (Open Data)
         if is_invalid:
             try:
+                # 抓取最近 90 天，確保有資料
                 date_start = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
                 url = "https://api.finmindtrade.com/api/v4/data"
                 params = {
@@ -406,28 +407,31 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                     "data_id": code,
                     "start_date": date_start
                 }
-                r = requests.get(url, params=params)
-                data = r.json()
-                if data['msg'] == 'success' and data['data']:
-                    df_fm = pd.DataFrame(data['data'])
-                    if not df_fm.empty and len(df_fm) > 5:
-                        df_fm['Date'] = pd.to_datetime(df_fm['date'])
-                        df_fm = df_fm.set_index('Date')
-                        df_fm = df_fm.rename(columns={
-                            'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'
-                        })
-                        hist = df_fm[['Open', 'High', 'Low', 'Close', 'Volume']]
+                r = requests.get(url, params=params, timeout=3)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get('msg') == 'success' and data.get('data'):
+                        df_fm = pd.DataFrame(data['data'])
+                        if not df_fm.empty and len(df_fm) >= 2:
+                            df_fm['Date'] = pd.to_datetime(df_fm['date'])
+                            df_fm = df_fm.set_index('Date')
+                            df_fm = df_fm.rename(columns={
+                                'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'
+                            })
+                            hist = df_fm[['Open', 'High', 'Low', 'Close', 'Volume']]
+                            # FinMind 可能沒有今天的，但至少有歷史
             except: pass
 
         if hist.empty or len(hist) < 2: return None
 
-        # --- 資料計算 ---
+        # --- 計算 ---
         tz = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz)
         
         last_dt = hist.index[-1]
         last_date = last_dt.date()
         is_today_data = (last_date == now.date())
+        
         is_during_trading = (is_today_data and now.time() < dt_time(13, 45))
         
         if is_today_data and len(hist) >= 2:
@@ -443,7 +447,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         current_price = today['Close']
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        # 基準價判定
         if is_during_trading:
             base_price_for_limit = prev_day['Close']
         else:
@@ -480,7 +483,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
         if limit_down_show <= p_low <= limit_up_show: points.append({"val": p_low, "tag": ""})
         
-        # [恢復] 區間高低點 (使用包含今日的整段 history)
+        # 區間高低點 (使用包含今日的整段 history)
         high_90_raw = max(hist['High'].max(), today['High'], current_price)
         low_90_raw = min(hist['Low'].min(), today['Low'], current_price)
         high_90 = apply_tick_rules(high_90_raw)
@@ -489,6 +492,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
+        # +3% / -3% (若未超過區間高低才顯示)
         if target_price > high_90: points.append({"val": target_price, "tag": ""})
         if stop_price < low_90: points.append({"val": stop_price, "tag": ""})
 
@@ -682,7 +686,8 @@ with tab1:
             n_col = next((c for c in df_up.columns if "名稱" in str(c)), None)
             
             if c_col:
-                # 1. 放入 targets
+                limit_rows = st.session_state.limit_rows
+                
                 for _, row in df_up.iterrows():
                     c_raw = str(row[c_col]).replace('=', '').replace('"', '').strip()
                     if not c_raw or c_raw.lower() == 'nan': continue
@@ -862,8 +867,13 @@ with tab1:
             for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
                 if code in update_map:
+                    if update_map[code]['移除']:
+                        st.session_state.ignored_stocks.add(code)
+                        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+                    
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     st.session_state.stock_data.at[i, '戰略備註'] = update_map[code]['戰略備註']
+                    
                     new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                     st.session_state.stock_data.at[i, '狀態'] = new_status
             st.rerun()
