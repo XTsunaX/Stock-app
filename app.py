@@ -54,7 +54,7 @@ def save_data_cache(df, ignored_set, candidates=[]):
         data_to_save = {
             "stock_data": df_save.to_dict(orient='records'),
             "ignored_stocks": list(ignored_set),
-            "all_candidates": candidates  # 新增：儲存所有候選名單以便遞補
+            "all_candidates": candidates
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
@@ -70,7 +70,7 @@ def load_data_cache():
                 data = json.load(f)
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
-            candidates = data.get('all_candidates', []) # 新增：讀取候選名單
+            candidates = data.get('all_candidates', [])
             return df, ignored, candidates
         except: return pd.DataFrame(), set(), []
     return pd.DataFrame(), set(), []
@@ -106,7 +106,7 @@ if 'stock_data' not in st.session_state:
     cached_df, cached_ignored, cached_candidates = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
-    st.session_state.all_candidates = cached_candidates # 用於遞補的完整名單
+    st.session_state.all_candidates = cached_candidates
 
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
@@ -689,6 +689,13 @@ with tab1:
                     except: st.error("❌ 無法讀取雲端檔案。")
         except Exception as e: st.error(f"讀取失敗: {e}")
 
+        # [修正順序 1] 先將 Search 的項目加入 targets (確保優先被 fetch)
+        if search_selection:
+            for item in search_selection:
+                parts = item.split(' ', 1)
+                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
+
+        # [修正順序 2] 再將 Upload 的項目加入 targets (排隊在後)
         if not df_up.empty:
             df_up.columns = df_up.columns.astype(str).str.strip()
             c_col = next((c for c in df_up.columns if "代號" in str(c)), None)
@@ -713,18 +720,10 @@ with tab1:
                         is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
                         if is_etf or is_warrant: continue
                     
-                    # 移除原有的 limit_rows 檢查，以便收集所有候選名單
-                    # if count >= limit_rows: break 
-                    
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
                     targets.append((c_raw, n, 'upload', count))
                     count += 1
-
-        if search_selection:
-            for item in search_selection:
-                parts = item.split(' ', 1)
-                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
 
         # 儲存所有候選名單
         st.session_state.all_candidates = targets
@@ -838,7 +837,7 @@ with tab1:
             key="main_editor"
         )
 
-        # [修復] 處理刪除邏輯 + 自動遞補
+        # [處理刪除邏輯 + 自動遞補]
         if not edited_df.empty and "移除" in edited_df.columns:
             to_remove = edited_df[edited_df["移除"] == True]
             if not to_remove.empty:
