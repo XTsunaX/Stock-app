@@ -45,27 +45,35 @@ def save_config(font_size, limit_rows, auto_update, delay_sec):
         return True
     except: return False
 
-def save_data_cache(df, ignored_set):
+def save_data_cache(df, ignored_set, candidates=[]):
+    """
+    儲存快取資料，包含顯示中的股票(df)、忽略名單(ignored_set)與所有候選名單(candidates)
+    """
     try:
         df_save = df.fillna("") 
         data_to_save = {
             "stock_data": df_save.to_dict(orient='records'),
-            "ignored_stocks": list(ignored_set)
+            "ignored_stocks": list(ignored_set),
+            "all_candidates": candidates  # 新增：儲存所有候選名單以便遞補
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except: pass
 
 def load_data_cache():
+    """
+    讀取快取資料
+    """
     if os.path.exists(DATA_CACHE_FILE):
         try:
             with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
-            return df, ignored
-        except: return pd.DataFrame(), set()
-    return pd.DataFrame(), set()
+            candidates = data.get('all_candidates', []) # 新增：讀取候選名單
+            return df, ignored, candidates
+        except: return pd.DataFrame(), set(), []
+    return pd.DataFrame(), set(), []
 
 def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
@@ -95,12 +103,16 @@ def save_url_history(urls):
 
 # --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored = load_data_cache()
+    cached_df, cached_ignored, cached_candidates = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
+    st.session_state.all_candidates = cached_candidates # 用於遞補的完整名單
 
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
+
+if 'all_candidates' not in st.session_state:
+    st.session_state.all_candidates = []
 
 if 'calc_base_price' not in st.session_state:
     st.session_state.calc_base_price = 100.0
@@ -166,20 +178,21 @@ with st.sidebar:
     with col_restore:
         if st.button("♻️ 復原", use_container_width=True):
             st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
     with col_clear:
         if st.button("🗑️ 清空", type="primary", use_container_width=True, help="清空所有分析資料 (不會刪除記憶的網址)"):
             st.session_state.stock_data = pd.DataFrame()
             st.session_state.ignored_stocks = set()
+            st.session_state.all_candidates = []
             if os.path.exists(DATA_CACHE_FILE):
                 os.remove(DATA_CACHE_FILE)
             st.toast("資料已全部清空", icon="🗑️")
             st.rerun()
     
     st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除。")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
     
     # [新增] 外部連結區塊
     st.markdown("---")
@@ -700,7 +713,8 @@ with tab1:
                         is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
                         if is_etf or is_warrant: continue
                     
-                    if count >= limit_rows: break 
+                    # 移除原有的 limit_rows 檢查，以便收集所有候選名單
+                    # if count >= limit_rows: break 
                     
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
@@ -712,18 +726,30 @@ with tab1:
                 parts = item.split(' ', 1)
                 targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
 
+        # 儲存所有候選名單
+        st.session_state.all_candidates = targets
+
         results = []
         seen = set()
         status_text = st.empty()
         bar = st.progress(0)
-        total = len(targets)
+        
+        # 只取前 limit_rows 個進行實際分析
+        fetch_limit = st.session_state.limit_rows
+        fetched_count = 0
+        total_for_bar = min(len(targets), fetch_limit) if targets else 1
         
         existing_data = {}
         st.session_state.stock_data = pd.DataFrame()
 
         fetch_cache = {}
+        
+        # 遍歷 targets 直到抓滿 limit_rows
         for i, (code, name, source, extra) in enumerate(targets):
-            status_text.text(f"正在分析 {i+1}/{total}: {code} {name} ...")
+            if fetched_count >= fetch_limit:
+                break
+                
+            status_text.text(f"正在分析 {fetched_count+1}/{fetch_limit}: {code} {name} ...")
             
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
@@ -741,15 +767,16 @@ with tab1:
                 data['_source_rank'] = 1 if source == 'upload' else 2
                 existing_data[code] = data
                 seen.add((code, source))
+                fetched_count += 1
                 
-            if total > 0: bar.progress((i+1)/total)
+            bar.progress(min(fetched_count / fetch_limit, 1.0))
         
         bar.empty()
         status_text.empty()
         
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
 
     if not st.session_state.stock_data.empty:
         limit = st.session_state.limit_rows
@@ -787,12 +814,12 @@ with tab1:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
         # ------------------------------------------------------------------
-        # Data Editor Logic (修復版)
+        # Data Editor Logic
         # ------------------------------------------------------------------
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
-                "移除": st.column_config.CheckboxColumn("刪除", width=40, help="勾選後將立即刪除此股票"),
+                "移除": st.column_config.CheckboxColumn("刪除", width=40, help="勾選後刪除並自動遞補"),
                 "代號": st.column_config.TextColumn(disabled=True, width="small"),
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
@@ -811,21 +838,63 @@ with tab1:
             key="main_editor"
         )
 
-        # [新增] 立即處理刪除邏輯
+        # [修復] 處理刪除邏輯 + 自動遞補
         if not edited_df.empty and "移除" in edited_df.columns:
             to_remove = edited_df[edited_df["移除"] == True]
             if not to_remove.empty:
+                # 1. 將被刪除的股票加入忽略名單
                 remove_codes = to_remove["代號"].unique()
                 for c in remove_codes:
                     st.session_state.ignored_stocks.add(str(c))
                 
-                # 從 stock_data 移除
+                # 2. 從目前的 stock_data 中移除
                 st.session_state.stock_data = st.session_state.stock_data[
                     ~st.session_state.stock_data["代號"].isin(remove_codes)
                 ]
                 
-                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks)
-                st.toast(f"已移除 {len(remove_codes)} 檔股票", icon="🗑️")
+                # 3. 檢查是否需要遞補 (目前的數量 < 設定的上限)
+                current_len = len(st.session_state.stock_data)
+                limit = st.session_state.limit_rows
+                
+                if current_len < limit and st.session_state.all_candidates:
+                    needed = limit - current_len
+                    replenished_count = 0
+                    
+                    # 取得目前已存在的代號，避免重複
+                    existing_codes = set(st.session_state.stock_data['代號'].astype(str))
+                    
+                    with st.spinner("正在遞補新股票..."):
+                        for cand in st.session_state.all_candidates:
+                             # cand 格式: [code, name, source, extra]
+                             c_code = str(cand[0])
+                             c_name = cand[1]
+                             c_source = cand[2]
+                             c_extra = cand[3]
+                             
+                             if c_code in st.session_state.ignored_stocks: continue
+                             if c_code in existing_codes: continue
+                             
+                             # 抓取資料
+                             data = fetch_stock_data_raw(c_code, c_name, c_extra)
+                             if data:
+                                 data['_source'] = c_source
+                                 data['_order'] = c_extra
+                                 data['_source_rank'] = 1 if c_source == 'upload' else 2
+                                 
+                                 # 附加到目前的 dataframe
+                                 st.session_state.stock_data = pd.concat([
+                                     st.session_state.stock_data, 
+                                     pd.DataFrame([data])
+                                 ], ignore_index=True)
+                                 
+                                 existing_codes.add(c_code)
+                                 replenished_count += 1
+                                 
+                             if replenished_count >= needed: break
+                
+                # 4. 存檔並重新整理
+                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+                st.toast(f"已移除 {len(remove_codes)} 檔股票並完成遞補", icon="🗑️")
                 st.rerun()
 
         # ------------------------------------------------------------------
