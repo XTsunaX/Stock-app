@@ -126,6 +126,10 @@ if 'url_history' not in st.session_state:
 if 'cloud_url_input' not in st.session_state:
     st.session_state.cloud_url_input = st.session_state.url_history[0] if st.session_state.url_history else ""
 
+# [新增] 記憶上次搜尋的清單
+if 'last_search_selection' not in st.session_state:
+    st.session_state.last_search_selection = []
+
 saved_config = load_config()
 
 if 'font_size' not in st.session_state:
@@ -157,7 +161,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # [修正] 移除 "(僅限檔案上傳)" 文字，改為 "(檔案/雲端)"
     current_limit_rows = st.number_input(
         "顯示筆數 (檔案/雲端)", 
         min_value=1, 
@@ -188,6 +191,7 @@ with st.sidebar:
             st.session_state.stock_data = pd.DataFrame()
             st.session_state.ignored_stocks = set()
             st.session_state.all_candidates = []
+            st.session_state.last_search_selection = [] # 清空搜尋記憶
             if os.path.exists(DATA_CACHE_FILE):
                 os.remove(DATA_CACHE_FILE)
             st.toast("資料已全部清空", icon="🗑️")
@@ -441,7 +445,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         now = datetime.now(tz)
         last_date = hist.index[-1].date()
         is_today_data = (last_date == now.date())
-        is_during_trading = (now.time() < dt_time(13, 45))
+        
+        # [修改] 時間分界改為 13:30 (台股收盤)
+        is_during_trading = (now.time() < dt_time(13, 30))
         
         if is_today_data and is_during_trading and len(hist) > 1:
             today = hist.iloc[-1]
@@ -459,19 +465,23 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         current_price = today['Close']
         pct_change = ((current_price - prev_day['Close']) / prev_day['Close']) * 100
         
-        target_raw = current_price * 1.03
-        stop_raw = current_price * 0.97
-        target_price = apply_sr_rules(target_raw, current_price)
-        stop_price = apply_sr_rules(stop_raw, current_price)
-        
-        # 盤中盤後漲跌停價邏輯
+        # [盤中/盤後 漲跌停價邏輯]
+        # 盤中: 顯示當日的 Limit (基準是昨日收盤)
+        # 盤後: 顯示明日的 Limit (基準是今日收盤)，方便做戰略
         if is_during_trading:
             base_price_for_limit = prev_day['Close']
         else:
             base_price_for_limit = current_price
             
         limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
+        
+        # 判斷是否「觸及」漲跌停，永遠是跟「該K線所屬交易日」的限制比
         limit_up_today, limit_down_today = calculate_limits(prev_day['Close'])
+
+        target_raw = current_price * 1.03
+        stop_raw = current_price * 0.97
+        target_price = apply_sr_rules(target_raw, current_price)
+        stop_price = apply_sr_rules(stop_raw, current_price)
 
         points = []
         
@@ -504,7 +514,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
 
-        # 觸及
+        # 觸及 (使用當日的限制)
         touched_up = (today['High'] >= limit_up_today - 0.01) or (abs(current_price - limit_up_today) < 0.01)
         touched_down = (today['Low'] <= limit_down_today + 0.01) or (abs(current_price - limit_down_today) < 0.01)
         
@@ -637,10 +647,20 @@ with tab1:
                 key="cloud_url_input",
                 placeholder="https://..."
             )
-
-        search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, placeholder="輸入 2330 或 台積電...")
+        
+        # [修改] 使用 session_state 來記憶預設值
+        search_selection = st.multiselect(
+            "🔍 快速查詢 (中文/代號)", 
+            options=stock_options, 
+            default=st.session_state.last_search_selection,
+            key="search_multiselect",
+            placeholder="輸入 2330 或 台積電..."
+        )
 
     if st.button("🚀 執行分析"):
+        # [新增] 儲存搜尋選擇到 session_state
+        st.session_state.last_search_selection = search_selection
+        
         targets = []
         df_up = pd.DataFrame()
         
@@ -766,7 +786,6 @@ with tab1:
             if code in fetch_cache: data = fetch_cache[code]
             else:
                 data = fetch_stock_data_raw(code, name, extra)
-                # [新增] 如果網路抓不到，嘗試從備份還原
                 if not data and code in old_data_backup:
                     data = old_data_backup[code]
                     
@@ -848,7 +867,7 @@ with tab1:
                 "+3%": st.column_config.TextColumn(width="small", disabled=True),
                 "-3%": st.column_config.TextColumn(width="small", disabled=True),
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
-                "戰略備註": st.column_config.TextColumn(width=note_width_px, disabled=False),
+                "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px, disabled=False),
             },
             hide_index=True,
             use_container_width=False,
@@ -856,22 +875,19 @@ with tab1:
             key="main_editor"
         )
 
-        # [修正] 處理刪除邏輯
+        # [處理刪除邏輯]
         if not edited_df.empty and "移除" in edited_df.columns:
             to_remove = edited_df[edited_df["移除"] == True]
             if not to_remove.empty:
-                # 1. 將被刪除的股票加入忽略名單
                 remove_codes = to_remove["代號"].unique()
                 for c in remove_codes:
                     st.session_state.ignored_stocks.add(str(c))
                 
-                # 2. 從目前的 stock_data 中移除
                 st.session_state.stock_data = st.session_state.stock_data[
                     ~st.session_state.stock_data["代號"].isin(remove_codes)
                 ]
                 
-        # [修正] 自動遞補與筆數更新邏輯 (獨立於刪除邏輯之外)
-        # 只要目前上傳類的數量 < 設定上限，就嘗試遞補
+        # [自動遞補與筆數更新邏輯]
         df_curr = st.session_state.stock_data
         if not df_curr.empty:
             if '_source' not in df_curr.columns:
@@ -887,10 +903,8 @@ with tab1:
                 
                 existing_codes = set(st.session_state.stock_data['代號'].astype(str))
                 
-                # 這裡使用 Spinner 避免畫面凍結
                 with st.spinner("正在載入更多資料..."):
                     for cand in st.session_state.all_candidates:
-                         # cand 格式: [code, name, source, extra]
                          c_code = str(cand[0])
                          c_name = cand[1]
                          c_source = cand[2]
@@ -922,7 +936,7 @@ with tab1:
                     st.rerun()
 
         # ------------------------------------------------------------------
-        # 自動更新最後一列的邏輯
+        # 自動更新最後一列的邏輯 (含手動編輯寫回)
         # ------------------------------------------------------------------
         need_update = False
         
