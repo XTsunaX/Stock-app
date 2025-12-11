@@ -681,9 +681,16 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     
     points = []
     
-    # 5MA
+    # [Fix] 5MA 精確計算 (避免浮點數誤差)
     if len(hist_strat) >= 5:
-        ma5_raw = hist_strat['Close'].tail(5).mean()
+        # 使用 Decimal 進行精確運算
+        last_5_closes = hist_strat['Close'].tail(5).values
+        sum_val = sum(Decimal(str(x)) for x in last_5_closes)
+        avg_val = sum_val / Decimal("5")
+        
+        # 先四捨五入到 2 位小數，再轉回 float
+        ma5_raw = float(avg_val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        
         ma5 = apply_sr_rules(ma5_raw, strategy_base_price)
         ma5_tag = "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
@@ -735,39 +742,36 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
-        # [NEW] 檢查近期高點是否為該日漲停價
-        is_limit_high = False
-        try:
-            for i in range(1, len(hist_strat)):
-                if abs(hist_strat.iloc[i]['High'] - high_90_raw) < 0.01:
-                    prev_c = hist_strat.iloc[i-1]['Close']
-                    l_up, _ = calculate_limits(prev_c)
-                    if abs(high_90_raw - l_up) < 0.01:
-                        is_limit_high = True
-                        break
-        except: pass
-        if is_limit_high: points.append({"val": high_90, "tag": "漲停"})
+        # [MODIFIED] 近期高點若為漲停，改為僅標示 "高" (移除之前的 is_limit_high 判斷)
+        # (已移除相關程式碼)
         
-        # [NEW] 檢查近期低點是否為該日跌停價
-        is_limit_low = False
-        try:
-            for i in range(1, len(hist_strat)):
-                if abs(hist_strat.iloc[i]['Low'] - low_90_raw) < 0.01:
-                    prev_c = hist_strat.iloc[i-1]['Close']
-                    _, l_down = calculate_limits(prev_c)
-                    if abs(low_90_raw - l_down) < 0.01:
-                        is_limit_low = True
-                        break
-        except: pass
-        if is_limit_low: points.append({"val": low_90, "tag": "跌停"})
+        # [NEW] 當日漲停價標示
+        # 若今日最高價有觸及漲停，且在明日漲跌停範圍內，則標示 "漲停"
+        # 若該漲停價同時為近期新高，則標示 "漲停高"
+        
+        # 1. 取得今日 (T日) 的漲停價 (需用 T-1 收盤價計算)
+        if len(hist_strat) >= 2:
+             prev_close_T = hist_strat.iloc[-2]['Close']
+             limit_up_T, limit_down_T = calculate_limits(prev_close_T)
+             
+             today_high = hist_strat.iloc[-1]['High']
+             
+             # 判斷今日最高是否觸及今日漲停 (容差 0.01)
+             if abs(today_high - limit_up_T) < 0.01:
+                 # 判斷是否為新高 (接近 high_90)
+                 is_new_high = (abs(limit_up_T - high_90_raw) < 0.05)
+                 tag_label = "漲停高" if is_new_high else "漲停"
+                 
+                 # 檢查是否在顯示範圍內 (明日漲跌停範圍)
+                 if limit_down_show <= limit_up_T <= limit_up_show:
+                     points.append({"val": limit_up_T, "tag": tag_label})
 
         # ==========================================
-        # [NEW Logic] +3% / -3% 顯示邏輯 (User Request)
+        # [Logic] +3% / -3% 顯示邏輯
         # 1. 盤中有觸及漲跌停價
         # 2. 且收盤價為漲跌停價正負3%內 -> 顯示
         # ==========================================
         
-        # 計算 T 日的漲跌停價 (需用 T-1 的收盤價計算)
         if len(hist_strat) >= 2:
             prev_close_T = hist_strat.iloc[-2]['Close']
             limit_up_T, limit_down_T = calculate_limits(prev_close_T)
@@ -778,19 +782,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             close_T = hist_strat.iloc[-1]['Close']
             
             # 判斷是否觸及漲停
-            touched_limit_up = (high_T >= limit_up_T - 0.01) # 浮點數容差
+            touched_limit_up = (high_T >= limit_up_T - 0.01) 
             # 判斷是否觸及跌停
             touched_limit_down = (low_T <= limit_down_T + 0.01)
             
             # 邏輯 1: +3% (觸及漲停 且 收盤在漲停3%內)
-            # 3% 內 = Close >= LimitUp * 0.97
             if touched_limit_up and (close_T >= limit_up_T * 0.97):
                 show_plus_3 = True
             else:
                 show_plus_3 = False
                 
             # 邏輯 2: -3% (觸及跌停 且 收盤在跌停3%內)
-            # 3% 內 = Close <= LimitDown * 1.03
             if touched_limit_down and (close_T <= limit_down_T * 1.03):
                 show_minus_3 = True
             else:
@@ -821,10 +823,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         has_high = "高" in tags
         has_low = "低" in tags
         
-        if has_limit_up and has_high: final_tag = "漲停高"
-        elif has_limit_down and has_low: final_tag = "跌停低"
-        elif has_limit_up: final_tag = "漲停"
-        elif has_limit_down: final_tag = "跌停"
+        # 若同一個價位同時有 "漲停高" (來自今日漲停判斷) 和 "高" (來自90日高點)
+        # 應優先顯示 "漲停高"
+        if "漲停高" in tags: final_tag = "漲停高"
+        elif "跌停低" in tags: final_tag = "跌停低" # (目前程式碼未特別實作今日跌停低，但保留邏輯)
+        elif "漲停" in tags: final_tag = "漲停"
+        elif "跌停" in tags: final_tag = "跌停"
         else:
             if has_high: final_tag = "高"
             elif has_low: final_tag = "低"
