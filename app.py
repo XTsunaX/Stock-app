@@ -140,9 +140,11 @@ if 'cloud_url_input' not in st.session_state:
 if 'search_multiselect' not in st.session_state:
     st.session_state.search_multiselect = load_search_cache()
 
+# [NEW] 記憶戰略備註
 if 'saved_notes' not in st.session_state:
     st.session_state.saved_notes = {}
 
+# [NEW] 快取期貨名單
 if 'futures_list' not in st.session_state:
     st.session_state.futures_list = set()
 
@@ -220,7 +222,6 @@ with st.sidebar:
         st.toast("手動備註已清除", icon="🧹")
         if not st.session_state.stock_data.empty:
              for idx in st.session_state.stock_data.index:
-                 # 清除時只保留 _auto_note (如果存在)
                  if '_auto_note' in st.session_state.stock_data.columns:
                      st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
         st.rerun()
@@ -1088,6 +1089,7 @@ with tab1:
         if '_auto_note' in df_display.columns:
             auto_notes_dict = df_display.set_index('代號')['_auto_note'].to_dict()
 
+        # [REMOVED] 處置預警欄位
         input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "期貨"]
         for col in input_cols:
             if col not in df_display.columns: df_display[col] = None
