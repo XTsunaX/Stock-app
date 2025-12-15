@@ -35,11 +35,13 @@ def load_config():
         except: return {}
     return {}
 
-def save_config(font_size, limit_rows):
+def save_config(font_size, limit_rows, auto_update, delay_sec):
     try:
         config = {
             "font_size": font_size, 
-            "limit_rows": limit_rows
+            "limit_rows": limit_rows,
+            "auto_update": auto_update,
+            "delay_sec": delay_sec
         }
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
         return True
@@ -145,10 +147,10 @@ if 'saved_notes' not in st.session_state:
 # [NEW] 快取期貨與處置名單
 if 'futures_list' not in st.session_state:
     st.session_state.futures_list = set()
-if 'attention_stocks' not in st.session_state:
-    st.session_state.attention_stocks = set()
-if 'disposal_stocks' not in st.session_state:
-    st.session_state.disposal_stocks = set()
+if 'attention_data' not in st.session_state:
+    st.session_state.attention_data = {} # code -> reason
+if 'disposal_data' not in st.session_state:
+    st.session_state.disposal_data = {} # code -> period/info
 
 saved_config = load_config()
 
@@ -157,6 +159,12 @@ if 'font_size' not in st.session_state:
 
 if 'limit_rows' not in st.session_state:
     st.session_state.limit_rows = saved_config.get('limit_rows', 5)
+
+if 'auto_update_last_row' not in st.session_state:
+    st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
+
+if 'update_delay_sec' not in st.session_state:
+    st.session_state.update_delay_sec = saved_config.get('delay_sec', 4.0)
 
 # --- 側邊欄設定 ---
 with st.sidebar:
@@ -185,7 +193,9 @@ with st.sidebar:
     st.session_state.limit_rows = current_limit_rows
     
     if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows):
+        if save_config(current_font_size, current_limit_rows, 
+                      st.session_state.auto_update_last_row, 
+                      st.session_state.update_delay_sec):
             st.toast("設定已儲存！", icon="✅")
             
     st.markdown("### 資料管理")
@@ -204,21 +214,18 @@ with st.sidebar:
             st.session_state.ignored_stocks = set()
             st.session_state.all_candidates = []
             st.session_state.search_multiselect = []
-            st.session_state.saved_notes = {} 
+            st.session_state.saved_notes = {}
             save_search_cache([])
             if os.path.exists(DATA_CACHE_FILE):
                 os.remove(DATA_CACHE_FILE)
             st.toast("資料已全部清空", icon="🗑️")
             st.rerun()
     
-    # [NEW] 清除手動備註按鈕
     if st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容"):
         st.session_state.saved_notes = {}
         st.toast("手動備註已清除", icon="🧹")
-        # 同步清空表格顯示
         if not st.session_state.stock_data.empty:
              for idx in st.session_state.stock_data.index:
-                 # 簡單重置，下次分析會自動補回自動部分
                  st.session_state.stock_data.at[idx, '戰略備註'] = "" 
         st.rerun()
 
@@ -306,67 +313,74 @@ def fetch_futures_list():
         url = "https://www.taifex.com.tw/cht/2/stockLists"
         dfs = pd.read_html(url)
         if dfs:
-            # 通常第一個表就是，包含 "證券代號"
             for df in dfs:
                 if '證券代號' in df.columns:
-                    # 轉成 set 加速查詢
                     return set(df['證券代號'].astype(str).str.strip().tolist())
-                # 英文版網頁欄位可能不同
                 if 'Stock Code' in df.columns:
                     return set(df['Stock Code'].astype(str).str.strip().tolist())
     except:
         pass
     return set()
 
-# [NEW] 抓取注意股與處置股名單 (TWSE/TPEX) - 用於預判
-@st.cache_data(ttl=3600) # 1小時更新一次即可
-def fetch_attention_disposal_lists():
-    att_set = set()
-    disp_set = set()
+# [NEW] 抓取注意股與處置股名單 (TWSE/TPEX)
+@st.cache_data(ttl=3600)
+def fetch_attention_disposal_data():
+    att_data = {} # code -> reason
+    disp_data = {} # code -> info
     
-    # 1. TWSE 上市
+    # 1. TWSE 上市 (JSON API)
     try:
         # 注意股
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/notice?response=json", timeout=3)
         data = r.json()
         if 'data' in data:
             for row in data['data']:
-                # row 格式: [index, code, name, ...]
-                if len(row) > 1: att_set.add(str(row[1]).strip())
+                # 格式: [index, code, name, reason(col 3 or 4), ...]
+                if len(row) > 1:
+                    c = str(row[1]).strip()
+                    # 原因通常在第 3 或 4 欄，嘗試抓取較長的字串
+                    reason = ""
+                    if len(row) > 3: reason = str(row[3])
+                    att_data[c] = reason
         
         # 處置股
         r = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish?response=json", timeout=3)
         data = r.json()
         if 'data' in data:
             for row in data['data']:
-                if len(row) > 1: disp_set.add(str(row[1]).strip())
+                if len(row) > 1:
+                    c = str(row[1]).strip()
+                    info = ""
+                    if len(row) > 4: info = str(row[4]) # 處置內容
+                    disp_data[c] = info
     except: pass
 
-    # 2. TPEX 上櫃 (結構較複雜，嘗試抓 CSV)
-    # TPEX 官網結構較常變動，這裡做簡易嘗試，若失敗則忽略
+    # 2. TPEX 上櫃 (CSV)
     try:
-        # 櫃買注意股
+        # 注意股
         url_otc_att = "https://www.tpex.org.tw/web/bulletin/attention/attention_result.php?l=zh-tw&o=csv"
-        df_otc_att = pd.read_csv(url_otc_att, header=None, skiprows=5) # 格式通常前面有 header text
-        # 尋找含有代號的欄位 (通常是第 2 欄)
-        # 簡單過濾：長度為4且是數字
-        for col in df_otc_att.columns:
-            for val in df_otc_att[col].dropna():
-                s_val = str(val).strip()
-                if s_val.isdigit() and len(s_val) == 4:
-                    att_set.add(s_val)
-                    
-        # 櫃買處置股
+        df_otc_att = pd.read_csv(url_otc_att, header=None, skiprows=5)
+        # 尋找代號與原因
+        # 假設欄位順序固定，若跑掉則可能抓不到
+        if not df_otc_att.empty and df_otc_att.shape[1] > 2:
+            for _, row in df_otc_att.iterrows():
+                c = str(row[1]).strip() # 假設第2欄是代號
+                if c.isdigit() and len(c)==4:
+                    reason = str(row[3]) if len(row) > 3 else "" # 假設第4欄是原因
+                    att_data[c] = reason
+
+        # 處置股
         url_otc_disp = "https://www.tpex.org.tw/web/bulletin/disposal/disposal_result.php?l=zh-tw&o=csv"
         df_otc_disp = pd.read_csv(url_otc_disp, header=None, skiprows=5)
-        for col in df_otc_disp.columns:
-            for val in df_otc_disp[col].dropna():
-                s_val = str(val).strip()
-                if s_val.isdigit() and len(s_val) == 4:
-                    disp_set.add(s_val)
+        if not df_otc_disp.empty and df_otc_disp.shape[1] > 2:
+            for _, row in df_otc_disp.iterrows():
+                c = str(row[2]).strip() # 櫃買處置 CSV 格式常變，有時在第3欄
+                if c.isdigit() and len(c)==4:
+                    info = str(row[7]) if len(row) > 7 else "處置中"
+                    disp_data[c] = info
     except: pass
     
-    return att_set, disp_set
+    return att_data, disp_data
 
 def get_live_price(code):
     """
@@ -959,10 +973,18 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     has_futures = "✅" if code in st.session_state.futures_list else ""
     
     warn_status = "正常"
-    if code in st.session_state.disposal_stocks:
+    warn_reason = ""
+    if code in st.session_state.disposal_data:
         warn_status = "⛔ 處置"
-    elif code in st.session_state.attention_stocks:
+        warn_reason = st.session_state.disposal_data[code]
+    elif code in st.session_state.attention_data:
         warn_status = "⚠️ 注意"
+        warn_reason = st.session_state.attention_data[code]
+    
+    # 組合顯示字串 (狀態 + 原因)
+    warn_display = warn_status
+    if warn_reason and warn_status != "正常":
+        warn_display = f"{warn_status} ({warn_reason})"
     
     return {
         "代號": code, "名稱": final_name_display, "收盤價": round(strategy_base_price, 2),
@@ -970,7 +992,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show,
         "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "",
-        "處置預警": warn_status # [NEW]
+        "處置預警": warn_display # [NEW]
     }
 
 # ==========================================
@@ -1050,9 +1072,9 @@ with tab1:
         if not st.session_state.futures_list:
             st.session_state.futures_list = fetch_futures_list()
         
-        att, disp = fetch_attention_disposal_lists()
-        if att: st.session_state.attention_stocks = att
-        if disp: st.session_state.disposal_stocks = disp
+        att_d, disp_d = fetch_attention_disposal_data()
+        st.session_state.attention_data = att_d
+        st.session_state.disposal_data = disp_d
         
         targets = []
         df_up = pd.DataFrame()
@@ -1266,12 +1288,12 @@ with tab1:
             df_display[input_cols],
             column_config={
                 "移除": st.column_config.CheckboxColumn("刪除", width=40, help="勾選後刪除並自動遞補"),
-                "代號": st.column_config.TextColumn(disabled=True, width=60), # [Fix] 寬度60
+                "代號": st.column_config.TextColumn(disabled=True, width=50), # [Fix] 寬度50
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.TextColumn(disabled=True, width="small"),
                 "期貨": st.column_config.TextColumn(disabled=True, width=40), # [NEW]
-                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=70), # [Fix] 寬度70
+                "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60), # [Fix] 寬度60
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
                 "+3%": st.column_config.TextColumn(width="small", disabled=True),
@@ -1344,11 +1366,10 @@ with tab1:
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
-        # [NEW] 智慧更新邏輯：檢查變更行數
+        # [MODIFIED] 恢復原本的 Checkbox 邏輯 + 備註記憶
         if not edited_df.empty:
             update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-            last_idx = len(st.session_state.stock_data) - 1
-            trigger_rerun = False
+            last_idx = len(edited_df) - 1
             
             for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
@@ -1359,35 +1380,38 @@ with tab1:
                     old_price = str(st.session_state.stock_data.at[i, '自訂價(可修)'])
                     old_note = str(st.session_state.stock_data.at[i, '戰略備註'])
                     
-                    # 1. 儲存變更到 session_state (為了記憶)
                     if old_price != str(new_price):
                         st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
-                        # 只有當 "最後一行" 被修改時，才觸發重算與 Rerun (避免頻繁刷新)
-                        if i == last_idx: 
-                            trigger_rerun = True
                     
-                    # 2. 備註記憶邏輯
+                    # [NEW] 備註記憶: 當手動修改備註時，儲存起來
                     if old_note != str(new_note):
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                        if i == last_idx: 
-                            trigger_rerun = True
-                        
-                        # 嘗試分離手動輸入部分 (簡單邏輯：假設自動部分在前面的空格前)
-                        # 但使用者可能修改了前面。最直覺的是：直接把現在這整串當作新的手動備註存起來。
-                        # 雖然這樣下次會變成 [自動] [自動+手動]，有重複風險。
-                        # 改良：如果當前內容包含 "自動計算部分"，則只存剩下的。
-                        # 由於無法得知自動計算部分，我們採簡單策略：
-                        # 將使用者編輯後的 "整串文字" 存入 saved_notes。
-                        # 但為了避免下次 fetch 時重複顯示，我們在 fetch 邏輯裡做檢查：
-                        # 如果 saved_notes 的開頭跟 auto_note 一樣，就把它切掉。
                         st.session_state.saved_notes[code] = new_note
 
-            if trigger_rerun:
-                # 重新計算狀態 (只針對有變動的其實就夠，但這裡全算比較保險)
-                for i, row in st.session_state.stock_data.iterrows():
-                    new_status = recalculate_row(row, points_map)
-                    st.session_state.stock_data.at[i, '狀態'] = new_status
-                st.rerun()
+            # Checkbox 自動更新邏輯 (檢查最後一行的價格)
+            if st.session_state.auto_update_last_row:
+                last_row_price = str(edited_df.iloc[last_idx]['自訂價(可修)']).strip()
+                # 若最後一行的價格有值，且跟原本的不一樣 (或狀態需要更新)，則觸發更新
+                # 這裡使用簡單判斷：只要最後一行有值，且狀態為空或不符，就更新
+                if last_row_price and last_row_price.lower() != 'nan' and last_row_price.lower() != 'none':
+                    current_code = edited_df.iloc[last_idx]['代號']
+                    original_row = st.session_state.stock_data[st.session_state.stock_data['代號'] == current_code]
+                    
+                    if not original_row.empty:
+                        orig_status = str(original_row.iloc[0]['狀態']).strip()
+                        # 重新計算狀態
+                        new_status = recalculate_row(original_row.iloc[0], points_map)
+                        
+                        # 若狀態改變，或是這是新輸入的價格 (原本狀態為空)，則觸發更新
+                        if new_status != orig_status:
+                            if st.session_state.update_delay_sec > 0:
+                                time.sleep(st.session_state.update_delay_sec)
+                            
+                            # 更新所有狀態
+                            for i, row in st.session_state.stock_data.iterrows():
+                                new_status = recalculate_row(row, points_map)
+                                st.session_state.stock_data.at[i, '狀態'] = new_status
+                            st.rerun()
 
         st.markdown("---")
         
@@ -1395,6 +1419,20 @@ with tab1:
         with col_btn:
             btn_update = st.button("⚡ 執行更新", use_container_width=False, type="primary")
         
+        # [RESTORED] 恢復 Checkbox 設定
+        auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
+            value=st.session_state.auto_update_last_row,
+            key="toggle_auto_update")
+        st.session_state.auto_update_last_row = auto_update
+        
+        if auto_update:
+            col_delay, _ = st.columns([2, 8])
+            with col_delay:
+                delay_val = st.number_input("⏳ 緩衝秒數", 
+                    min_value=0.0, max_value=5.0, step=0.1, 
+                    value=st.session_state.update_delay_sec)
+                st.session_state.update_delay_sec = delay_val
+
         if btn_update:
              update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
              for i, row in st.session_state.stock_data.iterrows():
