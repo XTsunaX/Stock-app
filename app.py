@@ -20,9 +20,6 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
 
-# 1. 標題
-st.title("⚡ 當沖戰略室 ⚡")
-
 CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
 URL_CACHE_FILE = "url_cache.json"
@@ -1116,7 +1113,7 @@ with tab1:
                     df_display.at[i, "漲跌幅"] = f"{color_icon} {chg_str}"
                 except:
                     df_display.at[i, "收盤價"] = fmt_price(df_display.at[i, "收盤價"])
-                    df_display.at[i, "漲跌幅"] = f"{float(df_display.at[i, '漲跌幅']):.2f}%"
+                    df_display.at[i, "漲跌幅"] = f"{float(df_display.at[i, "漲跌幅"]):.2f}%"
 
         df_display = df_display.reset_index(drop=True)
         for col in input_cols:
@@ -1241,19 +1238,29 @@ with tab1:
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
 
-            # 3. 觸發自動更新 (僅針對最後一列變動)
+            # 3. 觸發自動更新 (僅針對最後一列變動) - 修正：不做 sleep() 與 st.rerun()，避免中斷輸入
             if trigger_last_row_update:
-                # 再次確認最後一列的值不是空的
+                # 再次確認最後一列的值不是空的且可轉為數字
                 last_row_price = str(update_map[last_visible_code]['自訂價(可修)']).strip()
-                if last_row_price:
-                    if st.session_state.update_delay_sec > 0:
-                        time.sleep(st.session_state.update_delay_sec)
-                    
-                    # 重新計算所有狀態並刷新
-                    for i, row in st.session_state.stock_data.iterrows():
-                        new_status = recalculate_row(row, points_map)
-                        st.session_state.stock_data.at[i, '狀態'] = new_status
-                    st.rerun()
+                is_numeric = False
+                try:
+                    # 允許像 "30." 或 "30" 等可以被 float 解析的情況
+                    _ = float(last_row_price.replace(',', ''))
+                    is_numeric = True
+                except:
+                    is_numeric = False
+
+                if last_row_price and is_numeric:
+                    # 直接在目前執行緒內更新所有狀態欄位（不呼叫 st.rerun）
+                    for j, r in st.session_state.stock_data.iterrows():
+                        new_status = recalculate_row(r, points_map)
+                        st.session_state.stock_data.at[j, '狀態'] = new_status
+
+                    # 儲存快取狀態（避免丟失）
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+
+                    # 告知使用者已自動更新（不會導致 rerun）
+                    st.toast("已自動更新最後一列狀態（不會打斷正在編輯）。", icon="⚡")
 
         st.markdown("---")
         
@@ -1284,6 +1291,7 @@ with tab1:
                 
                 new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                 st.session_state.stock_data.at[i, '狀態'] = new_status
+             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
              st.rerun()
 
 with tab2:
