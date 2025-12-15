@@ -148,7 +148,6 @@ if 'saved_notes' not in st.session_state:
 if 'futures_list' not in st.session_state:
     st.session_state.futures_list = set()
 if 'market_warnings' not in st.session_state:
-    # 結構: {code: {'type': '處置'/'注意', 'reason': '...', 'period': '...', 'interval': '5分'}}
     st.session_state.market_warnings = {} 
 
 saved_config = load_config()
@@ -163,7 +162,7 @@ if 'auto_update_last_row' not in st.session_state:
     st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
 
 if 'update_delay_sec' not in st.session_state:
-    st.session_state.update_delay_sec = saved_config.get('delay_sec', 4.0)
+    st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) # 預設改短一點
 
 # --- 側邊欄設定 ---
 with st.sidebar:
@@ -322,47 +321,51 @@ def fetch_futures_list():
         pass
     return set()
 
-# [NEW] 抓取注意股與處置股名單 (TWSE/TPEX) - 修正版
-# 抓取範圍: 過去30天，以確保涵蓋正在處置中的股票
+# [NEW] 抓取注意股與處置股名單 (修正版)
 @st.cache_data(ttl=3600)
 def fetch_market_warnings_data():
     warnings = {} # code -> {type, reason, period, interval}
     
-    # 日期範圍
     today = datetime.now()
-    start_date = today - timedelta(days=30)
+    # [Fix] 擴大抓取範圍至 45 天，確保能抓到處置期較長的公告
+    start_date = today - timedelta(days=45)
     
     s_str_twse = start_date.strftime("%Y%m%d")
     e_str_twse = today.strftime("%Y%m%d")
     
-    # 1. TWSE 上市 處置股 (API 支援區間)
+    def tw_to_ad(s):
+        try:
+            parts = re.split(r'[/-]', s) # 支援 113/12/08 或 113-12-08
+            if len(parts) >= 3:
+                y = int(parts[0]) + 1911
+                m = int(parts[1])
+                d = int(parts[2])
+                return datetime(y, m, d)
+        except: return None
+        return None
+
+    # 1. TWSE 上市 處置股
     try:
         url = f"https://www.twse.com.tw/rwd/zh/announcement/punish?startDate={s_str_twse}&endDate={e_str_twse}&response=json"
         r = requests.get(url, timeout=5)
         data = r.json()
         if 'data' in data:
             for row in data['data']:
-                # row: [0:日期, 1:代號, 2:名稱, 3:累計次數, 4:處置期間, 5:處置措施, ...]
+                # row: [日期, 代號, 名稱, 累計次數, 處置期間, 處置措施, 處置原因]
                 if len(row) > 5:
                     c = str(row[1]).strip()
-                    period_str = str(row[4]) # e.g. "112/12/01~112/12/14"
-                    measure_str = str(row[5]) # 包含撮合時間
+                    period_str = str(row[4]) 
+                    measure_str = str(row[5])
                     
-                    # 解析日期，檢查是否包含今天
-                    try:
-                        p_parts = period_str.split('~')
-                        if len(p_parts) == 2:
-                            # 民國轉西元
-                            def tw_to_ad(s):
-                                parts = s.split('/')
-                                return datetime(int(parts[0])+1911, int(parts[1]), int(parts[2]))
-                            
-                            dt_start = tw_to_ad(p_parts[0].strip())
-                            dt_end = tw_to_ad(p_parts[1].strip())
-                            
-                            # 若今天在期間內
+                    # 檢查是否涵蓋今日
+                    p_parts = period_str.split('~') # e.g. 113/12/08~113/12/19
+                    if len(p_parts) == 2:
+                        dt_start = tw_to_ad(p_parts[0].strip())
+                        dt_end = tw_to_ad(p_parts[1].strip())
+                        
+                        if dt_start and dt_end:
+                            # 只要今天在期間內
                             if dt_start.date() <= today.date() <= dt_end.date():
-                                # 解析撮合時間 (每xx分鐘)
                                 interval = "人工管制"
                                 match = re.search(r'每(\d+)分鐘', measure_str)
                                 if match:
@@ -371,11 +374,10 @@ def fetch_market_warnings_data():
                                 warnings[c] = {
                                     'type': '⛔ 處置',
                                     'period': period_str,
-                                    'reason': str(row[6]) if len(row)>6 else "處置中", # 處置原因通常在第6欄
+                                    'reason': str(row[6]) if len(row)>6 else "處置中",
                                     'interval': interval,
                                     'info': measure_str
                                 }
-                    except: pass
     except: pass
 
     # 2. TWSE 上市 注意股 (僅抓最近一日)
@@ -387,7 +389,6 @@ def fetch_market_warnings_data():
             for row in data['data']:
                 if len(row) > 3:
                     c = str(row[1]).strip()
-                    # 如果已經是處置股，不用覆蓋
                     if c not in warnings:
                         warnings[c] = {
                             'type': '⚠️ 注意',
@@ -399,16 +400,18 @@ def fetch_market_warnings_data():
     except: pass
 
     # 3. TPEX 上櫃 (CSV)
-    # TPEX 網站結構較複雜，暫時只抓最近一日的處置與注意
-    # 若要完整需針對每個日期爬取，這裡簡化處理
     try:
-        # 處置 (最近一日)
+        # 處置 (嘗試抓最近 30 天的每一天太慢，這裡只抓最近一天的 CSV 列表)
+        # 櫃買的 URL 是固定的 "disposal_result.php"，通常只顯示「當日生效」或「歷史查詢」
+        # 歷史查詢需要 POST request，這裡簡化嘗試抓取 "當前公告"
+        # 櫃買網站結構較難一次抓取區間，改用 requests 嘗試帶參數 (但通常需要 token)
+        # 這裡改為抓取 "預警/處置股票資訊" 的靜態頁面解析可能較難
+        # 退而求其次: 抓取 "https://www.tpex.org.tw/web/bulletin/disposal/disposal_result.php?l=zh-tw&o=csv"
+        # 這通常是 "最新交易日" 的處置名單
         url_otc_disp = "https://www.tpex.org.tw/web/bulletin/disposal/disposal_result.php?l=zh-tw&o=csv"
         df = pd.read_csv(url_otc_disp, header=None, skiprows=5)
         if not df.empty and df.shape[1] > 7:
             for _, row in df.iterrows():
-                # 欄位不固定，需謹慎
-                # 假設 row[2] 代號, row[3] 名稱, row[5] 期間, row[7] 措施
                 try:
                     c = str(row[2]).strip()
                     if c.isdigit() and len(c)==4:
@@ -416,33 +419,27 @@ def fetch_market_warnings_data():
                         measure_str = str(row[7])
                         reason = str(row[6])
                         
-                        # 檢查期間 (格式: 112/12/01~112/12/14)
                         p_parts = period_str.split('~')
                         if len(p_parts) == 2:
-                             # 簡易檢查字串是否包含今年月份
-                             # 為了準確，還是轉換一下
-                             def tw_to_ad_simple(s):
-                                 p = s.split('/')
-                                 return datetime(int(p[0])+1911, int(p[1]), int(p[2]))
+                             dt_start = tw_to_ad(p_parts[0].strip())
+                             dt_end = tw_to_ad(p_parts[1].strip())
                              
-                             dt_start = tw_to_ad_simple(p_parts[0])
-                             dt_end = tw_to_ad_simple(p_parts[1])
-                             
-                             if dt_start.date() <= today.date() <= dt_end.date():
-                                 interval = "人工管制"
-                                 match = re.search(r'每(\d+)分鐘', measure_str)
-                                 if match: interval = f"{match.group(1)}分盤"
-                                 
-                                 warnings[c] = {
-                                     'type': '⛔ 處置',
-                                     'period': period_str,
-                                     'reason': reason,
-                                     'interval': interval,
-                                     'info': measure_str
-                                 }
+                             if dt_start and dt_end:
+                                 if dt_start.date() <= today.date() <= dt_end.date():
+                                     interval = "人工管制"
+                                     match = re.search(r'每(\d+)分鐘', measure_str)
+                                     if match: interval = f"{match.group(1)}分盤"
+                                     
+                                     warnings[c] = {
+                                         'type': '⛔ 處置',
+                                         'period': period_str,
+                                         'reason': reason,
+                                         'interval': interval,
+                                         'info': measure_str
+                                     }
                 except: pass
         
-        # 注意 (最近一日)
+        # 注意
         url_otc_att = "https://www.tpex.org.tw/web/bulletin/attention/attention_result.php?l=zh-tw&o=csv"
         df_att = pd.read_csv(url_otc_att, header=None, skiprows=5)
         if not df_att.empty and df_att.shape[1] > 3:
@@ -693,30 +690,22 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             last_row = df_check.iloc[-1]
             last_price = last_row['Close']
             
-            # 1. 檢查最後收盤價是否為0
             if last_price <= 0: return False
-            
-            # [NEW] K棒合理性檢查
-            if last_row['High'] < last_price or last_row['Low'] > last_price:
-                return False
+            if last_row['High'] < last_price or last_row['Low'] > last_price: return False
 
-            # 2. 檢查日期是否過舊
             last_dt = df_check.index[-1]
             if last_dt.tzinfo is not None:
                 last_dt = last_dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
             now_dt = datetime.now().replace(tzinfo=None)
             
-            if (now_dt - last_dt).days > 3:
-                return False
+            if (now_dt - last_dt).days > 3: return False
 
-            # 3. 價格比對 Sanity Check
             is_same_day = (last_dt.date() == now_dt.date())
             if is_same_day:
                 live_price = get_live_price(code)
                 if live_price:
                     diff_pct = abs(last_price - live_price) / live_price
-                    if diff_pct > 0.05: 
-                        return False
+                    if diff_pct > 0.05: return False
 
             return True
         except: return False
@@ -725,7 +714,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     try:
         ticker = yf.Ticker(f"{code}.TW")
         hist_yf = ticker.history(period="3mo")
-        # 嘗試 TWO
         if hist_yf.empty or not is_valid_data(hist_yf, code):
             ticker = yf.Ticker(f"{code}.TWO")
             hist_yf = ticker.history(period="3mo")
@@ -735,7 +723,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             source_used = "yfinance"
     except: pass
 
-    # 2. 第二順位: TWStock (若 YF 失敗或過期或價格異常)
+    # 2. 第二順位: TWStock
     if hist.empty:
         try:
             stock = twstock.Stock(code)
@@ -761,43 +749,33 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             hist = df_fm
             source_used = "finmind"
 
-    # 4. 第四順位: Yahoo 網頁爬蟲 (通常是當日的，不用檢查 3mo)
+    # 4. 第四順位: Yahoo 網頁爬蟲
     if hist.empty:
         df_web, web_prev_close = fetch_yahoo_web_backup(code)
         if df_web is not None and not df_web.empty:
             hist = df_web
-            # 針對爬蟲資料最後一層保護
             hist['High'] = hist[['High', 'Close']].max(axis=1)
             hist['Low'] = hist[['Low', 'Close']].min(axis=1)
-            
             backup_prev_close = web_prev_close
             source_used = "web_backup"
 
     if hist.empty: return None
 
-    # --- 最後的資料清理 ---
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # --- 時間與資料定位 ---
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    
     last_date = hist.index[-1].date()
     is_today_in_hist = (last_date == now.date())
-    
-    # 盤中界線：13:30 (台股收盤)
     is_during_trading = (now.time() < dt_time(13, 30))
     
-    # 決定戰略使用的 "History" (hist_strat)
     hist_strat = hist.copy()
     
     if is_during_trading:
-        # 盤中模式：強制剔除今日資料
         if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
-        # 盤後模式：必須包含今日資料
         if not is_today_in_hist and source_used != "web_backup":
             live = get_live_price(code)
             if live:
@@ -809,26 +787,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
     if hist_strat.empty: return None
 
-    # 1. 決定 UI 顯示用的 "收盤價" (靜態)
-    strategy_base_price = hist_strat.iloc[-1]['Close'] # 這是 T
-    
-    # 找 T-1 用於計算漲跌幅
+    strategy_base_price = hist_strat.iloc[-1]['Close']
     if len(hist_strat) >= 2:
         prev_of_base = hist_strat.iloc[-2]['Close']
     else:
         prev_of_base = strategy_base_price 
 
-    # 計算靜態漲跌幅
     if prev_of_base > 0:
         pct_change = ((strategy_base_price - prev_of_base) / prev_of_base) * 100
     else:
         pct_change = 0.0
 
-    # 2. 決定 Limit Base Price (漲跌停基準)
     base_price_for_limit = strategy_base_price
     limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
 
-    # 3. 戰略備註計算 (Strategy Note)
     target_raw = strategy_base_price * 1.03
     stop_raw = strategy_base_price * 0.97
     target_price = apply_sr_rules(target_raw, strategy_base_price)
@@ -836,7 +808,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     
     points = []
     
-    # [Fix] 5MA 精確計算 (避免浮點數誤差)
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
         sum_val = sum(Decimal(str(x)) for x in last_5_closes)
@@ -847,11 +818,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         ma5_tag = "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
-    # T-1 (相對於戰略基準的前一日)
     if len(hist_strat) >= 2:
-        last_candle = hist_strat.iloc[-1] # T
-        prev_candle = hist_strat.iloc[-2] # T-1
-        
+        last_candle = hist_strat.iloc[-1]
         p_open = apply_tick_rules(last_candle['Open'])
         if limit_down_show <= p_open <= limit_up_show: 
              points.append({"val": p_open, "tag": ""})
@@ -862,17 +830,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
         if limit_down_show <= p_low <= limit_up_show: points.append({"val": p_low, "tag": ""})
 
-    # T-2
     if len(hist_strat) >= 3:
-        pre_prev_candle = hist_strat.iloc[-2] # T-1
-        
+        pre_prev_candle = hist_strat.iloc[-2]
         pp_high = apply_tick_rules(pre_prev_candle['High'])
         pp_low = apply_tick_rules(pre_prev_candle['Low'])
-        
         if limit_down_show <= pp_high <= limit_up_show: points.append({"val": pp_high, "tag": ""})
         if limit_down_show <= pp_low <= limit_up_show: points.append({"val": pp_low, "tag": ""})
 
-    # 近期高低 & +3/-3 顯示邏輯
     show_plus_3 = False
     show_minus_3 = False
     
@@ -890,7 +854,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
-        # [NEW] 當日漲停價標示
         if len(hist_strat) >= 2:
              prev_close_T = hist_strat.iloc[-2]['Close']
              limit_up_T, limit_down_T = calculate_limits(prev_close_T)
@@ -904,10 +867,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                  if limit_down_show <= limit_up_T <= limit_up_show:
                      points.append({"val": limit_up_T, "tag": tag_label})
 
-        # ==========================================
-        # [Logic] +3% / -3% 顯示邏輯
-        # ==========================================
-        
         if len(hist_strat) >= 2:
             prev_close_T = hist_strat.iloc[-2]['Close']
             limit_up_T, limit_down_T = calculate_limits(prev_close_T)
@@ -984,12 +943,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         else: item = v_str
         note_parts.append(item)
     
-    # [NEW] 記憶備註處理: 自動部分 + 手動部分
     auto_note = "-".join(note_parts)
     manual_note = st.session_state.saved_notes.get(code, "")
     
     if manual_note:
-        # 如果手動備註存在，則合併
         strategy_note = f"{auto_note} {manual_note}"
     else:
         strategy_note = auto_note
@@ -1002,7 +959,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     elif "空" in strategy_note: light = "🟢"
     final_name_display = f"{light} {final_name}"
     
-    # [NEW] 期貨與處置狀態檢查
     has_futures = "✅" if code in st.session_state.futures_list else ""
     
     warn_status = "正常"
@@ -1010,7 +966,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     if code in st.session_state.market_warnings:
         w = st.session_state.market_warnings[code]
         if w['type'] == '⛔ 處置':
-            # 顯示處置及分盤資訊
             warn_status = f"{w['type']}"
             if w['interval']: warn_status += f"({w['interval']})"
         else:
@@ -1100,11 +1055,9 @@ with tab1:
     if st.button("🚀 執行分析"):
         save_search_cache(st.session_state.search_multiselect)
         
-        # [NEW] 執行分析時更新名單
         if not st.session_state.futures_list:
             st.session_state.futures_list = fetch_futures_list()
         
-        # 更新處置資料
         st.session_state.market_warnings = fetch_market_warnings_data()
         
         targets = []
@@ -1282,7 +1235,6 @@ with tab1:
         if '_points' in df_display.columns:
             points_map = df_display.set_index('代號')['_points'].to_dict()
 
-        # [MODIFIED] 新增 "期貨" 與 "處置預警" 欄位
         input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "期貨", "處置預警"]
         for col in input_cols:
             if col not in df_display.columns: df_display[col] = None
@@ -1313,7 +1265,6 @@ with tab1:
         for col in input_cols:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
-        # [NEW] data_editor 自動更新邏輯 (恢復舊制 + 備註記憶)
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -1338,7 +1289,6 @@ with tab1:
             key="main_editor"
         )
 
-        # [NEW] 處置與注意股 詳細資訊表格 (如果有的話)
         warn_data = []
         for i, row in df_display.iterrows():
             w_info = row.get('_warn_info')
@@ -1414,51 +1364,49 @@ with tab1:
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
-        # [MODIFIED] 恢復原本的 Checkbox 邏輯 + 備註記憶
         if not edited_df.empty:
             update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
             last_idx = len(edited_df) - 1
             
+            # 1. 靜默更新所有變更 (不觸發 rerun)
             for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
                 if code in update_map:
                     new_price = update_map[code]['自訂價(可修)']
                     new_note = update_map[code]['戰略備註']
                     
-                    old_price = str(st.session_state.stock_data.at[i, '自訂價(可修)'])
-                    old_note = str(st.session_state.stock_data.at[i, '戰略備註'])
-                    
-                    if old_price != str(new_price):
-                        st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
-                    
-                    # [NEW] 備註記憶: 當手動修改備註時，儲存起來
-                    if old_note != str(new_note):
-                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                        # 儲存純手動部分 (簡單邏輯：假設自動文字在前，且無變化，則剩下的是手動)
-                        # 這裡直接覆蓋，下次 fetch 會自動接在 auto_note 後面
-                        st.session_state.saved_notes[code] = new_note
+                    # 狀態重新計算 (但先不存回界面，除非是最後一列)
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
+                    st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                    st.session_state.saved_notes[code] = new_note # 記憶備註
 
-            # Checkbox 自動更新邏輯 (檢查最後一行的價格)
+            # 2. 僅針對最後一列進行 "Auto-Update" 判斷
             if st.session_state.auto_update_last_row:
+                last_row_code = edited_df.iloc[last_idx]['代號']
                 last_row_price = str(edited_df.iloc[last_idx]['自訂價(可修)']).strip()
-                # 簡單判斷：只要最後一行有值，且狀態為空或不符，就更新
-                if last_row_price and last_row_price.lower() != 'nan' and last_row_price.lower() != 'none':
-                    current_code = edited_df.iloc[last_idx]['代號']
-                    original_row = st.session_state.stock_data[st.session_state.stock_data['代號'] == current_code]
+                
+                # 找出最後一列原始資料
+                original_row = st.session_state.stock_data[st.session_state.stock_data['代號'] == last_row_code]
+                if not original_row.empty:
+                    orig_status = str(original_row.iloc[0]['狀態']).strip()
                     
-                    if not original_row.empty:
-                        orig_status = str(original_row.iloc[0]['狀態']).strip()
-                        new_status = recalculate_row(original_row.iloc[0], points_map)
+                    # 計算新狀態
+                    # 這裡需要一個暫時的 row 物件來模擬
+                    temp_row = original_row.iloc[0].copy()
+                    temp_row['自訂價(可修)'] = last_row_price
+                    new_status = recalculate_row(temp_row, points_map)
+                    
+                    # 觸發條件: 最後一列有數值 且 (狀態從無變有 或 狀態改變)
+                    # 這樣可以避免每次打字都刷新，只有在 "完成輸入" (導致狀態變化) 時才刷
+                    if last_row_price and (not orig_status or new_status != orig_status):
+                        if st.session_state.update_delay_sec > 0:
+                            time.sleep(st.session_state.update_delay_sec)
                         
-                        if new_status != orig_status:
-                            if st.session_state.update_delay_sec > 0:
-                                time.sleep(st.session_state.update_delay_sec)
-                            
-                            # 更新所有狀態
-                            for i, row in st.session_state.stock_data.iterrows():
-                                new_status = recalculate_row(row, points_map)
-                                st.session_state.stock_data.at[i, '狀態'] = new_status
-                            st.rerun()
+                        # 全面更新狀態並 Rerun
+                        for i, row in st.session_state.stock_data.iterrows():
+                            new_s = recalculate_row(row, points_map)
+                            st.session_state.stock_data.at[i, '狀態'] = new_s
+                        st.rerun()
 
         st.markdown("---")
         
@@ -1466,7 +1414,6 @@ with tab1:
         with col_btn:
             btn_update = st.button("⚡ 執行更新", use_container_width=False, type="primary")
         
-        # [RESTORED] 恢復 Checkbox 設定
         auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
             value=st.session_state.auto_update_last_row,
             key="toggle_auto_update")
