@@ -1192,8 +1192,7 @@ with tab1:
                     # 檢查最後一列價格是否改變
                     for i, row in st.session_state.stock_data.iterrows():
                         if row['代號'] == last_visible_code:
-                            if code in update_map: # Bug fix check
-                                pass
+                            # [FIX] 移除導致 NameError 的錯誤檢查代碼
                             if last_visible_code in update_map:
                                 new_price = update_map[last_visible_code]['自訂價(可修)']
                                 old_price = str(row['自訂價(可修)'])
