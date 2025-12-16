@@ -18,7 +18,8 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide")
+# [修正 1] 將側邊欄預設改為收起狀態 (initial_sidebar_state="collapsed")
+st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
@@ -511,31 +512,42 @@ def recalculate_row(row, points_map):
         l_up = float(limit_up) if limit_up and str(limit_up).replace('.','').isdigit() else None
         l_down = float(limit_down) if limit_down and str(limit_down).replace('.','').isdigit() else None
         
+        # [修正 3] 狀態欄位邏輯更新
+        # 取得所有戰略數值 (包含後台與手動)
+        strat_values = []
+        
+        # 1. 後台計算點位
+        points = points_map.get(code, [])
+        if isinstance(points, list):
+            for p in points: strat_values.append(p['val'])
+            
+        # 2. 手動備註內的數字
+        note_text = str(row.get('戰略備註', ''))
+        found_prices = re.findall(r'\d+\.?\d*', note_text)
+        for fp in found_prices:
+            try: strat_values.append(float(fp))
+            except: pass
+            
+        # 判定狀態
         if l_up is not None and abs(price - l_up) < 0.01: 
             status = "🔴 漲停"
         elif l_down is not None and abs(price - l_down) < 0.01: 
             status = "🟢 跌停"
-        else:
-            # 1. 檢查後台計算點位
-            points = points_map.get(code, [])
-            hit = False
-            if isinstance(points, list):
-                for p in points:
-                    if abs(p['val'] - price) < 0.01:
-                        hit = True; break
+        elif strat_values:
+            max_val = max(strat_values)
+            min_val = min(strat_values)
             
-            # 2. 檢查手動備註內的數字
-            if not hit:
-                note_text = str(row.get('戰略備註', ''))
-                found_prices = re.findall(r'\d+\.?\d*', note_text)
-                for fp in found_prices:
-                    try:
-                        if abs(float(fp) - price) < 0.01:
-                            hit = True; break
-                    except: pass
-            
-            if hit: status = "🟡 命中"
-            
+            if price > max_val:
+                status = "🔴 強"
+            elif price < min_val:
+                status = "🟢 弱"
+            else:
+                # 檢查是否命中特定點位
+                hit = False
+                for v in strat_values:
+                    if abs(v - price) < 0.01: hit = True; break
+                if hit: status = "🟡 命中"
+        
         return status
     except: return status
 
@@ -664,6 +676,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     base_price_for_limit = strategy_base_price
     limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
 
+    # [調整] 將漲跌停限制計算移至前方，以便判斷當日高低點是否觸及
+    limit_up_T = None
+    limit_down_T = None
+    if len(hist_strat) >= 2:
+        prev_close_T = hist_strat.iloc[-2]['Close']
+        limit_up_T, limit_down_T = calculate_limits(prev_close_T)
+
     target_raw = strategy_base_price * 1.03
     stop_raw = strategy_base_price * 0.97
     target_price = apply_sr_rules(target_raw, strategy_base_price)
@@ -691,7 +710,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         p_low = apply_tick_rules(last_candle['Low'])
         
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
-        if limit_down_show <= p_low <= limit_up_show: points.append({"val": p_low, "tag": ""})
+        
+        # [修正 2] 檢查當日最低點是否為跌停價
+        if limit_down_show <= p_low <= limit_up_show: 
+             tag_low = ""
+             if limit_down_T and abs(p_low - limit_down_T) < 0.01:
+                 tag_low = "跌停"
+             points.append({"val": p_low, "tag": tag_low})
 
     if len(hist_strat) >= 3:
         pre_prev_candle = hist_strat.iloc[-2]
@@ -718,12 +743,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         points.append({"val": low_90, "tag": "低"})
         
         if len(hist_strat) >= 2:
-             prev_close_T = hist_strat.iloc[-2]['Close']
-             limit_up_T, limit_down_T = calculate_limits(prev_close_T)
-             
+             # prev_close_T 已經在前面算過
              today_high = hist_strat.iloc[-1]['High']
              
-             if abs(today_high - limit_up_T) < 0.01:
+             if limit_up_T and abs(today_high - limit_up_T) < 0.01:
                  is_new_high = (abs(limit_up_T - high_90_raw) < 0.05)
                  tag_label = "漲停高" if is_new_high else "漲停"
                  
@@ -731,22 +754,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                      points.append({"val": limit_up_T, "tag": tag_label})
 
         if len(hist_strat) >= 2:
-            prev_close_T = hist_strat.iloc[-2]['Close']
-            limit_up_T, limit_down_T = calculate_limits(prev_close_T)
-            
+            # Limits 已經算過
             high_T = hist_strat.iloc[-1]['High']
             low_T = hist_strat.iloc[-1]['Low']
             close_T = hist_strat.iloc[-1]['Close']
             
-            touched_limit_up = (high_T >= limit_up_T - 0.01) 
-            touched_limit_down = (low_T <= limit_down_T + 0.01)
+            touched_limit_up = (limit_up_T and high_T >= limit_up_T - 0.01) 
+            touched_limit_down = (limit_down_T and low_T <= limit_down_T + 0.01)
             
-            if touched_limit_up and (close_T >= limit_up_T * 0.97):
+            if touched_limit_up and (limit_up_T and close_T >= limit_up_T * 0.97):
                 show_plus_3 = True
             else:
                 show_plus_3 = False
                 
-            if touched_limit_down and (close_T <= limit_down_T * 1.03):
+            if touched_limit_down and (limit_down_T and close_T <= limit_down_T * 1.03):
                 show_minus_3 = True
             else:
                 show_minus_3 = False
