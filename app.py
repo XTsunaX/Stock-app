@@ -538,7 +538,7 @@ def recalculate_row(row, points_map):
             min_val = min(strat_values)
             
             if price > max_val:
-                status = "🔴 強" # 對應淡紅色顯示 (由前端 CSS 處理或標記)
+                status = "🔴 強" # 對應淡紅色顯示
             elif price < min_val:
                 status = "🟢 弱" # 對應淡綠色顯示
             else:
@@ -723,7 +723,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     points.append({"val": high_90, "tag": "高"})
     points.append({"val": low_90, "tag": "低"})
 
-    # [新邏輯] 判定是否顯示 +3% / -3%
+    # 判定是否顯示 +3% / -3%
     today_row = hist_strat.iloc[-1]
     is_at_new_high = (today_row['High'] >= high_90_raw - 0.01)
     is_at_new_low = (today_row['Low'] <= low_90_raw + 0.01)
@@ -1227,7 +1227,8 @@ with tab2:
         if calc_price != st.session_state.calc_base_price:
             st.session_state.calc_base_price = calc_price
             st.session_state.calc_view_price = apply_tick_rules(calc_price)
-    with c2: shares = st.number_input("股數", 1000, 1000, 1000000, 1000)
+    # [修正] 修正參數順序，避免 StreamlitValueAboveMaxError
+    with c2: shares = st.number_input("股數", 1000, 1000000, 1000, 1000)
     with c3: discount = st.number_input("手續費折扣 (折)", 0.1, 10.0, 2.8, 0.1)
     with c4: min_fee = st.number_input("最低手續費 (元)", 0, 100, 20, 1)
     with c5: tick_count = st.number_input("顯示檔數 (檔)", 1, 50, 5, 1)
