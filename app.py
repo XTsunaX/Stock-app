@@ -200,14 +200,19 @@ with st.sidebar:
     st.markdown("### 資料管理")
     st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
     
+    # [修正 1] 復原股票顯示代號 + 股名
     if st.session_state.ignored_stocks:
-        ignored_options = sorted(list(st.session_state.ignored_stocks))
-        stocks_to_restore = st.multiselect("選取以復原股票:", options=ignored_options, placeholder="選擇代號...")
+        ignored_list = sorted(list(st.session_state.ignored_stocks))
+        # 建立 顯示名稱 -> 代號 的對照
+        display_map = {f"{c} {get_stock_name_online(c)}": c for c in ignored_list}
+        stocks_to_restore_display = st.multiselect("選取以復原股票:", options=list(display_map.keys()), placeholder="選擇股票...")
+        
         if st.button("♻️ 復原選中股票", use_container_width=True):
-            for c in stocks_to_restore:
-                st.session_state.ignored_stocks.remove(c)
+            for d in stocks_to_restore_display:
+                code = display_map[d]
+                st.session_state.ignored_stocks.remove(code)
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-            st.toast(f"已復原 {len(stocks_to_restore)} 檔股票", icon="🔄")
+            st.toast(f"已復原 {len(stocks_to_restore_display)} 檔股票", icon="🔄")
             st.rerun()
 
     col_restore_all, col_clear = st.columns([1, 1])
@@ -238,15 +243,9 @@ with st.sidebar:
     st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
 
 # --- 動態 CSS ---
-font_px = f"{st.session_state.font_size}px"
-zoom_level = current_font_size / 14.0
-
+# [修正 2] 移除表格強制 zoom 與 width 設定，回歸原生配置
 st.markdown(f"""
     <style>
-    div[data-testid="stDataFrame"] {{
-        width: 100%;
-        zoom: {zoom_level};
-    }}
     div[data-testid="stDataFrame"] table, 
     div[data-testid="stDataFrame"] thead, 
     div[data-testid="stDataFrame"] tbody, 
@@ -519,6 +518,7 @@ def recalculate_row(row, points_map):
             for p in points: strat_values.append(p['val'])
             
         note_text = str(row.get('戰略備註', ''))
+        # 尋找備註中的價格數字
         found_prices = re.findall(r'\d+\.?\d*', note_text)
         for fp in found_prices:
             try: strat_values.append(float(fp))
@@ -642,12 +642,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, include_3d_hl=Fals
 
     points = []
     
+    # [修正 3] 標籤改為中文避免 regex 判斷錯誤，並正確加入 points
     if include_3d_hl and len(hist_strat) >= 1:
         last_3_days = hist_strat.tail(3)
         h3_raw = last_3_days['High'].max()
         l3_raw = last_3_days['Low'].min()
-        points.append({"val": apply_tick_rules(h3_raw), "tag": "3高"})
-        points.append({"val": apply_tick_rules(l3_raw), "tag": "3低"})
+        points.append({"val": apply_tick_rules(h3_raw), "tag": "三高"})
+        points.append({"val": apply_tick_rules(l3_raw), "tag": "三低"})
 
     if len(hist_strat) >= 5:
         ma5_raw = float((sum(Decimal(str(x)) for x in hist_strat['Close'].tail(5).values) / Decimal("5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
@@ -700,13 +701,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, include_3d_hl=Fals
     for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
         tags = [x['tag'] for x in list(group) if x['tag']]
         final_tag = ""
+        # 優先級判斷
         if "漲停高" in tags: final_tag = "漲停高"
         elif "漲停" in tags: final_tag = "漲停"
         elif "跌停" in tags: final_tag = "跌停"
         elif "高" in tags: final_tag = "高"
         elif "低" in tags: final_tag = "低"
-        elif "3高" in tags: final_tag = "3高"
-        elif "3低" in tags: final_tag = "3低"
+        elif "三高" in tags: final_tag = "三高"
+        elif "三低" in tags: final_tag = "三低"
         elif "多" in tags: final_tag = "多"
         elif "空" in tags: final_tag = "空"
         elif "平" in tags: final_tag = "平"
@@ -719,7 +721,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, include_3d_hl=Fals
         seen_vals.add(p['val'])
         v_str = fmt_price(p['val'])
         t = p['tag']
-        note_parts.append(f"{t}{v_str}" if t in ["漲停", "漲停高", "跌停", "高", "低", "3高", "3低"] else (f"{v_str}{t}" if t else v_str))
+        note_parts.append(f"{t}{v_str}" if t in ["漲停", "漲停高", "跌停", "高", "低", "三高", "三低"] else (f"{v_str}{t}" if t else v_str))
     
     auto_note = "-".join(note_parts)
     manual_note = st.session_state.saved_notes.get(code, "")
@@ -762,7 +764,6 @@ with tab1:
             st.selectbox("📜 歷史紀錄", options=st.session_state.url_history if st.session_state.url_history else ["(無紀錄)"], key="history_selected", index=None, on_change=lambda: setattr(st.session_state, 'cloud_url_input', st.session_state.history_selected), label_visibility="collapsed")
             st.text_input("輸入連結", key="cloud_url_input", placeholder="https://...")
         
-        # [修正] 上一版漏掉括號處
         search_selection = st.multiselect(
             "🔍 快速查詢", 
             options=stock_options, 
@@ -862,6 +863,7 @@ with tab1:
                 df_display.at[i, "收盤價"] = f"{icon} {fmt_price(p)}"
                 df_display.at[i, "漲跌幅"] = f"{icon} {chg:+.2f}%"
 
+        # [修正 2] 恢復表格長寬比例
         edited_df = st.data_editor(
             df_display[input_cols],
             column_config={
@@ -874,7 +876,9 @@ with tab1:
                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px),
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
             },
-            hide_index=True, key="main_editor"
+            hide_index=True, 
+            key="main_editor",
+            use_container_width=True
         )
         
         col_btn1, col_btn2, col_btn3, _ = st.columns([1.5, 1.2, 1.2, 6.1])
