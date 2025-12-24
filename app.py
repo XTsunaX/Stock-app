@@ -163,114 +163,6 @@ if 'auto_update_last_row' not in st.session_state:
 if 'update_delay_sec' not in st.session_state:
     st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
 
-# --- 側邊欄設定 ---
-with st.sidebar:
-    st.header("⚙️ 設定")
-    
-    current_font_size = st.slider(
-        "字體大小 (表格)", 
-        min_value=12, 
-        max_value=72, 
-        value=st.session_state.font_size,
-        key='font_size_slider'
-    )
-    st.session_state.font_size = current_font_size
-    
-    hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
-    
-    st.markdown("---")
-    
-    current_limit_rows = st.number_input(
-        "顯示筆數 (檔案/雲端)", 
-        min_value=1, 
-        value=st.session_state.limit_rows,
-        key='limit_rows_input',
-        help="此設定限制「檔案/雲端」來源的股票數量。快速查詢的股票會額外顯示。"
-    )
-    st.session_state.limit_rows = current_limit_rows
-    
-    if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows, 
-                      st.session_state.auto_update_last_row, 
-                      st.session_state.update_delay_sec):
-            st.toast("設定已儲存！", icon="✅")
-            
-    st.markdown("### 資料管理")
-    st.write(f"🚫 已忽略 **{len(st.session_state.ignored_stocks)}** 檔")
-    
-    col_restore, col_clear = st.columns([1, 1])
-    with col_restore:
-        if st.button("♻️ 復原", use_container_width=True):
-            st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
-            st.toast("已重置忽略名單。", icon="🔄")
-            st.rerun()
-    with col_clear:
-        if st.button("🗑️ 清空", type="primary", use_container_width=True, help="清空所有分析資料 (不會刪除記憶的網址)"):
-            st.session_state.stock_data = pd.DataFrame()
-            st.session_state.ignored_stocks = set()
-            st.session_state.all_candidates = []
-            st.session_state.search_multiselect = []
-            st.session_state.saved_notes = {} 
-            save_search_cache([])
-            if os.path.exists(DATA_CACHE_FILE):
-                os.remove(DATA_CACHE_FILE)
-            st.toast("資料已全部清空", icon="🗑️")
-            st.rerun()
-    
-    if st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容"):
-        st.session_state.saved_notes = {}
-        st.toast("手動備註已清除", icon="🧹")
-        if not st.session_state.stock_data.empty:
-             for idx in st.session_state.stock_data.index:
-                 # 清除時只保留 _auto_note (如果存在)
-                 if '_auto_note' in st.session_state.stock_data.columns:
-                     st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
-        st.rerun()
-
-    st.caption("功能說明")
-    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
-    
-    st.markdown("---")
-    st.markdown("### 🔗 外部資源")
-    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
-
-# --- 動態 CSS ---
-font_px = f"{st.session_state.font_size}px"
-zoom_level = current_font_size / 14.0
-
-st.markdown(f"""
-    <style>
-    div[data-testid="stDataFrame"] {{
-        width: 100%;
-        zoom: {zoom_level};
-    }}
-    div[data-testid="stDataFrame"] table, 
-    div[data-testid="stDataFrame"] thead, 
-    div[data-testid="stDataFrame"] tbody, 
-    div[data-testid="stDataFrame"] tr, 
-    div[data-testid="stDataFrame"] th, 
-    div[data-testid="stDataFrame"] td, 
-    div[data-testid="stDataFrame"] div, 
-    div[data-testid="stDataFrame"] span, 
-    div[data-testid="stDataFrame"] p {{
-        font-family: 'Microsoft JhengHei', sans-serif !important;
-    }}
-    div[data-testid="stDataFrame"] input {{
-        font-family: 'Microsoft JhengHei', sans-serif !important;
-        font-size: 0.9rem !important; 
-    }}
-    thead tr th:first-child {{ display:none }}
-    tbody th {{ display:none }}
-    .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
-    [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
-    div[data-testid="column"] {{
-        padding-left: 0.1rem !important;
-        padding-right: 0.1rem !important;
-    }}
-    </style>
-""", unsafe_allow_html=True)
-
 # ==========================================
 # 1. 資料庫與網路功能
 # ==========================================
@@ -304,6 +196,99 @@ def search_code_online(query):
     _, name_map = load_local_stock_names()
     if query in name_map: return name_map[query]
     return None
+
+# --- 側邊欄設定 ---
+with st.sidebar:
+    st.header("⚙️ 設定")
+    
+    current_font_size = st.slider(
+        "字體大小 (表格)", 
+        min_value=12, 
+        max_value=72, 
+        value=st.session_state.font_size,
+        key='font_size_slider'
+    )
+    st.session_state.font_size = current_font_size
+    
+    hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
+    
+    # [NEW] 選項: 近3日高低點
+    show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中顯示近3日的最高與最低價 (3H/3L)")
+    
+    st.markdown("---")
+    
+    current_limit_rows = st.number_input(
+        "顯示筆數 (檔案/雲端)", 
+        min_value=1, 
+        value=st.session_state.limit_rows,
+        key='limit_rows_input',
+        help="此設定限制「檔案/雲端」來源的股票數量。快速查詢的股票會額外顯示。"
+    )
+    st.session_state.limit_rows = current_limit_rows
+    
+    if st.button("💾 儲存設定"):
+        if save_config(current_font_size, current_limit_rows, 
+                      st.session_state.auto_update_last_row, 
+                      st.session_state.update_delay_sec):
+            st.toast("設定已儲存！", icon="✅")
+            
+    st.markdown("### 資料管理")
+    # [修正] 將忽略名單改為可視狀態，方便加回
+    if st.session_state.ignored_stocks:
+        st.write(f"🚫 忽略名單 (取消勾選以復原):")
+        
+        # 準備選單選項: "代號 股名"
+        ignored_list = sorted(list(st.session_state.ignored_stocks))
+        options_map = {f"{c} {get_stock_name_online(c)}": c for c in ignored_list}
+        options_display = list(options_map.keys())
+        
+        selected_ignored_display = st.multiselect(
+            "管理忽略股票",
+            options=options_display,
+            default=options_display,
+            label_visibility="collapsed",
+            help="取消勾選即可將股票加回分析清單"
+        )
+        
+        # 比對差異，若有取消勾選則更新 session state
+        current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
+        if len(current_selected_codes) != len(st.session_state.ignored_stocks):
+            st.session_state.ignored_stocks = current_selected_codes
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+            st.toast("已更新忽略名單。", icon="🔄")
+            st.rerun()
+    else:
+        st.write("🚫 目前無忽略股票")
+    
+    col_restore, col_clear = st.columns([1, 1])
+    with col_restore:
+        # 雖然有多選單可復原，保留一鍵全部復原仍有便利性
+        if st.button("♻️ 全部復原", use_container_width=True):
+            st.session_state.ignored_stocks.clear()
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+            st.toast("已重置忽略名單。", icon="🔄")
+            st.rerun()
+    with col_clear:
+        if st.button("🗑️ 全部清空", type="primary", use_container_width=True, help="清空所有分析資料 (不會刪除記憶的網址)"):
+            st.session_state.stock_data = pd.DataFrame()
+            st.session_state.ignored_stocks = set()
+            st.session_state.all_candidates = []
+            st.session_state.search_multiselect = []
+            st.session_state.saved_notes = {} 
+            save_search_cache([])
+            if os.path.exists(DATA_CACHE_FILE):
+                os.remove(DATA_CACHE_FILE)
+            st.toast("資料已全部清空", icon="🗑️")
+            st.rerun()
+    
+    # [修正] 清除手動備註按鈕已移至主畫面 Tab 1
+
+    st.caption("功能說明")
+    st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
+    
+    st.markdown("---")
+    st.markdown("### 🔗 外部資源")
+    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
 
 # [NEW] 抓取期貨名單 (TAIFEX)
 @st.cache_data(ttl=86400)
@@ -777,6 +762,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
+    
+    # [NEW] 計算近3日高低點 (用於顯示選項)
+    h3 = 0.0
+    l3 = 0.0
+    if len(hist_strat) >= 3:
+        recent_3 = hist_strat.tail(3)
+        h3 = recent_3['High'].max()
+        l3 = recent_3['Low'].min()
+    elif not hist_strat.empty:
+        h3 = hist_strat['High'].max()
+        l3 = hist_strat['Low'].min()
         
     display_candidates = []
     for p in points:
@@ -855,7 +851,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show,
         "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "",
-        "_auto_note": auto_note # 用於前端比對分離
+        "_auto_note": auto_note, # 用於前端比對分離
+        "_3d_high": h3, "_3d_low": l3 # 新增3日高低點數據
     }
 
 # ==========================================
@@ -928,7 +925,31 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    if st.button("🚀 執行分析"):
+    # [修正] 按鈕區塊調整: 執行分析 / 儲存資料 / 清除手動備註
+    c_run, c_save, c_clear = st.columns([2, 1, 1], gap="small")
+    
+    with c_run:
+        btn_run = st.button("🚀 執行分析", use_container_width=True)
+    with c_save:
+        btn_save_data = st.button("💾 儲存", use_container_width=True, help="強制儲存當前資料到快取")
+    with c_clear:
+        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+
+    if btn_save_data:
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+        st.toast("資料已儲存！", icon="💾")
+
+    if btn_clear_notes:
+        st.session_state.saved_notes = {}
+        st.toast("手動備註已清除", icon="🧹")
+        if not st.session_state.stock_data.empty:
+             for idx in st.session_state.stock_data.index:
+                 # 清除時只保留 _auto_note (如果存在)
+                 if '_auto_note' in st.session_state.stock_data.columns:
+                     st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
+        st.rerun()
+
+    if btn_run:
         save_search_cache(st.session_state.search_multiselect)
         
         if not st.session_state.futures_list:
@@ -1102,6 +1123,28 @@ with tab1:
             df_all = df_all.sort_values(by=['_source_rank', '_order'])
         
         df_display = df_all.reset_index(drop=True)
+        
+        # [NEW] 根據 Checkbox 動態更新「戰略備註」內容
+        # 這裡不修改原始資料，僅修改顯示用的 DataFrame
+        if show_3d_hilo:
+            for i, row in df_display.iterrows():
+                base = str(row.get('_auto_note', ''))
+                manual = st.session_state.saved_notes.get(row['代號'], "")
+                
+                h3 = row.get('_3d_high', 0)
+                l3 = row.get('_3d_low', 0)
+                extras = []
+                if h3 > 0: extras.append(f"3H{fmt_price(h3)}")
+                if l3 > 0: extras.append(f"3L{fmt_price(l3)}")
+                extra_str = "-".join(extras)
+                
+                parts = []
+                if base: parts.append(base)
+                if extra_str: parts.append(extra_str)
+                if manual: parts.append(manual)
+                
+                df_display.at[i, "戰略備註"] = " ".join(parts)
+        
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
         df_display["移除"] = False
         
@@ -1186,8 +1229,22 @@ with tab1:
                             new_note = update_map[code]['戰略備註']
                             st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
                             # 處理備註記憶
+                            # 注意：若有顯示 3D 高低點，儲存時需確保去除自動生成部分，僅留手動部分
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
+                                
+                                # 若當前有顯示3D高低點，base_auto需加上動態部分才能正確分離
+                                if show_3d_hilo:
+                                    h3 = row.get('_3d_high', 0)
+                                    l3 = row.get('_3d_low', 0)
+                                    extras = []
+                                    if h3 > 0: extras.append(f"3H{fmt_price(h3)}")
+                                    if l3 > 0: extras.append(f"3L{fmt_price(l3)}")
+                                    extra_str = "-".join(extras)
+                                    if extra_str:
+                                        if base_auto: base_auto += " " + extra_str
+                                        else: base_auto = extra_str
+
                                 pure_manual = new_note
                                 if base_auto and new_note.startswith(base_auto):
                                     pure_manual = new_note[len(base_auto):].strip()
@@ -1231,6 +1288,18 @@ with tab1:
                                             
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
+                                                # 同樣處理動態前綴
+                                                if show_3d_hilo:
+                                                    h3 = r.get('_3d_high', 0)
+                                                    l3 = r.get('_3d_low', 0)
+                                                    extras = []
+                                                    if h3 > 0: extras.append(f"3H{fmt_price(h3)}")
+                                                    if l3 > 0: extras.append(f"3L{fmt_price(l3)}")
+                                                    extra_str = "-".join(extras)
+                                                    if extra_str:
+                                                        if base_auto: base_auto += " " + extra_str
+                                                        else: base_auto = extra_str
+
                                                 pure_manual = nn
                                                 if base_auto and nn.startswith(base_auto):
                                                     pure_manual = nn[len(base_auto):].strip()
@@ -1324,6 +1393,18 @@ with tab1:
                     # 補上手動備註記憶邏輯
                     if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
+                        # 處理動態前綴分離
+                        if show_3d_hilo:
+                            h3 = row.get('_3d_high', 0)
+                            l3 = row.get('_3d_low', 0)
+                            extras = []
+                            if h3 > 0: extras.append(f"3H{fmt_price(h3)}")
+                            if l3 > 0: extras.append(f"3L{fmt_price(l3)}")
+                            extra_str = "-".join(extras)
+                            if extra_str:
+                                if base_auto: base_auto += " " + extra_str
+                                else: base_auto = extra_str
+
                         pure_manual = new_note
                         if base_auto and new_note.startswith(base_auto):
                             pure_manual = new_note[len(base_auto):].strip()
