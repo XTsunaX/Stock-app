@@ -29,7 +29,7 @@ URL_CACHE_FILE = "url_cache.json"
 SEARCH_CACHE_FILE = "search_cache.json"
 
 # ==========================================
-# 1. 基礎設定與快取功能 (先定義，供 UI 使用)
+# 1. 基礎設定與快取功能 (先定義)
 # ==========================================
 
 def load_config():
@@ -247,31 +247,46 @@ def recalculate_row(row, points_map):
     code = row.get('代號')
     status = ""
     if pd.isna(custom_price) or str(custom_price).strip() == "": return status
+    
     try:
         price = float(custom_price)
-        limit_up, limit_down = row.get('當日漲停價'), row.get('當日跌停價')
+        limit_up = row.get('當日漲停價')
+        limit_down = row.get('當日跌停價')
+        
         l_up = float(limit_up) if limit_up and str(limit_up).replace('.','').isdigit() else None
         l_down = float(limit_down) if limit_down and str(limit_down).replace('.','').isdigit() else None
+        
         strat_values = []
+        # 從後台計算的點位
         points = points_map.get(code, [])
         if isinstance(points, list):
             for p in points: strat_values.append(p['val'])
+            
+        # 從戰略備註中抓取數字 (注意：這裡使用 regex 只會抓取數字，如果標籤是 "三高" 則不會被抓到，解決了 "3低" 被誤判的問題)
         note_text = str(row.get('戰略備註', ''))
         found_prices = re.findall(r'\d+\.?\d*', note_text)
         for fp in found_prices:
             try: strat_values.append(float(fp))
             except: pass
-        if l_up is not None and abs(price - l_up) < 0.01: status = "🔴 漲停"
-        elif l_down is not None and abs(price - l_down) < 0.01: status = "🟢 跌停"
+            
+        if l_up is not None and abs(price - l_up) < 0.01: 
+            status = "🔴 漲停"
+        elif l_down is not None and abs(price - l_down) < 0.01: 
+            status = "🟢 跌停"
         elif strat_values:
-            max_val, min_val = max(strat_values), min(strat_values)
-            if price > max_val: status = "🔴 強"
-            elif price < min_val: status = "🟢 弱"
+            max_val = max(strat_values)
+            min_val = min(strat_values)
+            
+            if price > max_val:
+                status = "🔴 強"
+            elif price < min_val:
+                status = "🟢 弱"
             else:
                 hit = False
                 for v in strat_values:
                     if abs(v - price) < 0.01: hit = True; break
                 if hit: status = "🟡 命中"
+        
         return status
     except: return status
 
@@ -382,10 +397,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, include_3d_hl=Fals
     limit_up_show, limit_down_show = calculate_limits(strategy_base_price)
     limit_up_T = calculate_limits(hist_strat.iloc[-2]['Close'])[0] if len(hist_strat) >= 2 else None
     points = []
+    
+    # [修正] 使用中文 "三高", "三低" 避免 regex 抓到數字 3
     if include_3d_hl and len(hist_strat) >= 1:
         last_3 = hist_strat.tail(3)
         points.append({"val": apply_tick_rules(last_3['High'].max()), "tag": "三高"})
         points.append({"val": apply_tick_rules(last_3['Low'].min()), "tag": "三低"})
+        
     if len(hist_strat) >= 5:
         ma5_raw = float((sum(Decimal(str(x)) for x in hist_strat['Close'].tail(5).values) / Decimal("5")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         points.append({"val": apply_sr_rules(ma5_raw, strategy_base_price), "tag": "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平"), "force": True})
@@ -401,7 +419,18 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, include_3d_hl=Fals
     final_points = []
     for val, group in itertools.groupby(sorted([p for p in points if p.get('force') or (limit_down_show <= p['val'] <= limit_up_show)], key=lambda x: x['val']), key=lambda x: round(x['val'], 2)):
         tags = [x['tag'] for x in list(group) if x['tag']]
-        tag = tags[0] if tags else ""
+        tag = ""
+        # 優先順序判定
+        if "漲停高" in tags: tag = "漲停高"
+        elif "漲停" in tags: tag = "漲停"
+        elif "跌停" in tags: tag = "跌停"
+        elif "高" in tags: tag = "高"
+        elif "低" in tags: tag = "低"
+        elif "三高" in tags: tag = "三高"
+        elif "三低" in tags: tag = "三低"
+        elif "多" in tags: tag = "多"
+        elif "空" in tags: tag = "空"
+        elif "平" in tags: tag = "平"
         final_points.append({"val": val, "tag": tag})
     note = "-".join([f"{p['tag']}{fmt_price(p['val'])}" if p['tag'] in ["漲停", "漲停高", "跌停", "高", "低", "三高", "三低"] else (f"{fmt_price(p['val'])}{p['tag']}" if p['tag'] else fmt_price(p['val'])) for p in final_points])
     manual = st.session_state.saved_notes.get(code, "")
@@ -465,7 +494,42 @@ with st.sidebar:
 # 6. UI - 主介面
 # ==========================================
 
-st.markdown(f"<style>.block-container {{ padding-top: 4.5rem; }} div[data-testid='stDataFrame'] td, div[data-testid='stDataFrame'] th, div[data-testid='stDataFrame'] p {{ font-size: {st.session_state.font_size}px !important; font-family: 'Microsoft JhengHei'; }}</style>", unsafe_allow_html=True)
+# [還原] 表格 CSS 樣式，恢復 zoom 與 width 100%
+font_px = f"{st.session_state.font_size}px"
+zoom_level = st.session_state.font_size / 14.0
+
+st.markdown(f"""
+    <style>
+    div[data-testid="stDataFrame"] {{
+        width: 100%;
+        zoom: {zoom_level};
+    }}
+    div[data-testid="stDataFrame"] table, 
+    div[data-testid="stDataFrame"] thead, 
+    div[data-testid="stDataFrame"] tbody, 
+    div[data-testid="stDataFrame"] tr, 
+    div[data-testid="stDataFrame"] th, 
+    div[data-testid="stDataFrame"] td, 
+    div[data-testid="stDataFrame"] div, 
+    div[data-testid="stDataFrame"] span, 
+    div[data-testid="stDataFrame"] p {{
+        font-family: 'Microsoft JhengHei', sans-serif !important;
+    }}
+    div[data-testid="stDataFrame"] input {{
+        font-family: 'Microsoft JhengHei', sans-serif !important;
+        font-size: 0.9rem !important; 
+    }}
+    thead tr th:first-child {{ display:none }}
+    tbody th {{ display:none }}
+    .block-container {{ padding-top: 4.5rem; padding-bottom: 1rem; }}
+    [data-testid="stMetricValue"] {{ font-size: 1.2em; }}
+    div[data-testid="column"] {{
+        padding-left: 0.1rem !important;
+        padding-right: 0.1rem !important;
+    }}
+    </style>
+""", unsafe_allow_html=True)
+
 tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
 
 with tab1:
@@ -516,12 +580,31 @@ with tab1:
         df_display["移除"] = False
         points_map = df_display.set_index('代號')['_points'].to_dict() if '_points' in df_display.columns else {}
         auto_notes = df_display.set_index('代號')['_auto_note'].to_dict() if '_auto_note' in df_display.columns else {}
+        
+        # 確保在顯示前計算狀態
+        for i in range(len(df_display)):
+            df_display.at[i, '狀態'] = recalculate_row(df_display.iloc[i], points_map)
+
         for c in ["當日漲停價", "當日跌停價", "獲利目標", "防守停損", "自訂價(可修)"]: df_display[c] = df_display[c].apply(fmt_price)
         for i in range(len(df_display)):
             icon = "🔴" if df_display.at[i, "漲跌幅"] > 0 else ("🟢" if df_display.at[i, "漲跌幅"] < 0 else "⚪")
             df_display.at[i, "收盤價"] = f"{icon} {fmt_price(df_display.at[i, '收盤價'])}"
             df_display.at[i, "漲跌幅"] = f"{icon} {df_display.at[i, '漲跌幅']:+.2f}%"
-        edited = st.data_editor(df_display[["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "期貨"]], hide_index=True, key="main_editor", use_container_width=True)
+
+        note_width_px = calculate_note_width(df_display['戰略備註'], st.session_state.font_size)
+
+        # [還原] use_container_width=False 配合 zoom CSS
+        edited = st.data_editor(
+            df_display[["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "獲利目標", "防守停損", "收盤價", "漲跌幅", "期貨"]], 
+            hide_index=True, 
+            key="main_editor",
+            use_container_width=False,
+            column_config={
+                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px),
+                 "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60),
+                 "移除": st.column_config.CheckboxColumn("刪除", width=40),
+            }
+        )
         c1, c2, c3, _ = st.columns([1.5, 1.2, 1.2, 6.1])
         if c1.button("⚡ 執行更新", type="primary", use_container_width=True) or c2.button("💾 儲存備註", use_container_width=True):
             up_map = edited.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
@@ -545,25 +628,93 @@ with tab1:
 
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
+    # [還原] 當沖損益室邏輯 (修正 number_input 參數順序)
     c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: 
-        st.session_state.calc_base_price = st.number_input("基準價格", value=float(st.session_state.calc_base_price), step=0.01)
+    with c1:
+        calc_price = st.number_input("基準價格", value=float(st.session_state.calc_base_price), step=0.01, format="%.2f", key="input_base_price")
+        if calc_price != st.session_state.calc_base_price:
+            st.session_state.calc_base_price = calc_price
+            st.session_state.calc_view_price = apply_tick_rules(calc_price)
     with c2: shares = st.number_input("股數", value=1000, step=1000)
-    with c3: discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1)
+    with c3: discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
     with c4: min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
-    with c5: tick_count = st.number_input("顯示檔數 (檔)", min_value=1, max_value=50, value=5, step=1)
-    dir_long = "多" in st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
-    lup, ldown = calculate_limits(st.session_state.calc_base_price)
+    with c5: tick_count = st.number_input("顯示檔數 (檔)", value=5, min_value=1, max_value=50, step=1)
+    direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
+    limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
-    if b1.button("🔼 向上", use_container_width=True): st.session_state.calc_view_price = min(lup, move_tick(st.session_state.calc_view_price, tick_count)); st.rerun()
-    if b2.button("🔽 向下", use_container_width=True): st.session_state.calc_view_price = max(ldown, move_tick(st.session_state.calc_view_price, -tick_count)); st.rerun()
-    cdata = []
-    for i in range(tick_count, -(tick_count + 1), -1):
-        p = move_tick(st.session_state.calc_view_price, i)
-        if p > lup or p < ldown: continue
-        bp, sp = (st.session_state.calc_base_price, p) if dir_long else (p, st.session_state.calc_base_price)
-        bf, sf = [max(min_fee, math.floor(x * shares * 0.001425 * (discount/10))) for x in [bp, sp]]
-        tax = math.floor((sp if dir_long else bp) * shares * 0.0015)
-        prof = (sp * shares - sf - tax) - (bp * shares + bf)
-        cdata.append({"成交價": fmt_price(p), "漲跌": f"{p-st.session_state.calc_base_price:+.2f}", "預估損益": int(prof), "報酬率%": f"{(prof/(st.session_state.calc_base_price*shares))*100:+.2f}%", "_p": prof, "_b": abs(p-st.session_state.calc_base_price)<0.001})
-    if cdata: st.dataframe(pd.DataFrame(cdata).style.apply(lambda r: ['background-color: #ffffcc']*len(r) if r['_b'] else (['color: #ff4b4b']*len(r) if r['_p']>0 else (['color: #00cc00']*len(r) if r['_p']<0 else ['color: gray']*len(r))), axis=1), hide_index=True, use_container_width=True)
+    with b1:
+        if st.button("🔼 向上", use_container_width=True):
+            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
+            if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
+            st.rerun()
+    with b2:
+        if st.button("🔽 向下", use_container_width=True):
+            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
+            if st.session_state.calc_view_price < limit_down: st.session_state.calc_view_price = limit_down
+            st.rerun()
+    
+    ticks_range = range(tick_count, -(tick_count + 1), -1)
+    calc_data = []
+    base_p = st.session_state.calc_base_price
+    if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = base_p
+    view_p = st.session_state.calc_view_price
+    is_long = "多" in direction
+    fee_rate = 0.001425; tax_rate = 0.0015 
+    
+    for i in ticks_range:
+        p = move_tick(view_p, i)
+        if p > limit_up or p < limit_down: continue
+        
+        if is_long:
+            buy_price = base_p; sell_price = p
+            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
+            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
+            tax = math.floor(sell_price * shares * tax_rate)
+            cost = (buy_price * shares) + buy_fee
+            income = (sell_price * shares) - sell_fee - tax
+            profit = income - cost
+            total_fee = buy_fee + sell_fee
+        else: 
+            sell_price = base_p; buy_price = p
+            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
+            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
+            tax = math.floor(sell_price * shares * tax_rate)
+            income = (sell_price * shares) - sell_fee - tax
+            cost = (buy_price * shares) + buy_fee
+            profit = income - cost
+            total_fee = buy_fee + sell_fee
+        roi = 0
+        if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
+        diff = p - base_p
+        diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
+        if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
+        
+        note_type = ""
+        if abs(p - limit_up) < 0.001: note_type = "up"
+        elif abs(p - limit_down) < 0.001: note_type = "down"
+        is_base = (abs(p - base_p) < 0.001)
+        
+        calc_data.append({
+            "成交價": fmt_price(p), "漲跌": diff_str, "預估損益": int(profit), "報酬率%": f"{roi:+.2f}%",
+            "手續費": int(total_fee), "交易稅": int(tax), "_profit": profit, "_note_type": note_type, "_is_base": is_base
+        })
+        
+    df_calc = pd.DataFrame(calc_data)
+    def style_calc_row(row):
+        if row['_is_base']: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+        nt = row['_note_type']
+        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+        elif nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+        prof = row['_profit']
+        if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
+        elif prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+        else: return ['color: gray'] * len(row)
+
+    if not df_calc.empty:
+        table_height = (len(df_calc) + 1) * 35 
+        st.dataframe(
+            df_calc.style.apply(style_calc_row, axis=1), use_container_width=False, hide_index=True, height=table_height,
+            column_config={"_profit": None, "_note_type": None, "_is_base": None}
+        )
