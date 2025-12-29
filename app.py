@@ -20,6 +20,24 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
+# [NEW] CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
+st.markdown("""
+<style>
+    /* 側邊欄按鈕文字不換行，若空間不足自動縮小 */
+    [data-testid="stSidebar"] button {
+        white-space: nowrap !important;
+        text-overflow: clip !important;
+        padding-left: 5px !important;
+        padding-right: 5px !important;
+    }
+    /* 主畫面按鈕緊湊排列 */
+    div[data-testid="column"] {
+        display: flex;
+        flex-direction: column; 
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
 
@@ -251,7 +269,7 @@ with st.sidebar:
     else:
         st.write("🚫 目前無忽略股票")
     
-    # [修正] 側邊欄按鈕避免換行，使用 gap="small"
+    # [修正] 側邊欄按鈕並排，gap="small" 配合 CSS 確保不換行
     col_restore, col_clear = st.columns([1, 1], gap="small")
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
@@ -513,8 +531,9 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 調整優先順序，確保 "多"/"空" 被正確判定 (修復燈號)
-# 2. 針對近3日高低點，只顯示數值 (修復文字)
+# 1. 調整優先順序
+# 2. 修正：近3日高低點只顯示數值
+# 3. 修正：多/空 顯示在數值後面 (如: 98多)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -540,7 +559,7 @@ def generate_note_from_points(points, manual_note, show_3d):
         g_list = list(group)
         tags = [x['tag'] for x in g_list if x['tag']]
         
-        # 標籤優先級合併邏輯 (修正：提高 "多/空" 的優先級，以利燈號判斷)
+        # 標籤優先級合併邏輯
         final_tag = ""
         
         # 1. 狀態類 (最優先)
@@ -549,7 +568,7 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "漲停" in tags: final_tag = "漲停"
         elif "跌停" in tags: final_tag = "跌停"
         
-        # 2. 趨勢類 (次優先，確保燈號顏色正確)
+        # 2. 趨勢類
         elif "多" in tags: final_tag = "多"
         elif "空" in tags: final_tag = "空"
         elif "平" in tags: final_tag = "平"
@@ -567,16 +586,21 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "前低" in tags: final_tag = "前低"
         
         v_str = fmt_price(val)
-        known_status = ["漲停", "漲停高", "跌停", "跌停低", "高", "低", "多", "空", "平"]
-        threed_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
+        # 定義哪些標籤要放後面
+        suffix_tags = ["多", "空", "平"]
+        # 定義哪些標籤要放前面
+        prefix_tags = ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]
+        # 定義哪些標籤只顯示數值 (近3日)
+        numeric_only_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
         
-        if final_tag in known_status: 
-            item = f"{final_tag}{v_str}"
-        elif final_tag in threed_tags:
-            # 修正：如果是近3日高低點，只顯示數值 (不加文字)
-            item = v_str
+        if final_tag in suffix_tags:
+             item = f"{v_str}{final_tag}" # 修正: 放在後面
+        elif final_tag in prefix_tags:
+             item = f"{final_tag}{v_str}"
+        elif final_tag in numeric_only_tags:
+             item = v_str # 修正: 只顯示數值
         elif final_tag: 
-            item = f"{v_str}{final_tag}"
+            item = f"{v_str}{final_tag}" # 預設放在後面
         else: 
             item = v_str
         note_parts.append(item)
@@ -723,8 +747,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             prefix = days_map[idx]
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
-            if h_val > 0: points.append({"val": h_val, "tag": f"{prefix}高"})
-            if l_val > 0: points.append({"val": l_val, "tag": f"{prefix}低"})
+            
+            # [修正] 過濾邏輯：如果股價超出今日的漲跌停範圍(明日到不了)，則不顯示
+            if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
+                points.append({"val": h_val, "tag": f"{prefix}高"})
+            if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
+                points.append({"val": l_val, "tag": f"{prefix}低"})
 
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
@@ -811,6 +839,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     for p in points:
         v = float(f"{p['val']:.2f}")
         is_force = p.get('force', False)
+        # 3日標籤是否顯示，最後由 generate_note_from_points 的 show_3d 參數決定，這裡先保留
         if is_force or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show):
              full_calc_points.append(p) 
     
@@ -905,16 +934,15 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 按鈕區塊調整: 並排顯示，gap="small"
-    # c_space 用於右側留白，前三欄分配給按鈕
-    c_run, c_save, c_clear, c_space = st.columns([1, 0.8, 1.2, 7], gap="small")
+    # [修正] 主畫面按鈕並排，調整欄位比例
+    c_run, c_save, c_clear, c_space = st.columns([1, 1, 1.2, 5], gap="small")
     
     with c_run:
-        btn_run = st.button("🚀 執行分析", use_container_width=False)
+        btn_run = st.button("🚀 執行分析", use_container_width=True)
     with c_save:
-        btn_save_data = st.button("💾 儲存", use_container_width=False, help="強制儲存當前資料到快取")
+        btn_save_data = st.button("💾 儲存", use_container_width=True, help="強制儲存當前資料到快取")
     with c_clear:
-        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=False, help="清除所有記憶的戰略備註內容")
+        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
 
     if btn_save_data:
         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
