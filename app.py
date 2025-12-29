@@ -1174,11 +1174,11 @@ with tab1:
             key="main_editor"
         )
         
-        # [修正] 移除嚴格的 if 條件，改為全面檢查變更
+        # [修正] 恢復嚴格的自動更新邏輯，但對任何修改都先更新到 session_state
         if not edited_df.empty:
             trigger_rerun = False
             
-            # 1. 處理刪除 (保持原樣)
+            # 1. 處理刪除 (刪除會觸發重跑)
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
@@ -1206,10 +1206,15 @@ with tab1:
                     ]
                     trigger_rerun = True
 
-            # 2. 處理數值/備註變更 (修正: 不再受限於只檢查最後一行或只檢查價格)
+            # 2. 處理數值/備註變更
             if not trigger_rerun:
                 update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-                has_changes = False
+                
+                # [關鍵]：無論是否觸發自動存檔，先將所有變更更新到 session_state
+                # 這樣按下「儲存」按鈕時，存的才是最新的資料
+                
+                last_visible_idx = len(edited_df) - 1
+                last_visible_code = str(edited_df.iloc[last_visible_idx]['代號']) if last_visible_idx >= 0 else None
                 
                 for i, row in st.session_state.stock_data.iterrows():
                     code = str(row['代號'])
@@ -1221,31 +1226,36 @@ with tab1:
                         old_price = str(row['自訂價(可修)'])
                         old_note = str(row['戰略備註'])
                         
-                        price_changed = (old_price != new_price) and (new_price.strip().lower() != 'nan')
-                        note_changed = (old_note != new_note)
+                        # [更新記憶體]
+                        if new_price != old_price:
+                            st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
                         
-                        if price_changed or note_changed:
-                            if price_changed:
-                                st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
+                        if new_note != old_note:
+                            base_auto = auto_notes_dict.get(code, "")
+                            pure_manual = new_note
+                            if base_auto and new_note.startswith(base_auto):
+                                pure_manual = new_note[len(base_auto):].strip()
+                            st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                            st.session_state.saved_notes[code] = pure_manual
                             
-                            if note_changed:
-                                base_auto = auto_notes_dict.get(code, "")
-                                pure_manual = new_note
-                                if base_auto and new_note.startswith(base_auto):
-                                    pure_manual = new_note[len(base_auto):].strip()
-                                st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                                st.session_state.saved_notes[code] = pure_manual
-                                
+                        # 若有變動，重算狀態 (僅更新 UI 顯示)
+                        if new_price != old_price or new_note != old_note:
                             new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                             st.session_state.stock_data.at[i, '狀態'] = new_status
-                            has_changes = True
-                
-                if has_changes:
-                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                    trigger_rerun = True
+                        
+                        # [自動儲存與刷新判斷] 嚴格限制：最後一列 + 自動更新開啟 + 價格變動
+                        if st.session_state.auto_update_last_row:
+                            if code == last_visible_code:
+                                # 只檢查價格變動，備註變動不觸發自動存檔
+                                if new_price != old_price and new_price.strip().lower() != 'nan':
+                                    if st.session_state.update_delay_sec > 0:
+                                        time.sleep(st.session_state.update_delay_sec)
+                                    trigger_rerun = True
 
-            if trigger_rerun:
-                st.rerun()
+                # 只有符合嚴格條件才自動存檔並刷新
+                if trigger_rerun:
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    st.rerun()
 
         df_curr = st.session_state.stock_data
         if not df_curr.empty:
