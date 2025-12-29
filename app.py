@@ -20,7 +20,7 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
-# CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
+# [NEW] CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
 st.markdown("""
 <style>
     /* 側邊欄按鈕文字不換行，若空間不足自動縮小 */
@@ -29,7 +29,6 @@ st.markdown("""
         text-overflow: clip !important;
         padding-left: 5px !important;
         padding-right: 5px !important;
-        font-size: 14px !important; 
     }
     /* 主畫面按鈕緊湊排列 */
     div[data-testid="column"] {
@@ -229,7 +228,7 @@ with st.sidebar:
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     
     # 近3日高低點選項
-    show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值，若無法觸及則不顯示)")
+    show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值)")
     
     st.markdown("---")
     
@@ -270,7 +269,7 @@ with st.sidebar:
     else:
         st.write("🚫 目前無忽略股票")
     
-    # [修正] 側邊欄按鈕並排，gap="small"
+    # [修正] 側邊欄按鈕並排，gap="small" 配合 CSS 確保不換行
     col_restore, col_clear = st.columns([1, 1], gap="small")
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
@@ -532,8 +531,9 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 修正：近3日高低點只顯示數值
-# 2. 修正：多/空 顯示在數值後面 (如: 98多)
+# 1. 調整優先順序
+# 2. 修正：近3日高低點只顯示數值
+# 3. 修正：多/空 顯示在數值後面 (如: 98多)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -559,9 +559,9 @@ def generate_note_from_points(points, manual_note, show_3d):
         g_list = list(group)
         tags = [x['tag'] for x in g_list if x['tag']]
         
+        # 標籤優先級合併邏輯
         final_tag = ""
         
-        # 標籤優先級
         # 1. 狀態類 (最優先)
         if "漲停高" in tags: final_tag = "漲停高"
         elif "跌停低" in tags: final_tag = "跌停低" 
@@ -586,15 +586,21 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "前低" in tags: final_tag = "前低"
         
         v_str = fmt_price(val)
+        # 定義哪些標籤要放後面
         suffix_tags = ["多", "空", "平"]
+        # 定義哪些標籤要放前面
+        prefix_tags = ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]
+        # 定義哪些標籤只顯示數值 (近3日)
         numeric_only_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
         
         if final_tag in suffix_tags:
              item = f"{v_str}{final_tag}" # 修正: 放在後面
+        elif final_tag in prefix_tags:
+             item = f"{final_tag}{v_str}"
         elif final_tag in numeric_only_tags:
              item = v_str # 修正: 只顯示數值
         elif final_tag: 
-            item = f"{final_tag}{v_str}" # 其他預設放在前面
+            item = f"{v_str}{final_tag}" # 預設放在後面
         else: 
             item = v_str
         note_parts.append(item)
@@ -742,7 +748,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
             
-            # [修正] 過濾邏輯：如果股價超出今日的漲跌停範圍，則不顯示
+            # [修正] 過濾邏輯：如果股價超出今日的漲跌停範圍(明日到不了)，則不顯示
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
                 points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
@@ -938,8 +944,10 @@ with tab1:
     with c_clear:
         btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
 
-    # 這裡將 Save 的執行邏輯改到 data_editor 後面，確保同步
-    
+    if btn_save_data:
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
+        st.toast("資料已儲存！", icon="💾")
+
     if btn_clear_notes:
         st.session_state.saved_notes = {}
         st.toast("手動備註已清除", icon="🧹")
@@ -1180,58 +1188,26 @@ with tab1:
             key="main_editor"
         )
         
-        # [修正] 儲存邏輯修正：確保在儲存前先同步資料
         if not edited_df.empty:
             trigger_rerun = False
             
-            # 若按了儲存或更新，強制遍歷檢查更新
-            if btn_save_data or btn_update:
-                 update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-                 for i, row in st.session_state.stock_data.iterrows():
-                    code = row['代號']
-                    if code in update_map:
-                        new_val = update_map[code]['自訂價(可修)']
-                        new_note = update_map[code]['戰略備註']
-                        st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
-                        
-                        if str(row['戰略備註']) != str(new_note):
-                            base_auto = auto_notes_dict.get(code, "")
-                            pure_manual = new_note
-                            if base_auto and new_note.startswith(base_auto):
-                                pure_manual = new_note[len(base_auto):].strip()
-                            st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                            st.session_state.saved_notes[code] = pure_manual
-                        else:
-                            st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                    
-                    new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
-                    st.session_state.stock_data.at[i, '狀態'] = new_status
-                 
-                 # 執行存檔
-                 if btn_save_data:
-                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
-                     st.toast("資料已儲存！", icon="💾")
-                 
-                 trigger_rerun = True
-
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
-                    # 刪除前也要先同步資料以免遺失未存的修改
                     update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
                     for i, row in st.session_state.stock_data.iterrows():
-                         code = row['代號']
-                         if code in update_map:
-                             # 這裡僅同步，不做完整運算
-                             st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
-                             # 備註記憶
-                             new_note = update_map[code]['戰略備註']
-                             if str(row['戰略備註']) != str(new_note):
-                                 base_auto = auto_notes_dict.get(code, "")
-                                 pure_manual = new_note
-                                 if base_auto and new_note.startswith(base_auto):
-                                     pure_manual = new_note[len(base_auto):].strip()
-                                 st.session_state.saved_notes[code] = pure_manual
+                        code = row['代號']
+                        if code in update_map:
+                            new_price = update_map[code]['自訂價(可修)']
+                            new_note = update_map[code]['戰略備註']
+                            st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
+                            if str(row['戰略備註']) != str(new_note):
+                                base_auto = auto_notes_dict.get(code, "")
+                                pure_manual = new_note
+                                if base_auto and new_note.startswith(base_auto):
+                                    pure_manual = new_note[len(base_auto):].strip()
+                                st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                                st.session_state.saved_notes[code] = pure_manual
 
                     remove_codes = to_remove["代號"].unique()
                     for c in remove_codes:
@@ -1336,10 +1312,28 @@ with tab1:
                     min_value=0.0, max_value=5.0, step=0.1, 
                     value=st.session_state.update_delay_sec)
                 st.session_state.update_delay_sec = delay_val
-        
-        # 下方的 btn_update 邏輯實際上已整合到上方的 if not edited_df.empty 區塊中，
-        # 但為了處理某些極端情況(如直接點擊更新而無編輯)，保留此區塊以觸發重新計算
-        if btn_update and edited_df.empty:
+
+        if btn_update:
+             update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
+             for i, row in st.session_state.stock_data.iterrows():
+                code = row['代號']
+                if code in update_map:
+                    new_val = update_map[code]['自訂價(可修)']
+                    new_note = update_map[code]['戰略備註']
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
+                    
+                    if str(row['戰略備註']) != str(new_note):
+                        base_auto = auto_notes_dict.get(code, "")
+                        pure_manual = new_note
+                        if base_auto and new_note.startswith(base_auto):
+                            pure_manual = new_note[len(base_auto):].strip()
+                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                        st.session_state.saved_notes[code] = pure_manual
+                    else:
+                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                
+                new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
+                st.session_state.stock_data.at[i, '狀態'] = new_status
              st.rerun()
 
 with tab2:
