@@ -20,24 +20,6 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
-# [NEW] CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
-st.markdown("""
-<style>
-    /* 側邊欄按鈕文字不換行，若空間不足自動縮小 */
-    [data-testid="stSidebar"] button {
-        white-space: nowrap !important;
-        text-overflow: clip !important;
-        padding-left: 5px !important;
-        padding-right: 5px !important;
-    }
-    /* 主畫面按鈕緊湊排列 */
-    div[data-testid="column"] {
-        display: flex;
-        flex-direction: column; 
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # 1. 標題
 st.title("⚡ 當沖戰略室 ⚡")
 
@@ -65,14 +47,13 @@ def save_config(font_size, limit_rows, auto_update, delay_sec):
         return True
     except: return False
 
-def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
+def save_data_cache(df, ignored_set, candidates=[]):
     try:
         df_save = df.fillna("") 
         data_to_save = {
             "stock_data": df_save.to_dict(orient='records'),
             "ignored_stocks": list(ignored_set),
-            "all_candidates": candidates,
-            "saved_notes": saved_notes
+            "all_candidates": candidates
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
@@ -86,10 +67,9 @@ def load_data_cache():
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
             candidates = data.get('all_candidates', [])
-            saved_notes = data.get('saved_notes', {})
-            return df, ignored, candidates, saved_notes
-        except: return pd.DataFrame(), set(), [], {}
-    return pd.DataFrame(), set(), [], {}
+            return df, ignored, candidates
+        except: return pd.DataFrame(), set(), []
+    return pd.DataFrame(), set(), []
 
 def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
@@ -134,11 +114,10 @@ def save_search_cache(selected_items):
 
 # --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache()
+    cached_df, cached_ignored, cached_candidates = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
-    st.session_state.saved_notes = cached_notes
 
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
@@ -266,17 +245,18 @@ with st.sidebar:
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
             st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
     else:
         st.write("🚫 目前無忽略股票")
     
+    # [修正] 側邊欄按鈕避免換行，使用 gap="small"
     col_restore, col_clear = st.columns([1, 1], gap="small")
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
             st.session_state.ignored_stocks.clear()
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
     with col_clear:
@@ -532,9 +512,13 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
+# [修正] 戰略備註生成器：
+# 1. 調整優先順序，確保 "多"/"空" 被正確判定 (修復燈號)
+# 2. 針對近3日高低點，只顯示數值 (修復文字)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
+    # 篩選要顯示的點位
     target_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
     
     for p in points:
@@ -556,20 +540,25 @@ def generate_note_from_points(points, manual_note, show_3d):
         g_list = list(group)
         tags = [x['tag'] for x in g_list if x['tag']]
         
+        # 標籤優先級合併邏輯 (修正：提高 "多/空" 的優先級，以利燈號判斷)
         final_tag = ""
         
+        # 1. 狀態類 (最優先)
         if "漲停高" in tags: final_tag = "漲停高"
         elif "跌停低" in tags: final_tag = "跌停低" 
         elif "漲停" in tags: final_tag = "漲停"
         elif "跌停" in tags: final_tag = "跌停"
         
+        # 2. 趨勢類 (次優先，確保燈號顏色正確)
         elif "多" in tags: final_tag = "多"
         elif "空" in tags: final_tag = "空"
         elif "平" in tags: final_tag = "平"
 
+        # 3. 區間類
         elif "高" in tags: final_tag = "高"
         elif "低" in tags: final_tag = "低"
         
+        # 4. 日K類 (近3日)
         elif "今高" in tags: final_tag = "今高"
         elif "今低" in tags: final_tag = "今低"
         elif "昨高" in tags: final_tag = "昨高"
@@ -578,18 +567,16 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "前低" in tags: final_tag = "前低"
         
         v_str = fmt_price(val)
-        suffix_tags = ["多", "空", "平"]
-        prefix_tags = ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]
-        numeric_only_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
+        known_status = ["漲停", "漲停高", "跌停", "跌停低", "高", "低", "多", "空", "平"]
+        threed_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
         
-        if final_tag in suffix_tags:
-             item = f"{v_str}{final_tag}" 
-        elif final_tag in prefix_tags:
-             item = f"{final_tag}{v_str}"
-        elif final_tag in numeric_only_tags:
-             item = v_str 
+        if final_tag in known_status: 
+            item = f"{final_tag}{v_str}"
+        elif final_tag in threed_tags:
+            # 修正：如果是近3日高低點，只顯示數值 (不加文字)
+            item = v_str
         elif final_tag: 
-            item = f"{v_str}{final_tag}" 
+            item = f"{v_str}{final_tag}"
         else: 
             item = v_str
         note_parts.append(item)
@@ -736,11 +723,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             prefix = days_map[idx]
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
-            
-            if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
-                points.append({"val": h_val, "tag": f"{prefix}高"})
-            if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
-                points.append({"val": l_val, "tag": f"{prefix}低"})
+            if h_val > 0: points.append({"val": h_val, "tag": f"{prefix}高"})
+            if l_val > 0: points.append({"val": l_val, "tag": f"{prefix}低"})
 
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
@@ -814,6 +798,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 show_minus_3 = True
             else:
                 show_minus_3 = False
+        else:
+            show_plus_3 = False
+            show_minus_3 = False
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
@@ -918,18 +905,19 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排，調整欄位比例
-    c_run, c_save, c_clear, c_space = st.columns([1, 1, 1.2, 5], gap="small")
+    # [修正] 按鈕區塊調整: 並排顯示，gap="small"
+    # c_space 用於右側留白，前三欄分配給按鈕
+    c_run, c_save, c_clear, c_space = st.columns([1, 0.8, 1.2, 7], gap="small")
     
     with c_run:
-        btn_run = st.button("🚀 執行分析", use_container_width=True)
+        btn_run = st.button("🚀 執行分析", use_container_width=False)
     with c_save:
-        btn_save_data = st.button("💾 儲存", use_container_width=True, help="強制儲存當前資料到快取")
+        btn_save_data = st.button("💾 儲存", use_container_width=False, help="強制儲存當前資料到快取")
     with c_clear:
-        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=False, help="清除所有記憶的戰略備註內容")
 
     if btn_save_data:
-        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
         st.toast("資料已儲存！", icon="💾")
 
     if btn_clear_notes:
@@ -943,8 +931,6 @@ with tab1:
 
     if btn_run:
         save_search_cache(st.session_state.search_multiselect)
-        
-        st.session_state.saved_notes = {}
         
         if not st.session_state.futures_list:
             st.session_state.futures_list = fetch_futures_list()
@@ -1076,7 +1062,7 @@ with tab1:
         
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
 
     if not st.session_state.stock_data.empty:
         df_all = st.session_state.stock_data.copy()
@@ -1174,11 +1160,9 @@ with tab1:
             key="main_editor"
         )
         
-        # [修正] 恢復嚴格的自動更新邏輯，但對任何修改都先更新到 session_state
         if not edited_df.empty:
             trigger_rerun = False
             
-            # 1. 處理刪除 (刪除會觸發重跑)
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
@@ -1206,56 +1190,42 @@ with tab1:
                     ]
                     trigger_rerun = True
 
-            # 2. 處理數值/備註變更
-            if not trigger_rerun:
-                update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-                
-                # [關鍵]：無論是否觸發自動存檔，先將所有變更更新到 session_state
-                # 這樣按下「儲存」按鈕時，存的才是最新的資料
-                
+            if not trigger_rerun and st.session_state.auto_update_last_row:
                 last_visible_idx = len(edited_df) - 1
-                last_visible_code = str(edited_df.iloc[last_visible_idx]['代號']) if last_visible_idx >= 0 else None
-                
-                for i, row in st.session_state.stock_data.iterrows():
-                    code = str(row['代號'])
-                    if code in update_map:
-                        new_vals = update_map[code]
-                        new_price = str(new_vals['自訂價(可修)'])
-                        new_note = str(new_vals['戰略備註'])
-                        
-                        old_price = str(row['自訂價(可修)'])
-                        old_note = str(row['戰略備註'])
-                        
-                        # [更新記憶體]
-                        if new_price != old_price:
-                            st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
-                        
-                        if new_note != old_note:
-                            base_auto = auto_notes_dict.get(code, "")
-                            pure_manual = new_note
-                            if base_auto and new_note.startswith(base_auto):
-                                pure_manual = new_note[len(base_auto):].strip()
-                            st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                            st.session_state.saved_notes[code] = pure_manual
-                            
-                        # 若有變動，重算狀態 (僅更新 UI 顯示)
-                        if new_price != old_price or new_note != old_note:
-                            new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
-                            st.session_state.stock_data.at[i, '狀態'] = new_status
-                        
-                        # [自動儲存與刷新判斷] 嚴格限制：最後一列 + 自動更新開啟 + 價格變動
-                        if st.session_state.auto_update_last_row:
-                            if code == last_visible_code:
-                                # 只檢查價格變動，備註變動不觸發自動存檔
-                                if new_price != old_price and new_price.strip().lower() != 'nan':
+                if last_visible_idx >= 0:
+                    last_visible_code = edited_df.iloc[last_visible_idx]['代號']
+                    update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
+                    
+                    for i, row in st.session_state.stock_data.iterrows():
+                        if row['代號'] == last_visible_code:
+                            if last_visible_code in update_map:
+                                new_price = update_map[last_visible_code]['自訂價(可修)']
+                                old_price = str(row['自訂價(可修)'])
+                                if old_price != str(new_price) and str(new_price).strip().lower() != 'nan':
                                     if st.session_state.update_delay_sec > 0:
                                         time.sleep(st.session_state.update_delay_sec)
+                                    
+                                    for j, r in st.session_state.stock_data.iterrows():
+                                        c_code = r['代號']
+                                        if c_code in update_map:
+                                            np = update_map[c_code]['自訂價(可修)']
+                                            nn = update_map[c_code]['戰略備註']
+                                            st.session_state.stock_data.at[j, '自訂價(可修)'] = np
+                                            if str(r['戰略備註']) != str(nn):
+                                                base_auto = auto_notes_dict.get(c_code, "")
+                                                pure_manual = nn
+                                                if base_auto and nn.startswith(base_auto):
+                                                    pure_manual = nn[len(base_auto):].strip()
+                                                st.session_state.stock_data.at[j, '戰略備註'] = nn
+                                                st.session_state.saved_notes[c_code] = pure_manual
+                                        
+                                        new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
+                                        st.session_state.stock_data.at[j, '狀態'] = new_status
                                     trigger_rerun = True
+                            break
 
-                # 只有符合嚴格條件才自動存檔並刷新
-                if trigger_rerun:
-                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                    st.rerun()
+            if trigger_rerun:
+                st.rerun()
 
         df_curr = st.session_state.stock_data
         if not df_curr.empty:
@@ -1292,7 +1262,7 @@ with tab1:
                          if replenished_count >= needed: break
                 
                 if replenished_count > 0:
-                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
