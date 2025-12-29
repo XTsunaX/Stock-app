@@ -85,7 +85,7 @@ def load_data_cache():
             with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
             df = pd.DataFrame(data.get('stock_data', []))
-            # [修正] 強制代號轉為字串，避免型別不符導致備註對應失敗
+            # 強制代號轉為字串，避免型別不符導致備註對應失敗
             if not df.empty and '代號' in df.columns:
                 df['代號'] = df['代號'].astype(str)
                 
@@ -271,6 +271,7 @@ with st.sidebar:
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
+            # 自動存檔
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
@@ -538,9 +539,13 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
-# [修正] 戰略備註生成器
+# [修正] 戰略備註生成器：
+# 1. 修正：近3日高低點只顯示數值
+# 2. 修正：多/空 顯示在數值後面 (如: 98多)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
+    
+    # 篩選要顯示的點位
     target_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
     
     for p in points:
@@ -723,7 +728,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
             
-            # [修正] 3日高低點需在漲跌停範圍內
+            # [修正] 3日高低點需在漲跌停範圍內 (當日可觸及)
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
                 points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
@@ -1144,50 +1149,35 @@ with tab1:
             key="main_editor"
         )
         
-        # [核心修正] 任何編輯動作(包含按鈕觸發的rerun)都必須先同步資料
+        # [修正] 儲存與同步邏輯
         if not edited_df.empty:
             trigger_rerun = False
             
-            # 使用字典優化查找速度
             edit_map_note = edited_df.set_index('代號')['戰略備註'].to_dict()
             edit_map_price = edited_df.set_index('代號')['自訂價(可修)'].to_dict()
             
-            # 遍歷原始資料並同步更新
+            # 1. 先同步所有編輯到 session_state
             for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
                 
-                # 1. 同步自訂價
                 if code in edit_map_price:
-                    new_val = edit_map_price[code]
-                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = edit_map_price[code]
                 
-                # 2. 同步戰略備註 & 更新 saved_notes
                 if code in edit_map_note:
                     new_note = edit_map_note[code]
-                    old_note = str(row['戰略備註'])
-                    
-                    # 只有當內容真的變動時才執行 (避免無謂運算)
-                    if new_note != old_note:
+                    if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
                         pure_manual = new_note
-                        # 分離出純手動部分
                         if base_auto and new_note.startswith(base_auto):
                             pure_manual = new_note[len(base_auto):].strip()
                         
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
-                        
-                # 3. 重新計算狀態 (狀態可能因自訂價改變而變)
+                
                 new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                 st.session_state.stock_data.at[i, '狀態'] = new_status
 
-            # 如果按下儲存，執行寫入檔案
-            if btn_save_data:
-                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                st.toast("資料已儲存！", icon="💾")
-                trigger_rerun = True
-
-            # 處理刪除邏輯
+            # 2. 如果點擊了刪除
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
@@ -1198,29 +1188,27 @@ with tab1:
                     st.session_state.stock_data = st.session_state.stock_data[
                         ~st.session_state.stock_data["代號"].isin(remove_codes)
                     ]
-                    # 刪除後自動存檔
+                    # 刪除後立即自動存檔
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
 
-            # 處理自動更新最後一列
+            # 3. 如果開啟了自動更新
             if not trigger_rerun and st.session_state.auto_update_last_row:
                 last_visible_idx = len(edited_df) - 1
                 if last_visible_idx >= 0:
                     last_visible_code = edited_df.iloc[last_visible_idx]['代號']
-                    
-                    # 尋找對應的原始 row 進行比對
-                    original_row = st.session_state.stock_data[st.session_state.stock_data['代號'] == last_visible_code]
-                    if not original_row.empty:
-                        old_price = str(original_row.iloc[0]['自訂價(可修)'])
-                        new_price = edit_map_price.get(last_visible_code, "")
-                        
-                        if old_price != str(new_price) and str(new_price).strip().lower() != 'nan':
-                            if st.session_state.update_delay_sec > 0:
-                                time.sleep(st.session_state.update_delay_sec)
-                            trigger_rerun = True
+                    if st.session_state.update_delay_sec > 0:
+                        time.sleep(st.session_state.update_delay_sec)
+                    trigger_rerun = True
 
             if trigger_rerun:
                 st.rerun()
+
+        # [修正] 獨立的儲存按鈕偵測區塊 (在同步邏輯之後)
+        # 只要按下按鈕，就執行存檔 (此時 session_state 已在上方被同步)
+        if btn_save_data:
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            st.toast("資料已儲存！", icon="💾")
 
         st.markdown("---")
         
