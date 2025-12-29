@@ -65,21 +65,18 @@ def save_config(font_size, limit_rows, auto_update, delay_sec):
         return True
     except: return False
 
-# [修正] 增加 saved_notes 參數以儲存手動備註
-def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
+def save_data_cache(df, ignored_set, candidates=[]):
     try:
         df_save = df.fillna("") 
         data_to_save = {
             "stock_data": df_save.to_dict(orient='records'),
             "ignored_stocks": list(ignored_set),
-            "all_candidates": candidates,
-            "saved_notes": saved_notes  # 保存手動備註
+            "all_candidates": candidates
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except: pass
 
-# [修正] 讀取時一併載入 saved_notes
 def load_data_cache():
     if os.path.exists(DATA_CACHE_FILE):
         try:
@@ -88,10 +85,9 @@ def load_data_cache():
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
             candidates = data.get('all_candidates', [])
-            saved_notes = data.get('saved_notes', {})
-            return df, ignored, candidates, saved_notes
-        except: return pd.DataFrame(), set(), [], {}
-    return pd.DataFrame(), set(), [], {}
+            return df, ignored, candidates
+        except: return pd.DataFrame(), set(), []
+    return pd.DataFrame(), set(), []
 
 def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
@@ -135,13 +131,11 @@ def save_search_cache(selected_items):
     except: pass
 
 # --- 初始化 Session State ---
-# [修正] 初始化時載入 saved_notes
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache()
+    cached_df, cached_ignored, cached_candidates = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
-    st.session_state.saved_notes = cached_notes
 
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
@@ -269,8 +263,7 @@ with st.sidebar:
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
-            # [修正] 傳入 saved_notes
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
             st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
     else:
@@ -281,8 +274,7 @@ with st.sidebar:
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
             st.session_state.ignored_stocks.clear()
-            # [修正] 傳入 saved_notes
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
     with col_clear:
@@ -834,6 +826,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 show_minus_3 = True
             else:
                 show_minus_3 = False
+        else:
+            show_plus_3 = False
+            show_minus_3 = False
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
@@ -950,8 +945,7 @@ with tab1:
         btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
 
     if btn_save_data:
-        # [修正] 傳入 saved_notes
-        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
         st.toast("資料已儲存！", icon="💾")
 
     if btn_clear_notes:
@@ -1096,8 +1090,7 @@ with tab1:
         
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
-            # [修正] 傳入 saved_notes
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
 
     if not st.session_state.stock_data.empty:
         df_all = st.session_state.stock_data.copy()
@@ -1297,8 +1290,7 @@ with tab1:
                          if replenished_count >= needed: break
                 
                 if replenished_count > 0:
-                    # [修正] 傳入 saved_notes
-                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates)
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
