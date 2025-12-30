@@ -941,29 +941,11 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排，調整欄位比例
-    c_run, c_save, c_clear, c_space = st.columns([1, 1, 1.2, 5], gap="small")
+    # [修正] 主畫面按鈕並排，調整欄位比例 - 移除儲存與清除按鈕
+    c_run, c_space = st.columns([1, 5], gap="small")
     
     with c_run:
         btn_run = st.button("🚀 執行分析", use_container_width=True)
-    with c_save:
-        btn_save_data = st.button("💾 儲存", use_container_width=True, help="強制儲存當前資料到快取")
-    with c_clear:
-        btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
-
-    if btn_save_data:
-        # [修正] 傳遞 saved_notes
-        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-        st.toast("資料已儲存！", icon="💾")
-
-    if btn_clear_notes:
-        st.session_state.saved_notes = {}
-        st.toast("手動備註已清除", icon="🧹")
-        if not st.session_state.stock_data.empty:
-             for idx in st.session_state.stock_data.index:
-                 if '_auto_note' in st.session_state.stock_data.columns:
-                     st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
-        st.rerun()
 
     if btn_run:
         save_search_cache(st.session_state.search_multiselect)
@@ -1306,9 +1288,24 @@ with tab1:
 
         st.markdown("---")
         
-        col_btn, _ = st.columns([2, 8])
+        # [修正] 底部按鈕區：執行更新改名，並加入清除手動備註
+        col_btn, col_clear, _ = st.columns([2, 1.5, 4.5])
         with col_btn:
-            btn_update = st.button("⚡ 執行更新", use_container_width=False, type="primary")
+            # 修改按鈕名稱
+            btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
+        with col_clear:
+            # 移動到此處的清除按鈕
+            btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+        
+        # [修正] 清除按鈕的邏輯移動到這裡
+        if btn_clear_notes:
+            st.session_state.saved_notes = {}
+            st.toast("手動備註已清除", icon="🧹")
+            if not st.session_state.stock_data.empty:
+                 for idx in st.session_state.stock_data.index:
+                     if '_auto_note' in st.session_state.stock_data.columns:
+                         st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
+            st.rerun()
         
         auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
             value=st.session_state.auto_update_last_row,
