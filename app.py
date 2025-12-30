@@ -538,13 +538,10 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 調整優先順序
-# 2. 修正：近3日高低點只顯示數值
-# 3. 修正：多/空 顯示在數值後面 (如: 98多)
+# 1. 支援「置頂」手動備註 (以 ^ 開頭)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
-    # 篩選要顯示的點位
     target_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
     
     for p in points:
@@ -566,25 +563,16 @@ def generate_note_from_points(points, manual_note, show_3d):
         g_list = list(group)
         tags = [x['tag'] for x in g_list if x['tag']]
         
-        # 標籤優先級合併邏輯
         final_tag = ""
-        
-        # 1. 狀態類 (最優先)
         if "漲停高" in tags: final_tag = "漲停高"
         elif "跌停低" in tags: final_tag = "跌停低" 
         elif "漲停" in tags: final_tag = "漲停"
         elif "跌停" in tags: final_tag = "跌停"
-        
-        # 2. 趨勢類
         elif "多" in tags: final_tag = "多"
         elif "空" in tags: final_tag = "空"
         elif "平" in tags: final_tag = "平"
-
-        # 3. 區間類
         elif "高" in tags: final_tag = "高"
         elif "低" in tags: final_tag = "低"
-        
-        # 4. 日K類 (近3日)
         elif "今高" in tags: final_tag = "今高"
         elif "今低" in tags: final_tag = "今低"
         elif "昨高" in tags: final_tag = "昨高"
@@ -593,29 +581,27 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "前低" in tags: final_tag = "前低"
         
         v_str = fmt_price(val)
-        # 定義哪些標籤要放後面
         suffix_tags = ["多", "空", "平"]
-        # 定義哪些標籤要放前面
         prefix_tags = ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]
-        # 定義哪些標籤只顯示數值 (近3日)
         numeric_only_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
         
-        if final_tag in suffix_tags:
-             item = f"{v_str}{final_tag}" # 修正: 放在後面
-        elif final_tag in prefix_tags:
-             item = f"{final_tag}{v_str}"
-        elif final_tag in numeric_only_tags:
-             item = v_str # 修正: 只顯示數值
-        elif final_tag: 
-            item = f"{v_str}{final_tag}" # 預設放在後面
-        else: 
-            item = v_str
+        if final_tag in suffix_tags: item = f"{v_str}{final_tag}" 
+        elif final_tag in prefix_tags: item = f"{final_tag}{v_str}"
+        elif final_tag in numeric_only_tags: item = v_str 
+        elif final_tag: item = f"{v_str}{final_tag}" 
+        else: item = v_str
         note_parts.append(item)
         
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        return f"{auto_note} {manual_note}", auto_note
+        # [修正] 讀取時檢查是否有置頂標記 '^'
+        if manual_note.startswith("^"):
+            real_manual = manual_note[1:]
+            return f"{real_manual}{auto_note}", auto_note
+        else:
+            return f"{auto_note} {manual_note}", auto_note
+            
     return auto_note, auto_note
 
 def fetch_stock_data_raw(code, name_hint="", extra_data=None):
@@ -1195,9 +1181,23 @@ with tab1:
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
                                 pure_manual = new_note
-                                # [修正] 不限制開頭，改用 replace 移除自動產生的部分
-                                if base_auto and base_auto in new_note:
-                                    pure_manual = new_note.replace(base_auto, "", 1).strip()
+                                
+                                # [修正] 判斷手動輸入的位置
+                                if base_auto:
+                                    # 1. 如果新備註 以 自動備註 結尾 -> 表示手動在前方 (Prepend)
+                                    if new_note.endswith(base_auto):
+                                        pure_manual = new_note[:-len(base_auto)].strip()
+                                        if pure_manual: 
+                                            pure_manual = f"^{pure_manual}" # 加入置頂標記
+                                    
+                                    # 2. 如果新備註 以 自動備註 開頭 -> 表示手動在後方 (Append)
+                                    elif new_note.startswith(base_auto):
+                                        pure_manual = new_note[len(base_auto):].strip()
+                                    
+                                    # 3. 備用：中間包含 (移除後當作後方)
+                                    elif base_auto in new_note:
+                                        pure_manual = new_note.replace(base_auto, "", 1).strip()
+                                        
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
 
@@ -1234,9 +1234,18 @@ with tab1:
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = nn
-                                                # [修正] 不限制開頭，改用 replace 移除自動產生的部分
-                                                if base_auto and base_auto in nn:
-                                                    pure_manual = nn.replace(base_auto, "", 1).strip()
+                                                
+                                                # [修正] 判斷手動輸入的位置
+                                                if base_auto:
+                                                    if nn.endswith(base_auto):
+                                                        pure_manual = nn[:-len(base_auto)].strip()
+                                                        if pure_manual:
+                                                            pure_manual = f"^{pure_manual}"
+                                                    elif nn.startswith(base_auto):
+                                                        pure_manual = nn[len(base_auto):].strip()
+                                                    elif base_auto in nn:
+                                                        pure_manual = nn.replace(base_auto, "", 1).strip()
+                                                        
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
                                         
@@ -1334,12 +1343,18 @@ with tab1:
                     if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
                         pure_manual = new_note
-                        if base_auto and new_note.startswith(base_auto):
-                            pure_manual = new_note[len(base_auto):].strip()
-                        # [修正] 不限制開頭，改用 replace 移除自動產生的部分，解決重複問題
-                        elif base_auto and base_auto in new_note:
-                            pure_manual = new_note.replace(base_auto, "", 1).strip()
-                            
+                        
+                        # [修正] 判斷手動輸入的位置
+                        if base_auto:
+                            if new_note.endswith(base_auto):
+                                pure_manual = new_note[:-len(base_auto)].strip()
+                                if pure_manual:
+                                    pure_manual = f"^{pure_manual}"
+                            elif new_note.startswith(base_auto):
+                                pure_manual = new_note[len(base_auto):].strip()
+                            elif base_auto in new_note:
+                                pure_manual = new_note.replace(base_auto, "", 1).strip()
+                                
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
                     else:
