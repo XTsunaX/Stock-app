@@ -1195,8 +1195,9 @@ with tab1:
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
                                 pure_manual = new_note
-                                if base_auto and new_note.startswith(base_auto):
-                                    pure_manual = new_note[len(base_auto):].strip()
+                                # [修正] 不限制開頭，改用 replace 移除自動產生的部分
+                                if base_auto and base_auto in new_note:
+                                    pure_manual = new_note.replace(base_auto, "", 1).strip()
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
 
@@ -1233,8 +1234,9 @@ with tab1:
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = nn
-                                                if base_auto and nn.startswith(base_auto):
-                                                    pure_manual = nn[len(base_auto):].strip()
+                                                # [修正] 不限制開頭，改用 replace 移除自動產生的部分
+                                                if base_auto and base_auto in nn:
+                                                    pure_manual = nn.replace(base_auto, "", 1).strip()
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
                                         
@@ -1334,6 +1336,10 @@ with tab1:
                         pure_manual = new_note
                         if base_auto and new_note.startswith(base_auto):
                             pure_manual = new_note[len(base_auto):].strip()
+                        # [修正] 不限制開頭，改用 replace 移除自動產生的部分，解決重複問題
+                        elif base_auto and base_auto in new_note:
+                            pure_manual = new_note.replace(base_auto, "", 1).strip()
+                            
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
                     else:
