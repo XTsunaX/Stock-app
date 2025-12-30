@@ -538,7 +538,8 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 支援「置頂」手動備註 (以 ^ 開頭)
+# 1. 支援 {AUTO} 標籤以保留位置
+# 2. 移除強制空白分隔，讓使用者自訂符號 (如 - )
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -595,12 +596,16 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        # [修正] 讀取時檢查是否有置頂標記 '^'
+        # [修正] 優先使用 {AUTO} 標籤取代
+        if "{AUTO}" in manual_note:
+            return manual_note.replace("{AUTO}", auto_note), auto_note
+            
+        # [相容性] 舊有置頂標記
         if manual_note.startswith("^"):
-            real_manual = manual_note[1:]
-            return f"{real_manual}{auto_note}", auto_note
-        else:
-            return f"{auto_note} {manual_note}", auto_note
+            return f"{manual_note[1:]}{auto_note}", auto_note
+            
+        # [修正] 預設為後方附加，移除空白分隔
+        return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
 
@@ -1182,22 +1187,16 @@ with tab1:
                                 base_auto = auto_notes_dict.get(code, "")
                                 pure_manual = new_note
                                 
-                                # [修正] 判斷手動輸入的位置
-                                if base_auto:
-                                    # 1. 如果新備註 以 自動備註 結尾 -> 表示手動在前方 (Prepend)
-                                    if new_note.endswith(base_auto):
-                                        pure_manual = new_note[:-len(base_auto)].strip()
-                                        if pure_manual: 
-                                            pure_manual = f"^{pure_manual}" # 加入置頂標記
-                                    
-                                    # 2. 如果新備註 以 自動備註 開頭 -> 表示手動在後方 (Append)
-                                    elif new_note.startswith(base_auto):
-                                        pure_manual = new_note[len(base_auto):].strip()
-                                    
-                                    # 3. 備用：中間包含 (移除後當作後方)
-                                    elif base_auto in new_note:
-                                        pure_manual = new_note.replace(base_auto, "", 1).strip()
-                                        
+                                # [修正] 採用 {AUTO} 標籤機制
+                                if base_auto and base_auto in new_note:
+                                    # 找出自動文字位置並替換為 {AUTO}
+                                    idx = new_note.find(base_auto)
+                                    pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
+                                elif base_auto:
+                                    # [例外] 找不到自動文字，視為完全覆蓋或使用者手動修改了自動文字
+                                    # 這裡選擇直接儲存使用者輸入，不使用 {AUTO} 標籤
+                                    pure_manual = new_note
+
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
 
@@ -1208,6 +1207,8 @@ with tab1:
                     st.session_state.stock_data = st.session_state.stock_data[
                         ~st.session_state.stock_data["代號"].isin(remove_codes)
                     ]
+                    # [修正] 立即存檔，防止重整消失
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
 
             if not trigger_rerun and st.session_state.auto_update_last_row:
@@ -1235,22 +1236,20 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = nn
                                                 
-                                                # [修正] 判斷手動輸入的位置
-                                                if base_auto:
-                                                    if nn.endswith(base_auto):
-                                                        pure_manual = nn[:-len(base_auto)].strip()
-                                                        if pure_manual:
-                                                            pure_manual = f"^{pure_manual}"
-                                                    elif nn.startswith(base_auto):
-                                                        pure_manual = nn[len(base_auto):].strip()
-                                                    elif base_auto in nn:
-                                                        pure_manual = nn.replace(base_auto, "", 1).strip()
-                                                        
+                                                # [修正] 採用 {AUTO} 標籤機制
+                                                if base_auto and base_auto in nn:
+                                                    idx = nn.find(base_auto)
+                                                    pure_manual = nn[:idx] + "{AUTO}" + nn[idx+len(base_auto):]
+                                                elif base_auto:
+                                                    pure_manual = nn
+                                                    
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
                                         
                                         new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
                                         st.session_state.stock_data.at[j, '狀態'] = new_status
+                                    # [修正] 立即存檔，防止重整消失
+                                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
 
@@ -1316,6 +1315,7 @@ with tab1:
                  for idx in st.session_state.stock_data.index:
                      if '_auto_note' in st.session_state.stock_data.columns:
                          st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.rerun()
         
         auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
@@ -1344,17 +1344,13 @@ with tab1:
                         base_auto = auto_notes_dict.get(code, "")
                         pure_manual = new_note
                         
-                        # [修正] 判斷手動輸入的位置
-                        if base_auto:
-                            if new_note.endswith(base_auto):
-                                pure_manual = new_note[:-len(base_auto)].strip()
-                                if pure_manual:
-                                    pure_manual = f"^{pure_manual}"
-                            elif new_note.startswith(base_auto):
-                                pure_manual = new_note[len(base_auto):].strip()
-                            elif base_auto in new_note:
-                                pure_manual = new_note.replace(base_auto, "", 1).strip()
-                                
+                        # [修正] 採用 {AUTO} 標籤機制
+                        if base_auto and base_auto in new_note:
+                            idx = new_note.find(base_auto)
+                            pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
+                        elif base_auto:
+                             pure_manual = new_note
+                             
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
                     else:
