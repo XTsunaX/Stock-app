@@ -530,7 +530,7 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 支援 {AUTO} 標籤 (保留位置)
+# 1. 支援 {AUTO} 標籤以保留位置
 # 2. 支援 {NO_AUTO} 標籤 (全自訂模式，解決重複問題)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
@@ -1187,7 +1187,7 @@ with tab1:
                                     pure_manual = ""
                                 elif current_calculated_auto and current_calculated_auto in new_note:
                                     # 包含自動文字 -> 使用 {AUTO} 標籤
-                                    pure_manual = new_note.replace(current_calculated_auto, "{AUTO}")
+                                    pure_manual = new_note.replace(current_calculated_auto, "{AUTO}", 1)
                                 else:
                                     # 不包含自動文字 -> 全自訂模式
                                     pure_manual = "{NO_AUTO}" + new_note
@@ -1236,7 +1236,7 @@ with tab1:
                                                 if nn == curr_auto:
                                                     p_manual = ""
                                                 elif curr_auto and curr_auto in nn:
-                                                    p_manual = nn.replace(curr_auto, "{AUTO}")
+                                                    p_manual = nn.replace(curr_auto, "{AUTO}", 1)
                                                 else:
                                                     p_manual = "{NO_AUTO}" + nn
                                                     
@@ -1341,7 +1341,7 @@ with tab1:
                         if new_note == current_calculated_auto:
                              pure_manual = ""
                         elif current_calculated_auto and current_calculated_auto in new_note:
-                            pure_manual = new_note.replace(current_calculated_auto, "{AUTO}")
+                            pure_manual = new_note.replace(current_calculated_auto, "{AUTO}", 1)
                         else:
                              pure_manual = "{NO_AUTO}" + new_note
                              
