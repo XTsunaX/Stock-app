@@ -530,7 +530,7 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 支援 {AUTO} 標籤以保留位置
+# 1. 支援 {AUTO} 標籤 (保留位置)
 # 2. 支援 {NO_AUTO} 標籤 (全自訂模式，解決重複問題)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
