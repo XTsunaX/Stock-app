@@ -604,8 +604,10 @@ def generate_note_from_points(points, manual_note, show_3d):
         if manual_note.startswith("^"):
             return f"{manual_note[1:]}{auto_note}", auto_note
             
-        # [修正] 預設為後方附加，移除空白分隔
-        return f"{auto_note}{manual_note}", auto_note
+        # [修正] 解決重複顯示問題：
+        # 若無特殊標籤，且使用者已編輯過備註（存檔時會儲存完整字串），則視為完全覆蓋。
+        # 避免原本的 f"{auto_note}{manual_note}" 造成 "Auto + (Auto+Insert)" 的重複顯示。
+        return manual_note, auto_note
             
     return auto_note, auto_note
 
@@ -824,9 +826,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 show_minus_3 = True
             else:
                 show_minus_3 = False
-        else:
-            show_plus_3 = False
-            show_minus_3 = False
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
