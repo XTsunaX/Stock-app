@@ -530,8 +530,9 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 支援 {AUTO} 標籤以保留位置
-# 2. 支援 {NO_AUTO} 標籤 (全自訂模式，解決重複問題)
+# 1. 支援 {AUTO} 標籤：保留自動文字位置
+# 2. 支援 {NO_AUTO} 標籤：全自訂模式，不附加任何文字
+# 3. 移除強制分隔符號，完全依照使用者輸入
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -588,11 +589,11 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        # [修正] 如果偵測到 {NO_AUTO}，直接回傳使用者內容(移除標籤)，不加 auto_note
+        # [修正] 如果有 {NO_AUTO} 標籤，移除標籤後直接回傳，忽略 auto_note
         if "{NO_AUTO}" in manual_note:
             return manual_note.replace("{NO_AUTO}", ""), auto_note
             
-        # [修正] 優先使用 {AUTO} 標籤取代
+        # [修正] 如果有 {AUTO} 標籤，替換後回傳
         if "{AUTO}" in manual_note:
             return manual_note.replace("{AUTO}", auto_note), auto_note
             
@@ -600,6 +601,8 @@ def generate_note_from_points(points, manual_note, show_3d):
         if manual_note.startswith("^"):
             return f"{manual_note[1:]}{auto_note}", auto_note
             
+        # 預設行為：若無標籤且非空，視為後方附加 (Legacy)
+        # 但新的儲存邏輯會確保標籤存在，減少此情況
         return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
@@ -1179,17 +1182,21 @@ with tab1:
                             st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
+                                base_auto = str(base_auto).strip() # 確保是乾淨字串
+                                new_note = str(new_note).strip()
                                 pure_manual = new_note
                                 
                                 # [修正] 採用 {AUTO} 標籤 與 {NO_AUTO} 全自訂機制
-                                if base_auto and base_auto in new_note:
-                                    idx = new_note.find(base_auto)
-                                    pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
-                                elif base_auto:
-                                    # 找不到完整的自動備註，視為全自訂覆寫
-                                    pure_manual = "{NO_AUTO}" + new_note
+                                if new_note == base_auto:
+                                    # 用戶還原到初始狀態
+                                    pure_manual = ""
+                                elif base_auto and base_auto in new_note:
+                                    # 用戶保留了自動文字，但修改了前後
+                                    pure_manual = new_note.replace(base_auto, "{AUTO}", 1)
                                 else:
-                                    pure_manual = new_note
+                                    # 用戶破壞了自動文字結構，或根本沒有自動文字
+                                    # 視為全自訂覆寫
+                                    pure_manual = "{NO_AUTO}" + new_note
 
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
@@ -1228,17 +1235,17 @@ with tab1:
                                             st.session_state.stock_data.at[j, '自訂價(可修)'] = np
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
+                                                base_auto = str(base_auto).strip()
+                                                nn = str(nn).strip()
                                                 pure_manual = nn
                                                 
                                                 # [修正] 採用 {AUTO} 標籤 與 {NO_AUTO} 全自訂機制
-                                                if base_auto and base_auto in nn:
-                                                    idx = nn.find(base_auto)
-                                                    pure_manual = nn[:idx] + "{AUTO}" + nn[idx+len(base_auto):]
-                                                elif base_auto:
-                                                    # 找不到完整的自動備註，視為全自訂覆寫
-                                                    pure_manual = "{NO_AUTO}" + nn
+                                                if nn == base_auto:
+                                                    pure_manual = ""
+                                                elif base_auto and base_auto in nn:
+                                                    pure_manual = nn.replace(base_auto, "{AUTO}", 1)
                                                 else:
-                                                    pure_manual = nn
+                                                    pure_manual = "{NO_AUTO}" + nn
                                                     
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
@@ -1334,13 +1341,16 @@ with tab1:
                     
                     if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
+                        base_auto = str(base_auto).strip()
+                        new_note = str(new_note).strip()
                         pure_manual = new_note
                         
                         # [修正] 採用 {AUTO} 標籤 與 {NO_AUTO} 全自訂機制
-                        if base_auto and base_auto in new_note:
-                            idx = new_note.find(base_auto)
-                            pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
-                        elif base_auto:
+                        if new_note == base_auto:
+                             pure_manual = ""
+                        elif base_auto and base_auto in new_note:
+                            pure_manual = new_note.replace(base_auto, "{AUTO}", 1)
+                        else:
                              # 找不到完整的自動備註，視為全自訂覆寫
                              pure_manual = "{NO_AUTO}" + new_note
                              
