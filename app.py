@@ -530,8 +530,9 @@ def recalculate_row(row, points_map):
     except: return status
 
 # [修正] 戰略備註生成器：
-# 1. 支援 {AUTO} 標籤以保留位置
-# 2. 支援 {NO_AUTO} 標籤 (全自訂模式，解決重複問題)
+# 1. 支援 {AUTO} 標籤
+# 2. 支援 {NO_AUTO} 標籤
+# 3. [新增] 偵測手動內容是否為破壞結構後的自動內容，防止重複附加
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -600,6 +601,14 @@ def generate_note_from_points(points, manual_note, show_3d):
         if manual_note.startswith("^"):
             return f"{manual_note[1:]}{auto_note}", auto_note
             
+        # [新增防呆修正] 
+        # 如果 manual_note 已經包含了 auto_note 的開頭 (例如使用者在中間插入文字導致看起來像完整字串)，
+        # 且沒有標籤，則視為全自訂內容，不再重複附加。
+        if auto_note:
+             first_part = auto_note.split('-')[0]
+             if first_part and manual_note.startswith(first_part):
+                 return manual_note, auto_note
+
         return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
@@ -819,9 +828,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
                 show_minus_3 = True
             else:
                 show_minus_3 = False
-        else:
-            show_plus_3 = False
-            show_minus_3 = False
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
@@ -1238,8 +1244,9 @@ with tab1:
                                                 elif curr_auto and curr_auto in nn:
                                                     p_manual = nn.replace(curr_auto, "{AUTO}", 1)
                                                 else:
+                                                    # 強制全手動模式，防止重複
                                                     p_manual = "{NO_AUTO}" + nn
-                                                    
+                                                        
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = p_manual
                                         
@@ -1343,6 +1350,7 @@ with tab1:
                         elif current_calculated_auto and current_calculated_auto in new_note:
                             pure_manual = new_note.replace(current_calculated_auto, "{AUTO}", 1)
                         else:
+                             # 強制全手動模式
                              pure_manual = "{NO_AUTO}" + new_note
                              
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
