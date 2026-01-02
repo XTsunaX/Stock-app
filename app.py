@@ -20,15 +20,17 @@ import twstock  # 必須安裝: pip install twstock
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
-# CSS 優化
+# [NEW] CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
 st.markdown("""
 <style>
+    /* 側邊欄按鈕文字不換行，若空間不足自動縮小 */
     [data-testid="stSidebar"] button {
         white-space: nowrap !important;
         text-overflow: clip !important;
         padding-left: 5px !important;
         padding-right: 5px !important;
     }
+    /* 主畫面按鈕緊湊排列 */
     div[data-testid="column"] {
         display: flex;
         flex-direction: column; 
@@ -63,6 +65,7 @@ def save_config(font_size, limit_rows, auto_update, delay_sec):
         return True
     except: return False
 
+# [修正] 增加 saved_notes 參數以儲存手動備註
 def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
     try:
         df_save = df.fillna("") 
@@ -70,12 +73,13 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
             "stock_data": df_save.to_dict(orient='records'),
             "ignored_stocks": list(ignored_set),
             "all_candidates": candidates,
-            "saved_notes": saved_notes 
+            "saved_notes": saved_notes  # 新增儲存欄位
         }
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except: pass
 
+# [修正] 讀取時一併載入 saved_notes
 def load_data_cache():
     if os.path.exists(DATA_CACHE_FILE):
         try:
@@ -84,7 +88,7 @@ def load_data_cache():
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
             candidates = data.get('all_candidates', [])
-            saved_notes = data.get('saved_notes', {})
+            saved_notes = data.get('saved_notes', {}) # 新增讀取欄位
             return df, ignored, candidates, saved_notes
         except: return pd.DataFrame(), set(), [], {}
     return pd.DataFrame(), set(), [], {}
@@ -132,11 +136,11 @@ def save_search_cache(selected_items):
 
 # --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache()
+    cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache() # [修正] 接收 saved_notes
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
-    st.session_state.saved_notes = cached_notes
+    st.session_state.saved_notes = cached_notes # [修正] 初始化 saved_notes
 
 if 'ignored_stocks' not in st.session_state:
     st.session_state.ignored_stocks = set()
@@ -228,6 +232,7 @@ with st.sidebar:
     
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     
+    # 近3日高低點選項
     show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值)")
     
     st.markdown("---")
@@ -263,16 +268,19 @@ with st.sidebar:
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
+            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
     else:
         st.write("🚫 目前無忽略股票")
     
+    # [修正] 側邊欄按鈕並排，gap="small" 配合 CSS 確保不換行
     col_restore, col_clear = st.columns([1, 1], gap="small")
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
             st.session_state.ignored_stocks.clear()
+            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
@@ -531,7 +539,7 @@ def recalculate_row(row, points_map):
 
 # [修正] 戰略備註生成器：
 # 1. 支援 {AUTO} 標籤以保留位置
-# 2. 支援 {NO_AUTO} 標籤 (全自訂模式，解決重複問題)
+# 2. 移除強制空白分隔，讓使用者自訂符號 (如 - )
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -588,10 +596,6 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        # [修正] 如果偵測到 {NO_AUTO}，直接回傳使用者內容(移除標籤)，不加 auto_note
-        if "{NO_AUTO}" in manual_note:
-            return manual_note.replace("{NO_AUTO}", ""), auto_note
-            
         # [修正] 優先使用 {AUTO} 標籤取代
         if "{AUTO}" in manual_note:
             return manual_note.replace("{AUTO}", auto_note), auto_note
@@ -600,6 +604,7 @@ def generate_note_from_points(points, manual_note, show_3d):
         if manual_note.startswith("^"):
             return f"{manual_note[1:]}{auto_note}", auto_note
             
+        # [修正] 預設為後方附加，移除空白分隔
         return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
@@ -1066,6 +1071,7 @@ with tab1:
         
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
+            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
 
     if not st.session_state.stock_data.empty:
@@ -1178,19 +1184,18 @@ with tab1:
                             new_note = update_map[code]['戰略備註']
                             st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
                             if str(row['戰略備註']) != str(new_note):
-                                # [修正] 即時重新計算該列的自動備註，確保比對基準正確
-                                points = row.get('_points', [])
-                                _, current_calculated_auto = generate_note_from_points(points, "", show_3d_hilo)
+                                base_auto = auto_notes_dict.get(code, "")
+                                pure_manual = new_note
                                 
-                                pure_manual = ""
-                                if new_note == current_calculated_auto:
-                                    pure_manual = ""
-                                elif current_calculated_auto and current_calculated_auto in new_note:
-                                    # 包含自動文字 -> 使用 {AUTO} 標籤
-                                    pure_manual = new_note.replace(current_calculated_auto, "{AUTO}", 1)
-                                else:
-                                    # 不包含自動文字 -> 全自訂模式
-                                    pure_manual = "{NO_AUTO}" + new_note
+                                # [修正] 採用 {AUTO} 標籤機制
+                                if base_auto and base_auto in new_note:
+                                    # 找出自動文字位置並替換為 {AUTO}
+                                    idx = new_note.find(base_auto)
+                                    pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
+                                elif base_auto:
+                                    # [例外] 找不到自動文字，視為完全覆蓋或使用者手動修改了自動文字
+                                    # 這裡選擇直接儲存使用者輸入，不使用 {AUTO} 標籤
+                                    pure_manual = new_note
 
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
@@ -1228,24 +1233,22 @@ with tab1:
                                             nn = update_map[c_code]['戰略備註']
                                             st.session_state.stock_data.at[j, '自訂價(可修)'] = np
                                             if str(r['戰略備註']) != str(nn):
-                                                # [修正] 即時重新計算該列的自動備註
-                                                p_points = r.get('_points', [])
-                                                _, curr_auto = generate_note_from_points(p_points, "", show_3d_hilo)
+                                                base_auto = auto_notes_dict.get(c_code, "")
+                                                pure_manual = nn
                                                 
-                                                p_manual = ""
-                                                if nn == curr_auto:
-                                                    p_manual = ""
-                                                elif curr_auto and curr_auto in nn:
-                                                    p_manual = nn.replace(curr_auto, "{AUTO}", 1)
-                                                else:
-                                                    p_manual = "{NO_AUTO}" + nn
+                                                # [修正] 採用 {AUTO} 標籤機制
+                                                if base_auto and base_auto in nn:
+                                                    idx = nn.find(base_auto)
+                                                    pure_manual = nn[:idx] + "{AUTO}" + nn[idx+len(base_auto):]
+                                                elif base_auto:
+                                                    pure_manual = nn
                                                     
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
-                                                st.session_state.saved_notes[c_code] = p_manual
+                                                st.session_state.saved_notes[c_code] = pure_manual
                                         
                                         new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
                                         st.session_state.stock_data.at[j, '狀態'] = new_status
-                                    # [修正] 立即存檔
+                                    # [修正] 立即存檔，防止重整消失
                                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
@@ -1288,18 +1291,23 @@ with tab1:
                          if replenished_count >= needed: break
                 
                 if replenished_count > 0:
+                    # [修正] 傳遞 saved_notes
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
         st.markdown("---")
         
+        # [修正] 底部按鈕區：執行更新改名，並加入清除手動備註
         col_btn, col_clear, _ = st.columns([2, 1.5, 4.5])
         with col_btn:
+            # 修改按鈕名稱
             btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
         with col_clear:
+            # 移動到此處的清除按鈕
             btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
         
+        # [修正] 清除按鈕的邏輯移動到這裡
         if btn_clear_notes:
             st.session_state.saved_notes = {}
             st.toast("手動備註已清除", icon="🧹")
@@ -1333,17 +1341,15 @@ with tab1:
                     st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
                     
                     if str(row['戰略備註']) != str(new_note):
-                        # [修正] 即時重新計算該列的自動備註
-                        points = row.get('_points', [])
-                        _, current_calculated_auto = generate_note_from_points(points, "", show_3d_hilo)
+                        base_auto = auto_notes_dict.get(code, "")
+                        pure_manual = new_note
                         
-                        pure_manual = ""
-                        if new_note == current_calculated_auto:
-                             pure_manual = ""
-                        elif current_calculated_auto and current_calculated_auto in new_note:
-                            pure_manual = new_note.replace(current_calculated_auto, "{AUTO}", 1)
-                        else:
-                             pure_manual = "{NO_AUTO}" + new_note
+                        # [修正] 採用 {AUTO} 標籤機制
+                        if base_auto and base_auto in new_note:
+                            idx = new_note.find(base_auto)
+                            pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
+                        elif base_auto:
+                             pure_manual = new_note
                              
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
@@ -1353,6 +1359,7 @@ with tab1:
                 new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                 st.session_state.stock_data.at[i, '狀態'] = new_status
              
+             # [修正] 增加儲存，確保點擊更新後也能存入手動備註
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
