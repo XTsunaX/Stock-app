@@ -1304,14 +1304,21 @@ with tab1:
             # 移動到此處的清除按鈕
             btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
         
-        # [修正] 清除按鈕的邏輯移動到這裡
+        # [修正] 強化清除邏輯：強制重算並覆寫 stock_data
         if btn_clear_notes:
             st.session_state.saved_notes = {}
             st.toast("手動備註已清除", icon="🧹")
             if not st.session_state.stock_data.empty:
-                 for idx in st.session_state.stock_data.index:
+                 for idx, row in st.session_state.stock_data.iterrows():
+                     # 從原始點位重新生成純淨的 auto_note
+                     points = row.get('_points', [])
+                     clean_note, _ = generate_note_from_points(points, "", show_3d_hilo)
+                     
+                     st.session_state.stock_data.at[idx, '戰略備註'] = clean_note
+                     # 順便更新 _auto_note 避免不一致 (如果有此欄位)
                      if '_auto_note' in st.session_state.stock_data.columns:
-                         st.session_state.stock_data.at[idx, '戰略備註'] = st.session_state.stock_data.at[idx, '_auto_note']
+                        st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
+
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.rerun()
         
