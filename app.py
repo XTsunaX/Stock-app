@@ -596,6 +596,10 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
+        # [NEW] Check for override tag {NO_AUTO}
+        if "{NO_AUTO}" in manual_note:
+            return manual_note.replace("{NO_AUTO}", ""), auto_note
+
         # [修正] 優先使用 {AUTO} 標籤取代
         if "{AUTO}" in manual_note:
             return manual_note.replace("{AUTO}", auto_note), auto_note
@@ -1193,9 +1197,8 @@ with tab1:
                                     idx = new_note.find(base_auto)
                                     pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
                                 elif base_auto:
-                                    # [例外] 找不到自動文字，視為完全覆蓋或使用者手動修改了自動文字
-                                    # 這裡選擇直接儲存使用者輸入，不使用 {AUTO} 標籤
-                                    pure_manual = new_note
+                                    # [例外] 找不到自動文字，視為完全覆蓋，使用 {NO_AUTO} 標記
+                                    pure_manual = "{NO_AUTO}" + new_note
 
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
@@ -1241,7 +1244,8 @@ with tab1:
                                                     idx = nn.find(base_auto)
                                                     pure_manual = nn[:idx] + "{AUTO}" + nn[idx+len(base_auto):]
                                                 elif base_auto:
-                                                    pure_manual = nn
+                                                    # [例外] 找不到自動文字，視為完全覆蓋，使用 {NO_AUTO} 標記
+                                                    pure_manual = "{NO_AUTO}" + nn
                                                     
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
@@ -1349,7 +1353,8 @@ with tab1:
                             idx = new_note.find(base_auto)
                             pure_manual = new_note[:idx] + "{AUTO}" + new_note[idx+len(base_auto):]
                         elif base_auto:
-                             pure_manual = new_note
+                             # [例外] 找不到自動文字，視為完全覆蓋，使用 {NO_AUTO} 標記
+                             pure_manual = "{NO_AUTO}" + new_note
                              
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
