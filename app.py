@@ -266,7 +266,6 @@ with st.sidebar:
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
-            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
@@ -277,7 +276,6 @@ with st.sidebar:
     with col_restore:
         if st.button("♻️ 全部復原", use_container_width=True):
             st.session_state.ignored_stocks.clear()
-            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
@@ -536,6 +534,7 @@ def recalculate_row(row, points_map):
 
 # [修正] 戰略備註生成器：
 # 1. 支援 [M] 標籤：若手動備註以 [M] 開頭，代表使用者要完全覆蓋自動文字
+# 2. 支援自動去重：若手動備註已經包含自動文字(因為存檔時判定失效)，則不重複串接
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -592,12 +591,16 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        # [NEW] 偵測完全覆蓋標記 [M]
+        # [邏輯1] 偵測完全覆蓋標記 [M]
         if manual_note.startswith("[M]"):
-            # 移除標記並直接回傳，忽略 auto_note
             return manual_note[3:], auto_note
             
-        # 預設為後方附加
+        # [邏輯2] 防呆去重：若手動備註已包含自動文字 (修正存檔時判定失效的重複)
+        # 必須確保 auto_note 不為空，避免誤判
+        if auto_note and manual_note.strip().startswith(auto_note.strip()):
+            return manual_note, auto_note
+
+        # [邏輯3] 預設為後方附加
         return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
@@ -1179,11 +1182,16 @@ with tab1:
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
                                 pure_manual = ""
-                                # [NEW] 儲存邏輯：若開頭符合 Auto 文字，則只存 suffix；否則存 [M] 全文
-                                if base_auto and new_note.startswith(base_auto):
-                                    pure_manual = new_note[len(base_auto):]
+                                
+                                # [NEW] 儲存邏輯修正：只要不符合單純後綴，一律 [M]
+                                # 移除可能的前後空白避免誤判
+                                b_auto = str(base_auto).strip()
+                                n_note = str(new_note).strip()
+                                
+                                if b_auto and n_note.startswith(b_auto):
+                                    pure_manual = n_note[len(b_auto):]
                                 else:
-                                    pure_manual = f"[M]{new_note}"
+                                    pure_manual = f"[M]{n_note}"
 
                                 st.session_state.stock_data.at[i, '戰略備註'] = new_note
                                 st.session_state.saved_notes[code] = pure_manual
@@ -1223,11 +1231,14 @@ with tab1:
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
-                                                # [NEW] 儲存邏輯
-                                                if base_auto and nn.startswith(base_auto):
-                                                    pure_manual = nn[len(base_auto):]
+                                                # [NEW] 儲存邏輯修正
+                                                b_auto = str(base_auto).strip()
+                                                n_note = str(nn).strip()
+                                                
+                                                if b_auto and n_note.startswith(b_auto):
+                                                    pure_manual = n_note[len(b_auto):]
                                                 else:
-                                                    pure_manual = f"[M]{nn}"
+                                                    pure_manual = f"[M]{n_note}"
                                                     
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
@@ -1329,11 +1340,14 @@ with tab1:
                     if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
                         pure_manual = ""
-                        # [NEW] 儲存邏輯
-                        if base_auto and new_note.startswith(base_auto):
-                            pure_manual = new_note[len(base_auto):]
+                        # [NEW] 儲存邏輯修正
+                        b_auto = str(base_auto).strip()
+                        n_note = str(new_note).strip()
+                        
+                        if b_auto and n_note.startswith(b_auto):
+                            pure_manual = n_note[len(b_auto):]
                         else:
-                            pure_manual = f"[M]{new_note}"
+                            pure_manual = f"[M]{n_note}"
                              
                         st.session_state.stock_data.at[i, '戰略備註'] = new_note
                         st.session_state.saved_notes[code] = pure_manual
