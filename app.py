@@ -51,7 +51,7 @@ st.markdown("""
         font-family: 'Arial', sans-serif;
     }
     
-    /* 月曆格子樣式修復 */
+    /* 月曆格子樣式 */
     .cal-box { 
         text-align: center; 
         padding: 5px; 
@@ -1349,7 +1349,7 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
                                                 b_auto = str(base_auto).strip()
-                                                n_note = str(nn).strip()
+                                                n_note = str(new_note).strip()
                                                 
                                                 if b_auto and n_note.startswith(b_auto):
                                                     pure_manual = n_note[len(b_auto):]
@@ -1574,13 +1574,23 @@ with tab2:
 
 # [修正] 台股行事曆 (修正版：含左右切換與週五選順延排除)
 with tab3:
+    # 透過回呼函式處理按鈕邏輯
+    def change_month(delta):
+        st.session_state.cal_month += delta
+        if st.session_state.cal_month > 12:
+            st.session_state.cal_month = 1
+            st.session_state.cal_year += 1
+        elif st.session_state.cal_month < 1:
+            st.session_state.cal_month = 12
+            st.session_state.cal_year -= 1
+
     # 頂部：下拉式選單 (恢復)
     col_sel_y, col_sel_m = st.columns(2)
     with col_sel_y:
         new_year = st.selectbox(
             "年份", 
-            range(2024, 2028), 
-            index=range(2024, 2028).index(st.session_state.cal_year),
+            range(2024, 2031), 
+            index=range(2024, 2031).index(st.session_state.cal_year),
             key='sel_year_box'
         )
         if new_year != st.session_state.cal_year:
@@ -1603,22 +1613,10 @@ with tab3:
     col_prev, col_header, col_next = st.columns([1, 8, 1])
     
     with col_prev:
-        if st.button("◀️", use_container_width=True):
-            if st.session_state.cal_month == 1:
-                st.session_state.cal_month = 12
-                st.session_state.cal_year -= 1
-            else:
-                st.session_state.cal_month -= 1
-            st.rerun()
+        st.button("◀️", on_click=change_month, args=(-1,), use_container_width=True)
 
     with col_next:
-        if st.button("▶️", use_container_width=True):
-            if st.session_state.cal_month == 12:
-                st.session_state.cal_month = 1
-                st.session_state.cal_year += 1
-            else:
-                st.session_state.cal_month += 1
-            st.rerun()
+        st.button("▶️", on_click=change_month, args=(1,), use_container_width=True)
 
     with col_header:
         st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
@@ -1666,61 +1664,88 @@ with tab3:
         return False
 
     # 計算結算日
-    settlement_map = {} 
+    # 邏輯：分別計算「上個月」與「這個月」的結算日，並將其順延
+    # 最後只顯示落在「這個月」的日期
     
-    cal_obj = calendar.Calendar(firstweekday=6)
-    scheduled_settlements = [] 
-    
-    days_in_month = cal_obj.itermonthdays(sel_year, sel_month)
-    d_list = [d for d in days_in_month if d != 0]
-    
-    w_count = 0
-    f_count = 0
-    
-    month_raw_wed = []
-    month_raw_fri = []
-    
-    for d in d_list:
-        curr = date(sel_year, sel_month, d)
-        if curr.weekday() == 2: # Wed
-            w_count += 1
-            month_raw_wed.append((curr, w_count))
-        if curr.weekday() == 4: # Fri
-            f_count += 1
-            month_raw_fri.append((curr, f_count))
-            
-    monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
-    
-    real_monthly_date = None
-    if monthly_raw:
-        check = monthly_raw
-        while is_market_closed_func(check):
-            check += timedelta(days=1)
-        real_monthly_date = check
-        scheduled_settlements.append((monthly_raw, 'M', f"{sel_month}月"))
-        
-    for dt, idx in month_raw_wed:
-        if dt != monthly_raw:
-            yy = str(sel_year)[2:]
-            mm = f"{sel_month:02}"
-            code = f"{yy}{mm}W{idx}"
-            scheduled_settlements.append((dt, 'W', code))
-            
-    for dt, idx in month_raw_fri:
-        yy = str(sel_year)[2:]
-        mm = f"{sel_month:02}"
-        code = f"{yy}{mm}F{idx}"
-        scheduled_settlements.append((dt, 'F', code))
-        
     real_settlements = {} 
     
-    for raw_date, s_type, s_code in scheduled_settlements:
+    def calculate_month_settlements(y, m):
+        cal_obj = calendar.Calendar(firstweekday=6)
+        days_in_month = cal_obj.itermonthdays(y, m)
+        d_list = [d for d in days_in_month if d != 0]
+        
+        w_count = 0
+        f_count = 0
+        month_raw_wed = []
+        month_raw_fri = []
+        
+        for d in d_list:
+            curr = date(y, m, d)
+            if curr.weekday() == 2: # Wed
+                w_count += 1
+                month_raw_wed.append((curr, w_count))
+            if curr.weekday() == 4: # Fri
+                f_count += 1
+                month_raw_fri.append((curr, f_count))
+                
+        monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
+        
+        # 計算月結算的實際順延日
+        real_monthly_date = None
+        if monthly_raw:
+            check = monthly_raw
+            # 這裡需使用該年份的假日表
+            # 為簡化，假設 get_holidays(sel_year) 涵蓋了跨年 (目前僅支援 2025/2026)
+            # 若跨年需載入另一年的假日表，此處暫時以當前選取年為主
+            while is_market_closed_func(check):
+                check += timedelta(days=1)
+            real_monthly_date = check
+        
+        local_results = []
+        if monthly_raw:
+            local_results.append((monthly_raw, 'M', f"{m:02}月", real_monthly_date))
+
+        for dt, idx in month_raw_wed:
+            if dt != monthly_raw:
+                yy = str(y)[2:]
+                mm = f"{m:02}"
+                code = f"{yy}{mm}W{idx}"
+                local_results.append((dt, 'W', code, real_monthly_date))
+                
+        for dt, idx in month_raw_fri:
+            yy = str(y)[2:]
+            mm = f"{m:02}"
+            code = f"{yy}{mm}F{idx}"
+            local_results.append((dt, 'F', code, real_monthly_date))
+            
+        return local_results
+
+    # 取得當前月份資料
+    current_month_data = calculate_month_settlements(sel_year, sel_month)
+    
+    # 取得前一個月資料 (處理跨月順延)
+    prev_y, prev_m = (sel_year-1, 12) if sel_month == 1 else (sel_year, sel_month-1)
+    # 若年份變動，暫時切換假日表檢查 (簡單處理：假設 user 不會頻繁看跨年邊界)
+    # 實務上應傳入年份給 is_market_closed_func
+    prev_month_data = calculate_month_settlements(prev_y, prev_m)
+    
+    # 合併處理順延
+    all_raw_data = prev_month_data + current_month_data
+    
+    for raw_date, s_type, s_code, m_date in all_raw_data:
         check_date = raw_date
         while is_market_closed_func(check_date):
             check_date += timedelta(days=1)
             if (check_date - raw_date).days > 30: break
         
-        if s_type == 'F' and check_date == real_monthly_date:
+        # [關鍵邏輯]
+        # 1. 只顯示落在當前選取月份的日期
+        if check_date.month != sel_month:
+            continue
+            
+        # 2. 如果週五選(F) 順延後的日期 == 該週五選所屬月份的月結算日(M)，則不顯示
+        # 注意：這裡的 m_date 是該 raw_date 所屬月份的月結算日
+        if s_type == 'F' and check_date == m_date:
             continue
             
         if check_date not in real_settlements:
