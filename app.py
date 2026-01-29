@@ -14,6 +14,7 @@ import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import twstock  # 必須安裝: pip install twstock
+from concurrent.futures import ThreadPoolExecutor, as_completed # [新增] 多執行緒模組
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -1038,29 +1039,68 @@ with tab1:
         st.session_state.stock_data = pd.DataFrame() 
         fetch_cache = {}
         
+        # ------------------------------------------------------------------
+        # [修改] 使用 ThreadPoolExecutor 進行多執行緒平行處理
+        # ------------------------------------------------------------------
+        
+        # 1. 先整理出真正需要執行的任務列表
+        tasks_to_run = []
         for i, (code, name, source, extra) in enumerate(targets):
-            if source == 'upload' and upload_current >= upload_limit: continue 
-            status_text.text(f"正在分析: {code} {name} ...")
+            if source == 'upload' and upload_current >= upload_limit: continue
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
-            time.sleep(0.1)
             
-            if code in fetch_cache: data = fetch_cache[code]
-            else:
-                data = fetch_stock_data_raw(code, name, extra)
-                if not data and code in old_data_backup:
-                    data = old_data_backup[code]
-                if data: fetch_cache[code] = data
+            tasks_to_run.append((code, name, source, extra))
             
-            if data:
-                data['_source'] = source
-                data['_order'] = extra
-                data['_source_rank'] = 1 if source == 'upload' else 2
-                existing_data[code] = data
-                seen.add((code, source))
-                total_fetched += 1
-                if source == 'upload': upload_current += 1
-            bar.progress(min(total_fetched / total_for_bar, 1.0))
+            if source == 'upload': 
+                upload_current += 1
+            seen.add((code, source)) # 標記為已排程
+
+        # 定義單一任務的執行函式
+        def process_stock_task(task_args):
+            t_code, t_name, t_source, t_extra = task_args
+            
+            # 先檢查快取
+            if t_code in fetch_cache:
+                return (t_code, t_source, t_extra, fetch_cache[t_code])
+            
+            # 嘗試從舊資料恢復 (若有需要可啟用，這裡為了確保即時性先重抓，或僅作備用)
+            # if t_code in old_data_backup: ... 
+            
+            # 實際網路請求
+            try:
+                data = fetch_stock_data_raw(t_code, t_name, t_extra)
+                return (t_code, t_source, t_extra, data)
+            except Exception:
+                return (t_code, t_source, t_extra, None)
+
+        # 2. 開始多執行緒執行 (max_workers 可依電腦效能調整，建議 5~10)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            # 送出所有任務
+            future_to_task = {executor.submit(process_stock_task, t): t for t in tasks_to_run}
+            
+            completed_count = 0
+            total_tasks = len(tasks_to_run)
+            if total_tasks == 0: total_tasks = 1
+            
+            for future in as_completed(future_to_task):
+                t_code, t_source, t_extra, data = future.result()
+                
+                # 更新進度條
+                completed_count += 1
+                progress_val = min(completed_count / total_tasks, 1.0)
+                bar.progress(progress_val)
+                status_text.text(f"正在分析 ({completed_count}/{total_tasks}): {t_code} ...")
+                
+                if data:
+                    data['_source'] = t_source
+                    data['_order'] = t_extra
+                    data['_source_rank'] = 1 if t_source == 'upload' else 2
+                    
+                    existing_data[t_code] = data
+                    fetch_cache[t_code] = data # 更新快取
+        
+        # ------------------------------------------------------------------
         
         bar.empty()
         status_text.empty()
