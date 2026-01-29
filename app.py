@@ -14,7 +14,7 @@ import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import twstock  # 必須安裝: pip install twstock
-from concurrent.futures import ThreadPoolExecutor, as_completed # [新增] 多執行緒模組
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -533,9 +533,7 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
-# [修正] 戰略備註生成器：
-# 1. 支援 [M] 標籤：若手動備註以 [M] 開頭，代表使用者要完全覆蓋自動文字
-# 2. 支援自動去重：若手動備註已經包含自動文字(因為存檔時判定失效)，則不重複串接
+# [修正] 戰略備註生成器
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -592,21 +590,16 @@ def generate_note_from_points(points, manual_note, show_3d):
     auto_note = "-".join(note_parts)
     
     if manual_note:
-        # [邏輯1] 偵測完全覆蓋標記 [M]
         if manual_note.startswith("[M]"):
             return manual_note[3:], auto_note
-            
-        # [邏輯2] 防呆去重：若手動備註已包含自動文字 (修正存檔時判定失效的重複)
-        # 必須確保 auto_note 不為空，避免誤判
         if auto_note and manual_note.strip().startswith(auto_note.strip()):
             return manual_note, auto_note
-
-        # [邏輯3] 預設為後方附加
         return f"{auto_note}{manual_note}", auto_note
             
     return auto_note, auto_note
 
-def fetch_stock_data_raw(code, name_hint="", extra_data=None):
+# [修改重點] 增加 futures_set, saved_notes_dict, name_map_dict 參數，移除 st.session_state 依賴
+def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
     code = str(code).strip()
     
     hist = pd.DataFrame()
@@ -743,7 +736,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
             
-            # [修正] 過濾邏輯：如果股價超出今日的漲跌停範圍(明日到不了)，則不顯示
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
                 points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
@@ -834,21 +826,31 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None):
     for p in points:
         v = float(f"{p['val']:.2f}")
         is_force = p.get('force', False)
-        # 3日標籤是否顯示，最後由 generate_note_from_points 的 show_3d 參數決定，這裡先保留
         if is_force or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show):
              full_calc_points.append(p) 
     
-    manual_note = st.session_state.saved_notes.get(code, "")
+    # [修正] 改用參數傳入的 saved_notes_dict
+    manual_note = ""
+    if saved_notes_dict:
+        manual_note = saved_notes_dict.get(code, "")
     
     strategy_note, auto_note = generate_note_from_points(full_calc_points, manual_note, show_3d=False)
     
-    final_name = name_hint if name_hint else get_stock_name_online(code)
+    # [修正] 改用參數傳入的 name_map_dict
+    if name_hint:
+        final_name = name_hint
+    elif name_map_dict and code in name_map_dict:
+        final_name = name_map_dict[code]
+    else:
+        final_name = code
+
     light = "⚪"
     if "多" in strategy_note: light = "🔴"
     elif "空" in strategy_note: light = "🟢"
     final_name_display = f"{light} {final_name}"
     
-    has_futures = "✅" if code in st.session_state.futures_list else ""
+    # [修正] 改用參數傳入的 futures_set
+    has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
         "代號": code, "名稱": final_name_display, "收盤價": round(strategy_base_price, 2),
@@ -929,7 +931,7 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排，調整欄位比例 - 移除儲存與清除按鈕
+    # [修正] 主畫面按鈕並排
     c_run, c_space = st.columns([1, 5], gap="small")
     
     with c_run:
@@ -1040,44 +1042,43 @@ with tab1:
         fetch_cache = {}
         
         # ------------------------------------------------------------------
-        # [修改] 使用 ThreadPoolExecutor 進行多執行緒平行處理
+        # [多執行緒平行處理核心]
         # ------------------------------------------------------------------
         
-        # 1. 先整理出真正需要執行的任務列表
+        # 1. 準備執行緒需要的靜態資料副本 (解決 Session State 在執行緒中無法存取的問題)
+        futures_copy = set(st.session_state.futures_list)
+        notes_copy = dict(st.session_state.saved_notes)
+        code_map_copy, _ = load_local_stock_names()
+
+        # 2. 定義任務函式，接收所有需要的資料作為參數
+        def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
+            try:
+                # 傳遞所有靜態資料給 fetch_stock_data_raw
+                data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
+                return (t_code, t_source, t_extra, data)
+            except Exception:
+                return (t_code, t_source, t_extra, None)
+
         tasks_to_run = []
         for i, (code, name, source, extra) in enumerate(targets):
             if source == 'upload' and upload_current >= upload_limit: continue
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
             
+            # 將任務參數打包
             tasks_to_run.append((code, name, source, extra))
             
             if source == 'upload': 
                 upload_current += 1
-            seen.add((code, source)) # 標記為已排程
+            seen.add((code, source))
 
-        # 定義單一任務的執行函式
-        def process_stock_task(task_args):
-            t_code, t_name, t_source, t_extra = task_args
-            
-            # 先檢查快取
-            if t_code in fetch_cache:
-                return (t_code, t_source, t_extra, fetch_cache[t_code])
-            
-            # 嘗試從舊資料恢復 (若有需要可啟用，這裡為了確保即時性先重抓，或僅作備用)
-            # if t_code in old_data_backup: ... 
-            
-            # 實際網路請求
-            try:
-                data = fetch_stock_data_raw(t_code, t_name, t_extra)
-                return (t_code, t_source, t_extra, data)
-            except Exception:
-                return (t_code, t_source, t_extra, None)
-
-        # 2. 開始多執行緒執行 (max_workers 可依電腦效能調整，建議 5~10)
+        # 3. 開始執行
         with ThreadPoolExecutor(max_workers=8) as executor:
-            # 送出所有任務
-            future_to_task = {executor.submit(process_stock_task, t): t for t in tasks_to_run}
+            future_to_task = {}
+            for t in tasks_to_run:
+                # [關鍵] 將主執行緒的資料副本 (futures_copy, notes_copy, code_map_copy) 傳入子執行緒
+                future = executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy)
+                future_to_task[future] = t
             
             completed_count = 0
             total_tasks = len(tasks_to_run)
@@ -1086,7 +1087,6 @@ with tab1:
             for future in as_completed(future_to_task):
                 t_code, t_source, t_extra, data = future.result()
                 
-                # 更新進度條
                 completed_count += 1
                 progress_val = min(completed_count / total_tasks, 1.0)
                 bar.progress(progress_val)
@@ -1096,9 +1096,7 @@ with tab1:
                     data['_source'] = t_source
                     data['_order'] = t_extra
                     data['_source_rank'] = 1 if t_source == 'upload' else 2
-                    
                     existing_data[t_code] = data
-                    fetch_cache[t_code] = data # 更新快取
         
         # ------------------------------------------------------------------
         
@@ -1107,7 +1105,6 @@ with tab1:
         
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
-            # [修正] 傳遞 saved_notes
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
 
     if not st.session_state.stock_data.empty:
@@ -1137,7 +1134,6 @@ with tab1:
             df_display.at[i, "戰略備註"] = new_full_note
             df_display.at[i, "_auto_note"] = new_auto_note
             
-            # 更新燈號
             light = "⚪"
             if "多" in new_full_note: light = "🔴"
             elif "空" in new_full_note: light = "🟢"
@@ -1222,9 +1218,6 @@ with tab1:
                             if str(row['戰略備註']) != str(new_note):
                                 base_auto = auto_notes_dict.get(code, "")
                                 pure_manual = ""
-                                
-                                # [NEW] 儲存邏輯修正：只要不符合單純後綴，一律 [M]
-                                # 移除可能的前後空白避免誤判
                                 b_auto = str(base_auto).strip()
                                 n_note = str(new_note).strip()
                                 
@@ -1243,7 +1236,6 @@ with tab1:
                     st.session_state.stock_data = st.session_state.stock_data[
                         ~st.session_state.stock_data["代號"].isin(remove_codes)
                     ]
-                    # [修正] 立即存檔，防止重整消失
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
 
@@ -1271,7 +1263,6 @@ with tab1:
                                             if str(r['戰略備註']) != str(nn):
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
-                                                # [NEW] 儲存邏輯修正
                                                 b_auto = str(base_auto).strip()
                                                 n_note = str(nn).strip()
                                                 
@@ -1285,7 +1276,6 @@ with tab1:
                                         
                                         new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
                                         st.session_state.stock_data.at[j, '狀態'] = new_status
-                                    # [修正] 立即存檔，防止重整消失
                                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
@@ -1304,6 +1294,11 @@ with tab1:
                 replenished_count = 0
                 existing_codes = set(st.session_state.stock_data['代號'].astype(str))
                 
+                # 重新抓取資料時也需要傳入參數
+                futures_copy = set(st.session_state.futures_list)
+                notes_copy = dict(st.session_state.saved_notes)
+                code_map_copy, _ = load_local_stock_names()
+
                 with st.spinner("正在載入更多資料..."):
                     for cand in st.session_state.all_candidates:
                          c_code = str(cand[0])
@@ -1314,7 +1309,7 @@ with tab1:
                          if c_code in st.session_state.ignored_stocks: continue
                          if c_code in existing_codes: continue
                          
-                         data = fetch_stock_data_raw(c_code, c_name, c_extra)
+                         data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
                          if data:
                              data['_source'] = c_source
                              data['_order'] = c_extra
@@ -1328,34 +1323,27 @@ with tab1:
                          if replenished_count >= needed: break
                 
                 if replenished_count > 0:
-                    # [修正] 傳遞 saved_notes
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
                     st.rerun()
 
         st.markdown("---")
         
-        # [修正] 底部按鈕區：執行更新改名，並加入清除手動備註
         col_btn, col_clear, _ = st.columns([2, 1.5, 4.5])
         with col_btn:
-            # 修改按鈕名稱
             btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
         with col_clear:
-            # 移動到此處的清除按鈕
             btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
         
-        # [修正] 強化清除邏輯：強制重算並覆寫 stock_data
         if btn_clear_notes:
             st.session_state.saved_notes = {}
             st.toast("手動備註已清除", icon="🧹")
             if not st.session_state.stock_data.empty:
                  for idx, row in st.session_state.stock_data.iterrows():
-                     # 從原始點位重新生成純淨的 auto_note
                      points = row.get('_points', [])
                      clean_note, _ = generate_note_from_points(points, "", show_3d_hilo)
                      
                      st.session_state.stock_data.at[idx, '戰略備註'] = clean_note
-                     # 順便更新 _auto_note 避免不一致 (如果有此欄位)
                      if '_auto_note' in st.session_state.stock_data.columns:
                         st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
 
@@ -1387,7 +1375,6 @@ with tab1:
                     if str(row['戰略備註']) != str(new_note):
                         base_auto = auto_notes_dict.get(code, "")
                         pure_manual = ""
-                        # [NEW] 儲存邏輯修正
                         b_auto = str(base_auto).strip()
                         n_note = str(new_note).strip()
                         
@@ -1404,7 +1391,6 @@ with tab1:
                 new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
                 st.session_state.stock_data.at[i, '狀態'] = new_status
              
-             # [修正] 增加儲存，確保點擊更新後也能存入手動備註
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
