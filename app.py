@@ -1757,6 +1757,7 @@ with tab3:
     for i, d in enumerate(week_days):
         cols[i].markdown(f"<div style='text-align: center; font-weight: bold;'>{d}</div>", unsafe_allow_html=True)
 
+    cal_obj = calendar.Calendar(firstweekday=6) # 補上這行
     month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
 
     for week in month_days:
