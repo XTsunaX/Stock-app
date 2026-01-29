@@ -9,12 +9,13 @@ import os
 import itertools
 import json
 import re
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, date
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import twstock  # 必須安裝: pip install twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import calendar
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -298,6 +299,8 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
+    # [修正] 新增處置股公告連結
+    st.link_button("⚖️ 證交所處置股公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
     st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
 
 @st.cache_data(ttl=86400)
@@ -865,7 +868,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # 主介面 (Tabs)
 # ==========================================
 
-tab1, tab2 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰"])
+tab1, tab2, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📅 台股行事曆"])
 
 with tab1:
     col_search, col_file = st.columns([2, 1])
@@ -1131,7 +1134,7 @@ with tab1:
             
             new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
             
-            df_display.at[i, "戰略備註"] = new_full_note
+            df_display.at[i, "戰瞭備註"] = new_full_note
             df_display.at[i, "_auto_note"] = new_auto_note
             
             light = "⚪"
@@ -1485,3 +1488,86 @@ with tab2:
             df_calc.style.apply(style_calc_row, axis=1), use_container_width=False, hide_index=True, height=table_height,
             column_config={"_profit": None, "_note_type": None, "_is_base": None}
         )
+
+# [修正] 新增台股行事曆分頁邏輯
+with tab3:
+    st.markdown("#### 📅 台股行事曆")
+    
+    # 1. 選擇年月
+    tz = pytz.timezone('Asia/Taipei')
+    now_tw = datetime.now(tz)
+    
+    col_y, col_m, col_legend = st.columns([1.5, 1.5, 7])
+    with col_y:
+        sel_year = st.selectbox("年份", range(now_tw.year - 1, now_tw.year + 3), index=1)
+    with col_m:
+        sel_month = st.selectbox("月份", range(1, 13), index=now_tw.month - 1)
+    with col_legend:
+        st.markdown("<div style='text-align: right; font-size: 0.8em; margin-top: 25px;'>"
+                    "<span style='color:red;'>●</span> 期指/月選結算 "
+                    "<span style='color:orange;'>●</span> 週選(三)結算 "
+                    "<span style='color:blue;'>●</span> 週選(五)結算</div>", unsafe_allow_html=True)
+    
+    # 2. 繪製月曆
+    cal = calendar.Calendar(firstweekday=6) # 6=Sunday start
+    weeks = cal.monthdays2calendar(sel_year, sel_month)
+    
+    # 表頭：週數與星期
+    days_labels = ["週數", "日", "一", "二", "三", "四", "五", "六"]
+    h_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1, 1])
+    for idx, label in enumerate(days_labels):
+        h_cols[idx].markdown(f"<center><b>{label}</b></center>", unsafe_allow_html=True)
+        
+    for week in weeks:
+        cols = st.columns([0.8, 1, 1, 1, 1, 1, 1, 1])
+        
+        # 取得該週第一個有日期的日子來顯示週數
+        first_day_val = next(d for d, w in week if d != 0)
+        week_num = date(sel_year, sel_month, first_day_val).isocalendar()[1]
+        cols[0].markdown(f"<div style='height:80px; display:flex; align-items:center; justify-content:center; background:#f8f9fa; border:1px solid #eee; border-radius:5px;'>{week_num}</div>", unsafe_allow_html=True)
+        
+        for i, (day, weekday) in enumerate(week):
+            if day == 0:
+                cols[i+1].write("")
+                continue
+            
+            curr_date = date(sel_year, sel_month, day)
+            is_today = (curr_date == now_tw.date())
+            # i=0(Sun), i=6(Sat) 為不開盤日
+            is_weekend = (i == 0 or i == 6)
+            
+            # 結算日標記邏輯
+            markers = []
+            # 每週三 (i=3)
+            if i == 4: # 在 Sunday Start 的 list 中，Index 4 是禮拜三 (0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu... 修正: 0:Sun, 1:Mon, 2:Tue, 3:Wed)
+                pass # 重新計算正確索引
+            
+            # 修正索引：0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+            # 禮拜三結算日 (週選與月選)
+            if i == 4: # 這裡是 columns 索引，所以是 i+1。週三對應 i=4。 
+                # 找出當月所有禮拜三
+                all_wed = [d for d, wd in cal.itermonthdays2(sel_year, sel_month) if wd == 2 and d != 0] # wd=2 is Wed
+                if day == all_wed[2]: # 第三個禮拜三
+                    markers.append("<span style='color:red;'>●</span> 期指/月選結算")
+                else:
+                    markers.append("<span style='color:orange;'>●</span> 週選(三)結算")
+            
+            # 禮拜五結算日 (週五到期選擇權)
+            if i == 6: # 週五索引為 6
+                markers.append("<span style='color:blue;'>●</span> 週選(五)結算")
+            
+            # 樣式定義
+            bg_color = "#f0f2f6" if is_weekend else "#ffffff"
+            border_style = "2px solid #ff4b4b" if is_today else "1px solid #eee"
+            text_color = "#31333F"
+            
+            # 繪製單個日期格子
+            cell_html = f"""
+            <div style="background-color:{bg_color}; border:{border_style}; border-radius:5px; padding:5px; height:80px; color:{text_color}; position:relative;">
+                <b style="font-size:1.1em;">{day}</b>
+                <div style="font-size:0.7em; margin-top:5px; line-height:1.2;">
+                    {"<br>".join(markers)}
+                </div>
+            </div>
+            """
+            cols[i+1].markdown(cell_html, unsafe_allow_html=True)
