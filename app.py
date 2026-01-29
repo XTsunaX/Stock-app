@@ -1268,7 +1268,7 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
                                                 b_auto = str(base_auto).strip()
-                                                n_note = str(new_note).strip()
+                                                n_note = str(nn).strip()
                                                 
                                                 if b_auto and n_note.startswith(b_auto):
                                                     pure_manual = n_note[len(b_auto):]
@@ -1287,117 +1287,6 @@ with tab1:
             if trigger_rerun:
                 st.rerun()
 
-        df_curr = st.session_state.stock_data
-        if not df_curr.empty:
-            if '_source' not in df_curr.columns: upload_count = len(df_curr)
-            else: upload_count = len(df_curr[df_curr['_source'] == 'upload'])
-            limit = st.session_state.limit_rows
-            
-            if upload_count < limit and st.session_state.all_candidates:
-                needed = limit - upload_count
-                replenished_count = 0
-                existing_codes = set(st.session_state.stock_data['代號'].astype(str))
-                
-                # 重新抓取資料時也需要傳入參數
-                futures_copy = set(st.session_state.futures_list)
-                notes_copy = dict(st.session_state.saved_notes)
-                code_map_copy, _ = load_local_stock_names()
-
-                with st.spinner("正在載入更多資料..."):
-                    for cand in st.session_state.all_candidates:
-                         c_code = str(cand[0])
-                         c_name = cand[1]
-                         c_source = cand[2]
-                         c_extra = cand[3]
-                         if c_source != 'upload': continue
-                         if c_code in st.session_state.ignored_stocks: continue
-                         if c_code in existing_codes: continue
-                         
-                         data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
-                         if data:
-                             data['_source'] = c_source
-                             data['_order'] = c_extra
-                             data['_source_rank'] = 1
-                             st.session_state.stock_data = pd.concat([
-                                 st.session_state.stock_data, 
-                                 pd.DataFrame([data])
-                             ], ignore_index=True)
-                             existing_codes.add(c_code)
-                             replenished_count += 1
-                         if replenished_count >= needed: break
-                
-                if replenished_count > 0:
-                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                    st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
-                    st.rerun()
-
-        st.markdown("---")
-        
-        col_btn, col_clear, _ = st.columns([2, 1.5, 4.5])
-        with col_btn:
-            btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
-        with col_clear:
-            btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
-        
-        if btn_clear_notes:
-            st.session_state.saved_notes = {}
-            st.toast("手動備註已清除", icon="🧹")
-            if not st.session_state.stock_data.empty:
-                 for idx, row in st.session_state.stock_data.iterrows():
-                     points = row.get('_points', [])
-                     clean_note, _ = generate_note_from_points(points, "", show_3d_hilo)
-                     
-                     st.session_state.stock_data.at[idx, '戰略備註'] = clean_note
-                     if '_auto_note' in st.session_state.stock_data.columns:
-                        st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
-
-            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-            st.rerun()
-        
-        auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
-            value=st.session_state.auto_update_last_row,
-            key="toggle_auto_update")
-        st.session_state.auto_update_last_row = auto_update
-        
-        if auto_update:
-            col_delay, _ = st.columns([2, 8])
-            with col_delay:
-                delay_val = st.number_input("⏳ 緩衝秒數", 
-                    min_value=0.0, max_value=5.0, step=0.1, 
-                    value=st.session_state.update_delay_sec)
-                st.session_state.update_delay_sec = delay_val
-
-        if btn_update:
-             update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-             for i, row in st.session_state.stock_data.iterrows():
-                code = row['代號']
-                if code in update_map:
-                    new_val = update_map[code]['自訂價(可修)']
-                    new_note = update_map[code]['戰略備註']
-                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
-                    
-                    if str(row['戰略備註']) != str(new_note):
-                        base_auto = auto_notes_dict.get(code, "")
-                        pure_manual = ""
-                        b_auto = str(base_auto).strip()
-                        n_note = str(new_note).strip()
-                        
-                        if b_auto and n_note.startswith(b_auto):
-                            pure_manual = n_note[len(b_auto):]
-                        else:
-                            pure_manual = f"[M]{n_note}"
-                             
-                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                        st.session_state.saved_notes[code] = pure_manual
-                    else:
-                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                
-                new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
-                st.session_state.stock_data.at[i, '狀態'] = new_status
-             
-             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-             st.rerun()
-
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1414,19 +1303,20 @@ with tab2:
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
     with b1:
-        if st.button("🔼 向上", use_container_width=True):
-            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
-            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
-            if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
-            st.rerun()
-    with b2:
         if st.button("🔽 向下", use_container_width=True):
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
             st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
             if st.session_state.calc_view_price < limit_down: st.session_state.calc_view_price = limit_down
             st.rerun()
+    with b2:
+        if st.button("🔼 向上", use_container_width=True):
+            if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
+            st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
+            if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
+            st.rerun()
     
     ticks_range = range(tick_count, -(tick_count + 1), -1)
+    # [修正] 顯示順序調整：價格高到低
     calc_data = []
     base_p = st.session_state.calc_base_price
     if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = base_p
@@ -1490,7 +1380,7 @@ with tab2:
             column_config={"_profit": None, "_note_type": None, "_is_base": None}
         )
 
-# [修正] 新增 台股行事曆 分頁內容
+# [修正] 新增 台股行事曆 分頁內容 (修正版)
 with tab3:
     st.markdown("#### 📅 台股行事曆")
     
@@ -1508,7 +1398,7 @@ with tab3:
     # 取得該年度的國定假日資料 (目前僅內建 2025-2026)
     def get_holidays(year):
         h = {}
-        # 2025 年 (民國 114 年) 簡易列表
+        # 2025 年 (民國 114 年)
         if year == 2025:
              h.update({
                  (1, 1): "元旦",
@@ -1519,61 +1409,117 @@ with tab3:
                  (10, 6): "中秋節", (10, 10): "國慶日"
              })
              
-        # 2026 年 (民國 115 年) 完整列表 (含市場無交易日)
+        # 2026 年 (民國 115 年) 完整列表
         if year == 2026:
             h.update({
                 (1, 1): "元旦",
+                (2, 11): "封關日", # 僅標示，非假日
                 (2, 12): "市場無交易", (2, 13): "市場無交易", # 僅辦理結算
-                (2, 16): "春節", (2, 17): "春節", (2, 18): "春節", (2, 19): "春節", (2, 20): "春節",
-                (2, 27): "和平紀念日(補)", 
-                (4, 3): "兒童節(補)", (4, 6): "清明節(補)",
+                (2, 14): "春節", (2, 15): "春節", (2, 16): "春節", (2, 17): "春節",
+                (2, 18): "春節", (2, 19): "春節", (2, 20): "春節", (2, 21): "春節", (2, 22): "春節",
+                (2, 27): "和平紀念日(補)", (2, 28): "和平紀念日",
+                (4, 3): "兒童節(補)", (4, 4): "兒童節", (4, 5): "清明節", (4, 6): "清明節(補)",
                 (5, 1): "勞動節",
                 (6, 19): "端午節",
                 (9, 25): "中秋節",
-                (9, 28): "教師節", 
-                (10, 9): "國慶日(補)",
-                (10, 26): "光復節(補)",
-                (12, 25): "行憲紀念日"
+                (10, 9): "國慶日(補)", (10, 10): "國慶日",
+                (12, 25): "行憲紀念日(無休市)" # 股市通常不休
             })
         return h
 
     current_holidays = get_holidays(sel_year)
 
-    # 計算月結算日 (每月第三個週三)
-    cal_obj = calendar.Calendar(firstweekday=6) # 0=週一, 6=週日
-    month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
+    # 判斷是否為「不可交易日」(包含週末、假日、市場無交易日)
+    def is_market_closed_func(d_date):
+        # 週末
+        if d_date.weekday() >= 5: return True
+        # 國定假日或市場無交易日
+        name = current_holidays.get((d_date.month, d_date.day), "")
+        if name and name != "封關日" and name != "行憲紀念日(無休市)":
+            return True
+        return False
+
+    # 計算結算日 (嚴格順延邏輯)
+    settlement_map = {} # date -> list of strings
     
-    wednesdays = []
-    fridays = []
+    # 1. 計算每月第三個週三 (月結算)
+    # 需遍歷全年，因為跨月順延可能影響
     
-    # 遍歷日曆找出所有週三和週五
-    for week in month_days:
-        if week[3] != 0: wednesdays.append(week[3]) # 週三
-        if week[5] != 0: fridays.append(week[5])    # 週五
+    # 為了簡化，我們只計算當月及前後月的結算日，避免效能問題
+    target_months = [(sel_year, sel_month)]
     
-    monthly_settle_day = wednesdays[2] if len(wednesdays) >= 3 else None
+    # 遍歷每一天，找出表定的結算日，然後順延
+    cal_obj = calendar.Calendar(firstweekday=6)
     
-    # 若月結算日遇假日，順延至下一個交易日
-    if monthly_settle_day:
-        check_date = date(sel_year, sel_month, monthly_settle_day)
-        while True:
-            is_weekend = (check_date.weekday() >= 5) # 5=Sat, 6=Sun
-            is_holiday = (check_date.year, check_date.month, check_date.day) in [(y, m, d) for (m, d), n in current_holidays.items() for y in [sel_year]]
-            # 檢查 2026 特殊市場無交易日 (2/12, 2/13)
-            is_market_closed = is_holiday or is_weekend
+    # 預先計算當月的結算資訊
+    # 邏輯：
+    # 每月第三個週三 -> 月結算
+    # 每週三 (非月結算) -> 週三週選 (W)
+    # 每週五 -> 週五週選 (F)
+    
+    # 先找出所有原始表定日
+    scheduled_settlements = [] # (date, type, code)
+    
+    # 掃描當月
+    days_in_month = cal_obj.itermonthdays(sel_year, sel_month)
+    d_list = [d for d in days_in_month if d != 0]
+    
+    # 計算該月週三、週五的 index
+    # 需從該月 1 號開始數
+    w_count = 0
+    f_count = 0
+    
+    month_raw_wed = []
+    month_raw_fri = []
+    
+    for d in d_list:
+        curr = date(sel_year, sel_month, d)
+        if curr.weekday() == 2: # Wed
+            w_count += 1
+            month_raw_wed.append((curr, w_count))
+        if curr.weekday() == 4: # Fri
+            f_count += 1
+            month_raw_fri.append((curr, f_count))
             
-            if not is_market_closed:
-                monthly_settle_day = check_date.day
-                break
+    # 月結算日是第 3 個週三
+    monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
+    
+    # 加入排程
+    if monthly_raw:
+        scheduled_settlements.append((monthly_raw, 'M', f"{sel_month}月"))
+        
+    for dt, idx in month_raw_wed:
+        if dt != monthly_raw:
+            # 週三契約代碼: YYMM W{idx}
+            yy = str(sel_year)[2:]
+            mm = f"{sel_month:02}"
+            code = f"{yy}{mm}W{idx}"
+            scheduled_settlements.append((dt, 'W', code))
+            
+    for dt, idx in month_raw_fri:
+        # 週五契約代碼: YYMM F{idx}
+        yy = str(sel_year)[2:]
+        mm = f"{sel_month:02}"
+        code = f"{yy}{mm}F{idx}"
+        scheduled_settlements.append((dt, 'F', code))
+        
+    # 執行順延邏輯
+    real_settlements = {} # date -> list of info
+    
+    for raw_date, s_type, s_code in scheduled_settlements:
+        check_date = raw_date
+        # 若遇假日或休市，往後找一天，直到開盤日
+        while is_market_closed_func(check_date):
             check_date += timedelta(days=1)
-            # 若跨月則停止 (極端情況)
-            if check_date.month != sel_month: break
+            # 防止無窮迴圈 (雖然不太可能)
+            if (check_date - raw_date).days > 30: break
+            
+        # 存入結果
+        if check_date not in real_settlements:
+            real_settlements[check_date] = []
+        real_settlements[check_date].append((s_type, s_code))
 
     # 行事曆樣式
-    # 週數欄位寬度縮小 (使用 st.columns 的比例控制)
-    # 顏色區分：
-    # .cal-open: 黑底白字 (交易日)
-    # .cal-closed: 紅底白字 (休市/假日)
     st.markdown("""
     <style>
     .cal-box { 
@@ -1606,44 +1552,29 @@ with tab3:
         justify-content: center;
         font-size: 0.8em;
     }
-    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; } /* 黃色標示月結算 */
-    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } /* 淺綠標示週選(三) */
-    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } /* 淺藍標示週選(五) */
-    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; }
+    /* 置中設定 */
+    div[data-testid="column"] > div {
+        text-align: center !important;
+    }
+    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
+    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
+    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
+    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.2); border-radius: 3px;}
     .today-border { border: 2px solid #ffff00 !important; }
     </style>
     """, unsafe_allow_html=True)
 
     week_days = ["週", "日", "一", "二", "三", "四", "五", "六"]
-    # 調整欄位比例：週數欄(0.4) 較窄
     cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
     for i, d in enumerate(week_days):
-        cols[i].markdown(f"**{d}**")
+        cols[i].markdown(f"<div style='text-align: center; font-weight: bold;'>{d}</div>", unsafe_allow_html=True)
 
-    # 計算該月週五的計數器 (用於生成 F1, F2...)
-    friday_count = 0
-    wed_count = 0
-
-    # 為了正確計算週次代碼，需從當月1號開始遍歷
-    # 先建立一個 day -> (wed_idx, fri_idx) 的映射
-    temp_cal = cal_obj.itermonthdays(sel_year, sel_month)
-    day_indices = {}
-    w_c = 0; f_c = 0
-    for d in temp_cal:
-        if d == 0: continue
-        wd = date(sel_year, sel_month, d).weekday()
-        if wd == 2: # Wed
-            w_c += 1
-            day_indices[d] = {'w': w_c}
-        if wd == 4: # Fri
-            f_c += 1
-            if d in day_indices: day_indices[d]['f'] = f_c
-            else: day_indices[d] = {'f': f_c}
+    month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
 
     for week in month_days:
         week_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
         
-        # 顯示週數 (使用 ISO 週數)
+        # 顯示週數
         first_valid_day = next((d for d in week if d != 0), None)
         if first_valid_day:
             iso_week = date(sel_year, sel_month, first_valid_day).isocalendar()[1]
@@ -1659,44 +1590,34 @@ with tab3:
             curr_date = date(sel_year, sel_month, day)
             is_weekend = (i == 0 or i == 6)
             
-            # 判斷假日
+            # 判斷假日名稱 (含週末)
             holiday_name = current_holidays.get((sel_month, day), "")
-            is_market_closed = is_weekend or (holiday_name != "")
             
-            # 設定樣式類別
-            bg_class = "cal-closed" if is_market_closed else "cal-open"
+            # 判斷是否休市 (週末 或 有標示假名的日期)
+            is_closed = is_market_closed_func(curr_date)
             
-            # 判斷是否為今天
+            bg_class = "cal-closed" if is_closed else "cal-open"
             border_style = "today-border" if curr_date == now_tw.date() else ""
             
             content_html = []
             content_html.append(f"<b>{day}</b>")
             
-            if holiday_name:
+            if holiday_name and holiday_name != "行憲紀念日(無休市)":
                 content_html.append(f"<div class='holiday-tag'>{holiday_name}</div>")
             
-            # 結算日標示邏輯
-            if not is_market_closed:
-                # 1. 月結算 (優先顯示)
-                if day == monthly_settle_day:
-                    content_html.append(f"<div class='settle-m'>台指期{sel_month}月結算<br>{sel_month}月月選結算</div>")
+            # 顯示結算日 (讀取計算好的 real_settlements)
+            if curr_date in real_settlements:
+                infos = real_settlements[curr_date]
+                # 排序: 月結算優先
+                infos.sort(key=lambda x: 0 if x[0]=='M' else 1)
                 
-                # 2. 週選 (非月結算日)
-                else:
-                    yy_str = str(sel_year)[2:]
-                    mm_str = f"{sel_month:02}"
-                    
-                    # 週三週選
-                    if day in wednesdays:
-                        w_idx = day_indices.get(day, {}).get('w', 0)
-                        code = f"{yy_str}{mm_str}W{w_idx}"
-                        content_html.append(f"<div class='settle-w'>週選(三) {code}</div>")
-                    
-                    # 週五週選 (使用者要求標示)
-                    if day in fridays:
-                        f_idx = day_indices.get(day, {}).get('f', 0)
-                        code = f"{yy_str}{mm_str}F{f_idx}"
-                        content_html.append(f"<div class='settle-f'>週選(五) {code}</div>")
+                for s_type, s_code in infos:
+                    if s_type == 'M':
+                        content_html.append(f"<div class='settle-m'>台指期{s_code}結算<br>月選結算</div>")
+                    elif s_type == 'W':
+                        content_html.append(f"<div class='settle-w'>週選(三) {s_code}</div>")
+                    elif s_type == 'F':
+                        content_html.append(f"<div class='settle-f'>週選(五) {s_code}</div>")
 
             final_html = "".join(content_html)
             week_cols[i+1].markdown(f"<div class='cal-box {bg_class} {border_style}'>{final_html}</div>", unsafe_allow_html=True)
