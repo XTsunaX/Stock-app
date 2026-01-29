@@ -1615,7 +1615,7 @@ with tab3:
             is_closed = is_market_closed_func(curr_date)
             
             bg_class = "cal-closed" if is_closed else "cal-open"
-            border_style = "today-border" if curr_date.date() == now_tw.date() else ""
+            border_style = "today-border" if curr_date == now_tw.date() else ""
             
             content_html = []
             content_html.append(f"<b>{day}</b>")
