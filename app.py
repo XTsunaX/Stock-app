@@ -13,7 +13,7 @@ from datetime import datetime, time as dt_time, timedelta, date
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
-import twstock  # 必須安裝: pip install twstock
+import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
 
@@ -32,8 +32,22 @@ st.markdown("""
         padding-left: 5px !important;
         padding-right: 5px !important;
     }
+    /* 讓按鈕垂直置中 (用於月曆兩側按鈕) */
+    div.stButton > button {
+        height: 100%;
+        min-height: 50px;
+    }
     /* 調整 Dataframe 與按鈕間距 */
     .stButton { margin-top: 5px; }
+    
+    /* 月曆標題樣式 */
+    .calendar-header {
+        font-size: 2em;
+        font-weight: bold;
+        text-align: center;
+        color: #ff9800;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -939,7 +953,7 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排 - 移除可能導致按鈕消失的 CSS
+    # [修正] 主畫面按鈕並排
     c_run, c_space = st.columns([1.5, 5])
     
     with c_run:
@@ -1053,15 +1067,14 @@ with tab1:
         # [多執行緒平行處理核心]
         # ------------------------------------------------------------------
         
-        # 1. 準備執行緒需要的靜態資料副本 (解決 Session State 在執行緒中無法存取的問題)
+        # 1. 準備執行緒需要的靜態資料副本
         futures_copy = set(st.session_state.futures_list)
         notes_copy = dict(st.session_state.saved_notes)
         code_map_copy, _ = load_local_stock_names()
 
-        # 2. 定義任務函式，接收所有需要的資料作為參數
+        # 2. 定義任務函式
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
             try:
-                # 傳遞所有靜態資料給 fetch_stock_data_raw
                 data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
                 return (t_code, t_source, t_extra, data)
             except Exception:
@@ -1084,7 +1097,6 @@ with tab1:
         with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_task = {}
             for t in tasks_to_run:
-                # [關鍵] 將主執行緒的資料副本 (futures_copy, notes_copy, code_map_copy) 傳入子執行緒
                 future = executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy)
                 future_to_task[future] = t
             
@@ -1214,30 +1226,11 @@ with tab1:
         if not edited_df.empty:
             trigger_rerun = False
             
+            # [修正] 刪除並遞補邏輯優化
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
-                    update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
-                    for i, row in st.session_state.stock_data.iterrows():
-                        code = row['代號']
-                        if code in update_map:
-                            new_price = update_map[code]['自訂價(可修)']
-                            new_note = update_map[code]['戰略備註']
-                            st.session_state.stock_data.at[i, '自訂價(可修)'] = new_price
-                            if str(row['戰略備註']) != str(new_note):
-                                base_auto = auto_notes_dict.get(code, "")
-                                pure_manual = ""
-                                b_auto = str(base_auto).strip()
-                                n_note = str(new_note).strip()
-                                
-                                if b_auto and n_note.startswith(b_auto):
-                                    pure_manual = n_note[len(b_auto):]
-                                else:
-                                    pure_manual = f"[M]{n_note}"
-
-                                st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                                st.session_state.saved_notes[code] = pure_manual
-
+                    # 1. 處理移除
                     remove_codes = to_remove["代號"].unique()
                     for c in remove_codes:
                         st.session_state.ignored_stocks.add(str(c))
@@ -1245,9 +1238,48 @@ with tab1:
                     st.session_state.stock_data = st.session_state.stock_data[
                         ~st.session_state.stock_data["代號"].isin(remove_codes)
                     ]
+                    
+                    # 2. 立即遞補 (在存檔前)
+                    upload_count = len(st.session_state.stock_data[st.session_state.stock_data['_source'] == 'upload'])
+                    limit = st.session_state.limit_rows
+                    needed = limit - upload_count
+                    
+                    if needed > 0 and st.session_state.all_candidates:
+                        replenished_count = 0
+                        existing_codes = set(st.session_state.stock_data['代號'].astype(str))
+                        futures_copy = set(st.session_state.futures_list)
+                        notes_copy = dict(st.session_state.saved_notes)
+                        code_map_copy, _ = load_local_stock_names()
+                        
+                        for cand in st.session_state.all_candidates:
+                             c_code = str(cand[0])
+                             c_name = cand[1]
+                             c_source = cand[2]
+                             c_extra = cand[3]
+                             if c_source != 'upload': continue
+                             if c_code in st.session_state.ignored_stocks: continue
+                             if c_code in existing_codes: continue
+                             
+                             # 抓取資料
+                             data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
+                             if data:
+                                 data['_source'] = c_source
+                                 data['_order'] = c_extra
+                                 data['_source_rank'] = 1
+                                 st.session_state.stock_data = pd.concat([
+                                     st.session_state.stock_data, 
+                                     pd.DataFrame([data])
+                                 ], ignore_index=True)
+                                 existing_codes.add(c_code)
+                                 replenished_count += 1
+                             
+                             if replenished_count >= needed: break
+                    
+                    # 3. 存檔並重整
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
 
+            # 自動更新價格邏輯 (僅在未觸發刪除重整時執行)
             if not trigger_rerun and st.session_state.auto_update_last_row:
                 last_visible_idx = len(edited_df) - 1
                 if last_visible_idx >= 0:
@@ -1273,7 +1305,7 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
                                                 b_auto = str(base_auto).strip()
-                                                n_note = str(new_note).strip()
+                                                n_note = str(nn).strip()
                                                 
                                                 if b_auto and n_note.startswith(b_auto):
                                                     pure_manual = n_note[len(b_auto):]
@@ -1291,6 +1323,118 @@ with tab1:
 
             if trigger_rerun:
                 st.rerun()
+
+        # 自動遞補邏輯 (針對非刪除動作導致的缺額)
+        df_curr = st.session_state.stock_data
+        if not df_curr.empty:
+            if '_source' not in df_curr.columns: upload_count = len(df_curr)
+            else: upload_count = len(df_curr[df_curr['_source'] == 'upload'])
+            limit = st.session_state.limit_rows
+            
+            if upload_count < limit and st.session_state.all_candidates:
+                needed = limit - upload_count
+                replenished_count = 0
+                existing_codes = set(st.session_state.stock_data['代號'].astype(str))
+                
+                futures_copy = set(st.session_state.futures_list)
+                notes_copy = dict(st.session_state.saved_notes)
+                code_map_copy, _ = load_local_stock_names()
+
+                with st.spinner("正在載入更多資料..."):
+                    for cand in st.session_state.all_candidates:
+                         c_code = str(cand[0])
+                         c_name = cand[1]
+                         c_source = cand[2]
+                         c_extra = cand[3]
+                         if c_source != 'upload': continue
+                         if c_code in st.session_state.ignored_stocks: continue
+                         if c_code in existing_codes: continue
+                         
+                         data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
+                         if data:
+                             data['_source'] = c_source
+                             data['_order'] = c_extra
+                             data['_source_rank'] = 1
+                             st.session_state.stock_data = pd.concat([
+                                 st.session_state.stock_data, 
+                                 pd.DataFrame([data])
+                             ], ignore_index=True)
+                             existing_codes.add(c_code)
+                             replenished_count += 1
+                         if replenished_count >= needed: break
+                
+                if replenished_count > 0:
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    st.toast(f"已更新顯示筆數，增加 {replenished_count} 檔。", icon="🔄")
+                    st.rerun()
+
+        st.markdown("---")
+        
+        # [修正] 調整按鈕顯示邏輯與排版，確保不消失
+        col_btn, col_clear, _ = st.columns([2, 2, 4])
+        with col_btn:
+            btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
+        with col_clear:
+            btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+        
+        if btn_clear_notes:
+            st.session_state.saved_notes = {}
+            st.toast("手動備註已清除", icon="🧹")
+            if not st.session_state.stock_data.empty:
+                 for idx, row in st.session_state.stock_data.iterrows():
+                     points = row.get('_points', [])
+                     clean_note, _ = generate_note_from_points(points, "", show_3d_hilo)
+                     
+                     st.session_state.stock_data.at[idx, '戰略備註'] = clean_note
+                     if '_auto_note' in st.session_state.stock_data.columns:
+                        st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
+
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            st.rerun()
+        
+        auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
+            value=st.session_state.auto_update_last_row,
+            key="toggle_auto_update")
+        st.session_state.auto_update_last_row = auto_update
+        
+        if auto_update:
+            col_delay, _ = st.columns([2, 8])
+            with col_delay:
+                delay_val = st.number_input("⏳ 緩衝秒數", 
+                    min_value=0.0, max_value=5.0, step=0.1, 
+                    value=st.session_state.update_delay_sec)
+                st.session_state.update_delay_sec = delay_val
+
+        if btn_update:
+             update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
+             for i, row in st.session_state.stock_data.iterrows():
+                code = row['代號']
+                if code in update_map:
+                    new_val = update_map[code]['自訂價(可修)']
+                    new_note = update_map[code]['戰略備註']
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
+                    
+                    if str(row['戰略備註']) != str(new_note):
+                        base_auto = auto_notes_dict.get(code, "")
+                        pure_manual = ""
+                        b_auto = str(base_auto).strip()
+                        n_note = str(new_note).strip()
+                        
+                        if b_auto and n_note.startswith(b_auto):
+                            pure_manual = n_note[len(b_auto):]
+                        else:
+                            pure_manual = f"[M]{n_note}"
+                             
+                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                        st.session_state.saved_notes[code] = pure_manual
+                    else:
+                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                
+                new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
+                st.session_state.stock_data.at[i, '狀態'] = new_status
+             
+             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+             st.rerun()
 
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
@@ -1386,13 +1530,11 @@ with tab2:
 
 # [修正] 台股行事曆 (修正版：含左右切換與週五選順延排除)
 with tab3:
-    st.markdown("#### 📅 台股行事曆")
-    
     # 日期控制介面
-    col_prev, col_y, col_m, col_next = st.columns([1, 1.5, 1.5, 1])
+    col_prev, col_header, col_next = st.columns([1, 15, 1])
     
     with col_prev:
-        if st.button("< 上個月", use_container_width=True):
+        if st.button("◀️", use_container_width=True):
             if st.session_state.cal_month == 1:
                 st.session_state.cal_month = 12
                 st.session_state.cal_year -= 1
@@ -1401,7 +1543,7 @@ with tab3:
             st.rerun()
 
     with col_next:
-        if st.button("下個月 >", use_container_width=True):
+        if st.button("▶️", use_container_width=True):
             if st.session_state.cal_month == 12:
                 st.session_state.cal_month = 1
                 st.session_state.cal_year += 1
@@ -1409,32 +1551,11 @@ with tab3:
                 st.session_state.cal_month += 1
             st.rerun()
 
-    with col_y:
-        # 年份選擇 (更新 session_state)
-        new_year = st.selectbox(
-            "年份", 
-            range(2024, 2028), 
-            index=range(2024, 2028).index(st.session_state.cal_year),
-            key='sel_year_box'
-        )
-        if new_year != st.session_state.cal_year:
-            st.session_state.cal_year = new_year
-            # st.rerun() # selectbox change triggers rerun automatically if key used
-
-    with col_m:
-        # 月份選擇
-        new_month = st.selectbox(
-            "月份", 
-            range(1, 13), 
-            index=st.session_state.cal_month - 1,
-            key='sel_month_box'
-        )
-        if new_month != st.session_state.cal_month:
-            st.session_state.cal_month = new_month
-            # st.rerun()
-
     sel_year = st.session_state.cal_year
     sel_month = st.session_state.cal_month
+
+    with col_header:
+        st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
     # 取得該年度的國定假日資料 (目前僅內建 2025-2026)
     def get_holidays(year):
@@ -1542,49 +1663,6 @@ with tab3:
         if check_date not in real_settlements:
             real_settlements[check_date] = []
         real_settlements[check_date].append((s_type, s_code))
-
-    st.markdown("""
-    <style>
-    .cal-box { 
-        text-align: center; 
-        padding: 5px; 
-        border-radius: 4px; 
-        margin: 2px; 
-        min-height: 90px; 
-        border: 1px solid #444;
-        font-size: 0.9em;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-    .cal-open { 
-        background-color: #000000; 
-        color: #ffffff; 
-    }
-    .cal-closed { 
-        background-color: #d32f2f; 
-        color: #ffffff; 
-        font-weight: bold;
-    }
-    .cal-week {
-        background-color: #f0f0f0;
-        color: #333;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.8em;
-    }
-    div[data-testid="column"] > div {
-        text-align: center !important;
-    }
-    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
-    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
-    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
-    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.2); border-radius: 3px;}
-    .today-border { border: 2px solid #ffff00 !important; }
-    </style>
-    """, unsafe_allow_html=True)
 
     week_days = ["週", "日", "一", "二", "三", "四", "五", "六"]
     cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
