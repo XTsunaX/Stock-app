@@ -32,21 +32,65 @@ st.markdown("""
         padding-left: 5px !important;
         padding-right: 5px !important;
     }
-    /* 讓按鈕垂直置中 (用於月曆兩側按鈕) */
+    /* 調整按鈕高度使其垂直置中 */
     div.stButton > button {
-        height: 100%;
-        min-height: 50px;
+        min-height: 45px;
+        font-size: 20px;
     }
-    /* 調整 Dataframe 與按鈕間距 */
+    /* Dataframe 與按鈕間距 */
     .stButton { margin-top: 5px; }
     
     /* 月曆標題樣式 */
     .calendar-header {
-        font-size: 2em;
-        font-weight: bold;
+        font-size: 2.5em;
+        font-weight: 900;
         text-align: center;
-        color: #ff9800;
+        color: #ff9800; /* 亮橘色 */
         margin-bottom: 10px;
+        line-height: 1.5;
+        font-family: 'Arial', sans-serif;
+    }
+    
+    /* 月曆格子樣式修復 */
+    .cal-box { 
+        text-align: center; 
+        padding: 5px; 
+        border-radius: 4px; 
+        margin: 2px; 
+        min-height: 90px; 
+        border: 1px solid #555;
+        font-size: 0.9em;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .cal-open { 
+        background-color: #000000 !important; 
+        color: #ffffff !important; 
+    }
+    .cal-closed { 
+        background-color: #d32f2f !important; 
+        color: #ffffff !important; 
+        font-weight: bold;
+    }
+    .cal-week {
+        background-color: #f0f0f0;
+        color: #333;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8em;
+    }
+    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
+    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
+    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
+    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.5); border-radius: 3px; padding: 1px;}
+    .today-border { border: 3px solid #ffff00 !important; }
+    
+    /* 強制欄位內容置中 */
+    div[data-testid="column"] {
+        text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -953,7 +997,7 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排
+    # [修正] 主畫面按鈕並排 - 移除可能導致按鈕消失的 CSS
     c_run, c_space = st.columns([1.5, 5])
     
     with c_run:
@@ -1530,8 +1574,33 @@ with tab2:
 
 # [修正] 台股行事曆 (修正版：含左右切換與週五選順延排除)
 with tab3:
-    # 日期控制介面
-    col_prev, col_header, col_next = st.columns([1, 15, 1])
+    # 頂部：下拉式選單 (恢復)
+    col_sel_y, col_sel_m = st.columns(2)
+    with col_sel_y:
+        new_year = st.selectbox(
+            "年份", 
+            range(2024, 2028), 
+            index=range(2024, 2028).index(st.session_state.cal_year),
+            key='sel_year_box'
+        )
+        if new_year != st.session_state.cal_year:
+            st.session_state.cal_year = new_year
+
+    with col_sel_m:
+        new_month = st.selectbox(
+            "月份", 
+            range(1, 13), 
+            index=st.session_state.cal_month - 1,
+            key='sel_month_box'
+        )
+        if new_month != st.session_state.cal_month:
+            st.session_state.cal_month = new_month
+
+    sel_year = st.session_state.cal_year
+    sel_month = st.session_state.cal_month
+
+    # 中央：導覽列與大標題
+    col_prev, col_header, col_next = st.columns([1, 8, 1])
     
     with col_prev:
         if st.button("◀️", use_container_width=True):
@@ -1551,13 +1620,10 @@ with tab3:
                 st.session_state.cal_month += 1
             st.rerun()
 
-    sel_year = st.session_state.cal_year
-    sel_month = st.session_state.cal_month
-
     with col_header:
         st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
-    # 取得該年度的國定假日資料 (目前僅內建 2025-2026)
+    # 取得該年度的國定假日資料
     def get_holidays(year):
         h = {}
         # 2025 年
@@ -1594,13 +1660,12 @@ with tab3:
     def is_market_closed_func(d_date):
         if d_date.weekday() >= 5: return True
         name = current_holidays.get((d_date.month, d_date.day), "")
-        if name and name != "封關日" and name != "行憲紀念日": # 行憲紀念日若無補假則不休市
-             # 2026/12/25 行憲紀念日通常不放假，除非期交所公告(2026行事曆顯示有交易)
+        if name and name != "封關日" and name != "行憲紀念日": 
              if name == "行憲紀念日": return False
              return True
         return False
 
-    # 計算結算日 (嚴格順延邏輯)
+    # 計算結算日
     settlement_map = {} 
     
     cal_obj = calendar.Calendar(firstweekday=6)
@@ -1626,7 +1691,6 @@ with tab3:
             
     monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
     
-    # 預先計算月結算的「實際日期」，用於後續排除週五選
     real_monthly_date = None
     if monthly_raw:
         check = monthly_raw
@@ -1656,7 +1720,6 @@ with tab3:
             check_date += timedelta(days=1)
             if (check_date - raw_date).days > 30: break
         
-        # [關鍵修正] 如果週五選(F) 順延後的日期 == 月結算日(M)，則不顯示週五選
         if s_type == 'F' and check_date == real_monthly_date:
             continue
             
