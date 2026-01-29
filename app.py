@@ -9,23 +9,23 @@ import os
 import itertools
 import json
 import re
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, date
 import pytz
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import twstock  # 必須安裝: pip install twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import calendar # 新增：用於行事曆功能
+import calendar
 
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
-# CSS 優化：強制側邊欄按鈕不換行，並在按鈕中緊湊排列
+# CSS 優化
 st.markdown("""
 <style>
-    /* 側邊欄按鈕文字不換行，若空間不足自動縮小 */
+    /* 側邊欄按鈕文字不換行 */
     [data-testid="stSidebar"] button {
         white-space: nowrap !important;
         text-overflow: clip !important;
@@ -299,9 +299,9 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
-    # [修正] 新增 證交所處置股公告
-    st.link_button("🚨 證交所處置股公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
+    # [修正] 調整按鈕順序：Goodinfo 在上，處置公告在下
     st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
+    st.link_button("🚨 證交所處置股公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
 
 @st.cache_data(ttl=86400)
 def fetch_futures_list():
@@ -1268,7 +1268,7 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
                                                 b_auto = str(base_auto).strip()
-                                                n_note = str(nn).strip()
+                                                n_note = str(new_note).strip()
                                                 
                                                 if b_auto and n_note.startswith(b_auto):
                                                     pure_manual = n_note[len(b_auto):]
@@ -1505,86 +1505,198 @@ with tab3:
     with col_m:
         sel_month = st.selectbox("月份", range(1, 13), index=now_tw.month - 1)
 
-    # 定義 2026 國定假日 (範例清單，可視需要擴充)
-    holidays_2026 = {
-        (2026, 1, 1), (2026, 1, 26), (2026, 1, 27), (2026, 1, 28), (2026, 1, 29), (2026, 1, 30),
-        (2026, 2, 27), (2026, 4, 3), (2026, 4, 6), (2026, 5, 1), (2026, 6, 19), (2026, 9, 25), (2026, 10, 9)
-    }
+    # 取得該年度的國定假日資料 (目前僅內建 2025-2026)
+    def get_holidays(year):
+        h = {}
+        # 2025 年 (民國 114 年) 簡易列表
+        if year == 2025:
+             h.update({
+                 (1, 1): "元旦",
+                 (1, 27): "春節", (1, 28): "春節", (1, 29): "春節", (1, 30): "春節", (1, 31): "春節",
+                 (2, 3): "春節", (2, 28): "228紀念日",
+                 (4, 3): "兒童節", (4, 4): "清明節",
+                 (5, 1): "勞動節", (5, 30): "端午節",
+                 (10, 6): "中秋節", (10, 10): "國慶日"
+             })
+             
+        # 2026 年 (民國 115 年) 完整列表 (含市場無交易日)
+        if year == 2026:
+            h.update({
+                (1, 1): "元旦",
+                (2, 12): "市場無交易", (2, 13): "市場無交易", # 僅辦理結算
+                (2, 16): "春節", (2, 17): "春節", (2, 18): "春節", (2, 19): "春節", (2, 20): "春節",
+                (2, 27): "和平紀念日(補)", 
+                (4, 3): "兒童節(補)", (4, 6): "清明節(補)",
+                (5, 1): "勞動節",
+                (6, 19): "端午節",
+                (9, 25): "中秋節",
+                (9, 28): "教師節", 
+                (10, 9): "國慶日(補)",
+                (10, 26): "光復節(補)",
+                (12, 25): "行憲紀念日"
+            })
+        return h
 
-    # 計算結算日
-    # 台指期/月選結算日：每個月第三個週三
-    # 週選結算日：每個週三 (除了月結算日)
-    # 週五到期選：每個週五
+    current_holidays = get_holidays(sel_year)
+
+    # 計算月結算日 (每月第三個週三)
     cal_obj = calendar.Calendar(firstweekday=6) # 0=週一, 6=週日
     month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
     
-    # 找出週三與週五的日期
     wednesdays = []
     fridays = []
+    
+    # 遍歷日曆找出所有週三和週五
     for week in month_days:
-        if week[3] != 0: wednesdays.append(week[3])
-        if week[5] != 0: fridays.append(week[5])
+        if week[3] != 0: wednesdays.append(week[3]) # 週三
+        if week[5] != 0: fridays.append(week[5])    # 週五
     
-    # 第三個週三為月結算
-    monthly_settle = wednesdays[2] if len(wednesdays) >= 3 else None
+    monthly_settle_day = wednesdays[2] if len(wednesdays) >= 3 else None
     
+    # 若月結算日遇假日，順延至下一個交易日
+    if monthly_settle_day:
+        check_date = date(sel_year, sel_month, monthly_settle_day)
+        while True:
+            is_weekend = (check_date.weekday() >= 5) # 5=Sat, 6=Sun
+            is_holiday = (check_date.year, check_date.month, check_date.day) in [(y, m, d) for (m, d), n in current_holidays.items() for y in [sel_year]]
+            # 檢查 2026 特殊市場無交易日 (2/12, 2/13)
+            is_market_closed = is_holiday or is_weekend
+            
+            if not is_market_closed:
+                monthly_settle_day = check_date.day
+                break
+            check_date += timedelta(days=1)
+            # 若跨月則停止 (極端情況)
+            if check_date.month != sel_month: break
+
     # 行事曆樣式
+    # 週數欄位寬度縮小 (使用 st.columns 的比例控制)
+    # 顏色區分：
+    # .cal-open: 黑底白字 (交易日)
+    # .cal-closed: 紅底白字 (休市/假日)
     st.markdown("""
     <style>
-    .cal-box { text-align: center; padding: 10px; border-radius: 5px; margin: 2px; min-height: 80px; border: 1px solid #ddd; }
-    .cal-today { background-color: #ffcc00 !important; color: black !important; font-weight: bold; border: 2px solid #ff4b4b; }
-    .cal-open { background-color: #e6f3ff; color: #000; }
-    .cal-closed { background-color: #f0f0f0; color: #999; }
-    .settle-m { color: #d32f2f; font-size: 0.8em; font-weight: bold; }
-    .settle-w { color: #1976d2; font-size: 0.8em; font-weight: bold; }
-    .settle-f { color: #388e3c; font-size: 0.8em; font-weight: bold; }
+    .cal-box { 
+        text-align: center; 
+        padding: 5px; 
+        border-radius: 4px; 
+        margin: 2px; 
+        min-height: 90px; 
+        border: 1px solid #444;
+        font-size: 0.9em;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .cal-open { 
+        background-color: #000000; 
+        color: #ffffff; 
+    }
+    .cal-closed { 
+        background-color: #d32f2f; 
+        color: #ffffff; 
+        font-weight: bold;
+    }
+    .cal-week {
+        background-color: #f0f0f0;
+        color: #333;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8em;
+    }
+    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; } /* 黃色標示月結算 */
+    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } /* 淺綠標示週選(三) */
+    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } /* 淺藍標示週選(五) */
+    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; }
+    .today-border { border: 2px solid #ffff00 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-    week_days = ["週數", "日", "一", "二", "三", "四", "五", "六"]
-    cols = st.columns(8)
+    week_days = ["週", "日", "一", "二", "三", "四", "五", "六"]
+    # 調整欄位比例：週數欄(0.4) 較窄
+    cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
     for i, d in enumerate(week_days):
         cols[i].markdown(f"**{d}**")
 
+    # 計算該月週五的計數器 (用於生成 F1, F2...)
+    friday_count = 0
+    wed_count = 0
+
+    # 為了正確計算週次代碼，需從當月1號開始遍歷
+    # 先建立一個 day -> (wed_idx, fri_idx) 的映射
+    temp_cal = cal_obj.itermonthdays(sel_year, sel_month)
+    day_indices = {}
+    w_c = 0; f_c = 0
+    for d in temp_cal:
+        if d == 0: continue
+        wd = date(sel_year, sel_month, d).weekday()
+        if wd == 2: # Wed
+            w_c += 1
+            day_indices[d] = {'w': w_c}
+        if wd == 4: # Fri
+            f_c += 1
+            if d in day_indices: day_indices[d]['f'] = f_c
+            else: day_indices[d] = {'f': f_c}
+
     for week in month_days:
-        week_cols = st.columns(8)
+        week_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
         
-        # 顯示週數
+        # 顯示週數 (使用 ISO 週數)
         first_valid_day = next((d for d in week if d != 0), None)
         if first_valid_day:
-            week_num = datetime(sel_year, sel_month, first_valid_day).isocalendar()[1]
-            week_cols[0].markdown(f"<div class='cal-box cal-closed'>{week_num}</div>", unsafe_allow_html=True)
+            iso_week = date(sel_year, sel_month, first_valid_day).isocalendar()[1]
+            week_cols[0].markdown(f"<div class='cal-box cal-week'>{iso_week}</div>", unsafe_allow_html=True)
         else:
             week_cols[0].markdown("")
 
-        for i, day in enumerate(week):
+        for i, day in enumerate(week): # i=0 is Sunday (col index 1)
             if day == 0:
                 week_cols[i+1].markdown("")
                 continue
             
-            # 判斷是否為週末或假日
+            curr_date = date(sel_year, sel_month, day)
             is_weekend = (i == 0 or i == 6)
-            is_holiday = (sel_year, sel_month, day) in holidays_2026
-            is_closed = is_weekend or is_holiday
             
-            bg_class = "cal-closed" if is_closed else "cal-open"
+            # 判斷假日
+            holiday_name = current_holidays.get((sel_month, day), "")
+            is_market_closed = is_weekend or (holiday_name != "")
+            
+            # 設定樣式類別
+            bg_class = "cal-closed" if is_market_closed else "cal-open"
             
             # 判斷是否為今天
-            is_today = (sel_year == now_tw.year and sel_month == now_tw.month and day == now_tw.day)
-            if is_today: bg_class += " cal-today"
+            border_style = "today-border" if curr_date == now_tw.date() else ""
             
-            # 標註結算日 (僅開盤日標註)
-            markers = []
-            if not is_closed:
-                if day == monthly_settle:
-                    markers.append("<div class='settle-m'>● 月結算</div>")
-                elif day in wednesdays:
-                    markers.append("<div class='settle-w'>● 週選(三)</div>")
+            content_html = []
+            content_html.append(f"<b>{day}</b>")
+            
+            if holiday_name:
+                content_html.append(f"<div class='holiday-tag'>{holiday_name}</div>")
+            
+            # 結算日標示邏輯
+            if not is_market_closed:
+                # 1. 月結算 (優先顯示)
+                if day == monthly_settle_day:
+                    content_html.append(f"<div class='settle-m'>台指期{sel_month}月結算<br>{sel_month}月月選結算</div>")
                 
-                if day in fridays:
-                    markers.append("<div class='settle-f'>● 週選(五)</div>")
-            
-            marker_html = "".join(markers)
-            week_cols[i+1].markdown(f"<div class='cal-box {bg_class}'>{day}<br>{marker_html}</div>", unsafe_allow_html=True)
+                # 2. 週選 (非月結算日)
+                else:
+                    yy_str = str(sel_year)[2:]
+                    mm_str = f"{sel_month:02}"
+                    
+                    # 週三週選
+                    if day in wednesdays:
+                        w_idx = day_indices.get(day, {}).get('w', 0)
+                        code = f"{yy_str}{mm_str}W{w_idx}"
+                        content_html.append(f"<div class='settle-w'>週選(三) {code}</div>")
+                    
+                    # 週五週選 (使用者要求標示)
+                    if day in fridays:
+                        f_idx = day_indices.get(day, {}).get('f', 0)
+                        code = f"{yy_str}{mm_str}F{f_idx}"
+                        content_html.append(f"<div class='settle-f'>週選(五) {code}</div>")
 
-    st.caption("🔴：台指期/月選結算 | 🔵：週選擇權結算(週三) | 🟢：週選擇權結算(週五)")
+            final_html = "".join(content_html)
+            week_cols[i+1].markdown(f"<div class='cal-box {bg_class} {border_style}'>{final_html}</div>", unsafe_allow_html=True)
