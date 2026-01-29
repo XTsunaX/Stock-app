@@ -1664,7 +1664,7 @@ with tab3:
                 (5, 1): "勞動節",
                 (6, 19): "端午節",
                 (9, 25): "中秋節", (9, 28): "教師節",
-                (10, 9): "國慶日(補)", (10, 10): "國慶日", (10, 26): "光復節(補)",
+                (10, 9): "國慶日(補)", (10, 10): "國慶日", (10, 25): "光復節", (10, 26): "光復節(補)",
                 (12, 25): "行憲紀念日"
             })
         return h
@@ -1674,8 +1674,7 @@ with tab3:
     def is_market_closed_func(d_date):
         if d_date.weekday() >= 5: return True
         name = current_holidays.get((d_date.month, d_date.day), "")
-        if name and name != "封關日" and name != "行憲紀念日": 
-             if name == "行憲紀念日": return False
+        if name and name != "封關日": # 移除行憲紀念日的排除邏輯，使其休市
              return True
         return False
 
@@ -1707,8 +1706,6 @@ with tab3:
         real_monthly_date = None
         if monthly_raw:
             check = monthly_raw
-            # 簡單處理跨年假日表: 若跨年應載入正確年份，此處簡化為 current_holidays
-            # 若要嚴謹，需根據 check.year 動態載入
             while is_market_closed_func(check):
                 check += timedelta(days=1)
             real_monthly_date = check
