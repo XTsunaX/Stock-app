@@ -379,8 +379,8 @@ def fetch_futures_list():
     except: pass
     return set()
 
-# [修正] 網頁爬蟲強化，針對上櫃股票與不同網址結構
-def fetch_yahoo_web_backup(code, return_price_only=False):
+# [修正] 爬蟲功能：只抓取即時價格，不回傳 DataFrame，加快速度
+def fetch_yahoo_live_price(code):
     urls_to_try = [
         f"https://tw.stock.yahoo.com/quote/{code}",
         f"https://tw.stock.yahoo.com/quote/{code}.TW",
@@ -396,107 +396,21 @@ def fetch_yahoo_web_backup(code, return_price_only=False):
             
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            # 嘗試抓取主價格 (針對不同可能的 Class 名稱)
+            # 嘗試多種可能的 class 名稱來抓取大字體價格
             price_tag = soup.find('span', class_='Fz(32px)')
             if not price_tag:
-                 price_tag = soup.find('span', class_='Fz(24px)') # 手機版或某些版面
-            
+                 price_tag = soup.find('span', class_='Fz(24px)')
+            if not price_tag: # 部分手機版面
+                 price_tag = soup.find('div', class_='D(f) Ai(c) Mb(4px)').find('span')
+
             if not price_tag: continue
                  
             val_txt = price_tag.text.replace(',', '').strip()
             if not val_txt or val_txt == '-': continue
             
-            price = float(val_txt)
-            
-            if return_price_only:
-                return price
-
-            change_tag = soup.find('span', class_='Fz(20px)')
-            change = 0.0
-            if change_tag:
-                 change_txt = change_tag.text.strip().replace('▲', '').replace('▼', '').replace('+', '').replace(',', '')
-                 parent = change_tag.parent
-                 if 'C($c-trend-down)' in str(parent):
-                     change = -float(change_txt)
-                 else:
-                     change = float(change_txt)
-                     
-            prev_close = price - change
-            
-            open_p = price
-            high_p = price
-            low_p = price
-            
-            details = soup.find_all('li', class_='price-detail-item')
-            for item in details:
-                label = item.find('span', class_='C(#6e7780)')
-                val_tag = item.find('span', class_='Fw(600)')
-                if label and val_tag:
-                    lbl = label.text.strip()
-                    val_txt_detail = val_tag.text.strip().replace(',', '')
-                    if val_txt_detail == '-' or not val_txt_detail: continue
-                    val = float(val_txt_detail)
-                    if "開盤" in lbl: open_p = val
-                    elif "最高" in lbl: high_p = val
-                    elif "最低" in lbl: low_p = val
-
-            today = datetime.now().date()
-            data = {
-                'Open': [open_p], 'High': [high_p], 'Low': [low_p], 'Close': [price], 'Volume': [0]
-            }
-            df = pd.DataFrame(data, index=[pd.to_datetime(today)])
-            
-            return df, prev_close
+            return float(val_txt)
         except:
             continue
-            
-    if return_price_only: return None
-    return None, None
-
-def get_live_price(code):
-    # 1. 優先嘗試 Yahoo 網頁版爬蟲 (盤後最準)
-    # [修正] 盤後時段 Yahoo 網頁通常最可靠， twstock 有時會停在 13:30 前
-    try:
-        web_price = fetch_yahoo_web_backup(code, return_price_only=True)
-        if web_price and web_price > 0: return web_price
-    except: pass
-
-    # 2. 嘗試 twstock，但必須檢查日期是否為今天
-    try:
-        realtime_data = twstock.realtime.get(code)
-        if realtime_data and realtime_data.get('success'):
-            info = realtime_data.get('info', {})
-            time_str = info.get('time', '')
-            # 格式範例: "2023-10-25 14:30:00"
-            is_valid_date = False
-            if time_str:
-                try:
-                    dt_record = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-                    if dt_record.date() == datetime.now().date():
-                        is_valid_date = True
-                except: pass
-            
-            # 若無法解析日期或日期是今天，才使用資料 (避免假日用到舊資料)
-            # 但若解析失敗通常意味著格式變了，保守起見還是用，除非確定是舊的
-            if is_valid_date or not time_str: 
-                price_str = realtime_data['realtime'].get('latest_trade_price')
-                if price_str and price_str != '-' and float(price_str) > 0:
-                    return float(price_str)
-                bids = realtime_data['realtime'].get('best_bid_price', [])
-                if bids and bids[0] and bids[0] != '-':
-                     return float(bids[0])
-    except: pass
-    
-    # 3. 最後備案：Yahoo Finance API (fast_info)
-    try:
-        ticker = yf.Ticker(f"{code}.TW")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-        ticker = yf.Ticker(f"{code}.TWO")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-    except: pass
-
     return None
 
 def fetch_finmind_backup(code):
@@ -712,46 +626,36 @@ def generate_note_from_points(points, manual_note, show_3d):
             
     return auto_note, auto_note
 
-# [修改重點] 增加 futures_set, saved_notes_dict, name_map_dict 參數，移除 st.session_state 依賴
+# [修改重點] 
+# 1. 將 yfinance 作為最優先來源
+# 2. 加入強制補正邏輯：若盤後發現 K 線日期不是今天，強制爬蟲抓最新價並塞入 DataFrame
 def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
     code = str(code).strip()
     
     hist = pd.DataFrame()
     source_used = "none"
-    backup_prev_close = None
 
-    def is_valid_data(df_check, code):
+    def is_valid_data(df_check):
         if df_check is None or df_check.empty: return False
         try:
             last_row = df_check.iloc[-1]
-            last_price = last_row['Close']
-            if last_price <= 0: return False
-            if last_row['High'] < last_price or last_row['Low'] > last_price: return False
-            last_dt = df_check.index[-1]
-            if last_dt.tzinfo is not None:
-                last_dt = last_dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
-            now_dt = datetime.now().replace(tzinfo=None)
-            if (now_dt - last_dt).days > 3: return False
-            is_same_day = (last_dt.date() == now_dt.date())
-            if is_same_day:
-                live_price = get_live_price(code)
-                if live_price:
-                    diff_pct = abs(last_price - live_price) / live_price
-                    if diff_pct > 0.05: return False
+            if last_row['Close'] <= 0: return False
             return True
         except: return False
 
+    # 1. 優先：yfinance
     try:
         ticker = yf.Ticker(f"{code}.TW")
         hist_yf = ticker.history(period="3mo")
-        if hist_yf.empty or not is_valid_data(hist_yf, code):
+        if hist_yf.empty or not is_valid_data(hist_yf):
             ticker = yf.Ticker(f"{code}.TWO")
             hist_yf = ticker.history(period="3mo")
-        if not hist_yf.empty and is_valid_data(hist_yf, code):
+        if not hist_yf.empty and is_valid_data(hist_yf):
             hist = hist_yf
             source_used = "yfinance"
     except: pass
 
+    # 2. 次要：twstock (若 yf 失敗)
     if hist.empty:
         try:
             stock = twstock.Stock(code)
@@ -764,84 +668,79 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 df_tw = df_tw.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                 for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
-                if not df_tw.empty and is_valid_data(df_tw, code):
+                if not df_tw.empty and is_valid_data(df_tw):
                     hist = df_tw[cols]
                     source_used = "twstock"
         except: pass
 
+    # 3. 備用：finmind
     if hist.empty:
         df_fm = fetch_finmind_backup(code)
-        if df_fm is not None and not df_fm.empty and is_valid_data(df_fm, code):
+        if df_fm is not None and not df_fm.empty and is_valid_data(df_fm):
             hist = df_fm
             source_used = "finmind"
 
-    if hist.empty:
-        df_web, web_prev_close = fetch_yahoo_web_backup(code)
-        if df_web is not None and not df_web.empty:
-            hist = df_web
-            hist['High'] = hist[['High', 'Close']].max(axis=1)
-            hist['Low'] = hist[['Low', 'Close']].min(axis=1)
-            backup_prev_close = web_prev_close
-            source_used = "web_backup"
-
     if hist.empty: return None
 
+    # 整理欄位
+    if 'High' not in hist.columns: hist['High'] = hist['Close']
+    if 'Low' not in hist.columns: hist['Low'] = hist['Close']
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # [修正] 時區統一處理，確保 "今天" 的判定是準確的
+    # 時間處理 (統一轉為 Asia/Taipei 比較)
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    last_dt_raw = hist.index[-1]
     
-    # 確保 last_date 也是本地日期 (.date() 比對)
-    if last_dt_raw.tzinfo is None:
-        # 假設是 naive，視為本地時間 (若 API 回傳 UTC 可能會有誤差，但在 yfinance history 通常是 market time)
-        last_date_local = last_dt_raw.date()
+    last_idx = hist.index[-1]
+    if last_idx.tzinfo is None:
+        last_date_local = last_idx.date()
     else:
-        last_date_local = last_dt_raw.astimezone(tz).date()
+        last_date_local = last_idx.astimezone(tz).date()
         
     today_date = now.date()
-    is_today_in_hist = (last_date_local == today_date)
-    is_during_trading = (now.time() < dt_time(13, 30))
+    is_after_close = (now.time() >= dt_time(13, 30))
     
-    hist_strat = hist.copy()
+    # =========================================================================
+    # [關鍵修正] 盤後強制資料補正邏輯
+    # =========================================================================
+    # 如果現在是收盤後 (13:30~)，但歷史資料最後一筆不是今天
+    # 或者歷史資料是今天但可能是盤中舊資料
+    # 我們強制去爬 Yahoo Web 抓最新的收盤價來修正
     
-    if is_during_trading:
-        if is_today_in_hist:
-            hist_strat = hist_strat.iloc[:-1]
-    else:
-        # [修正] 盤後強制更新邏輯：
-        # 1. 抓取 live price
-        # 2. 如果 live price 存在，不管 hist 裡面有沒有今天，都強制用 live price 代表今天
-        live = get_live_price(code)
+    if is_after_close:
+        # 爬取最新價格
+        live_price = fetch_yahoo_live_price(code)
         
-        if live:
-            if is_today_in_hist:
-                # 覆蓋今天的收盤價
-                idx = hist_strat.index[-1]
-                hist_strat.at[idx, 'Close'] = live
-                # 同步更新 High/Low，避免收盤價突破盤中紀錄卻沒更新
-                if live > hist_strat.at[idx, 'High']: hist_strat.at[idx, 'High'] = live
-                if live < hist_strat.at[idx, 'Low']: hist_strat.at[idx, 'Low'] = live
-            else:
-                # 補上今天
+        if live_price:
+            if last_date_local < today_date:
+                # 歷史資料缺漏今天 -> 強制新增一筆
                 new_row = pd.DataFrame(
-                    {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
+                    {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
                     index=[pd.to_datetime(today_date)]
                 )
-                hist_strat = pd.concat([hist_strat, new_row])
+                hist = pd.concat([hist, new_row])
+                
+            elif last_date_local == today_date:
+                # 歷史資料已有今天 -> 強制更新 Close，並修正 High/Low
+                # 這是為了防止 yfinance 回傳的是盤中暫存資料
+                idx = hist.index[-1]
+                hist.at[idx, 'Close'] = live_price
+                if live_price > hist.at[idx, 'High']: hist.at[idx, 'High'] = live_price
+                if live_price < hist.at[idx, 'Low']: hist.at[idx, 'Low'] = live_price
 
+    # 準備計算用的 DataFrame
+    hist_strat = hist.copy()
+    
     if hist_strat.empty: return None
 
+    # 開始計算
     strategy_base_price = hist_strat.iloc[-1]['Close']
+    
+    # 漲跌幅
     if len(hist_strat) >= 2:
-        prev_of_base = hist_strat.iloc[-2]['Close']
-    else:
-        prev_of_base = strategy_base_price 
-
-    if prev_of_base > 0:
-        pct_change = ((strategy_base_price - prev_of_base) / prev_of_base) * 100
+        prev_close_val = hist_strat.iloc[-2]['Close']
+        pct_change = ((strategy_base_price - prev_close_val) / prev_close_val) * 100
     else:
         pct_change = 0.0
 
@@ -861,6 +760,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     
     points = []
     
+    # 近3日高低
     recent_k = hist_strat.tail(3)
     days_map = {0: "今", 1: "昨", 2: "前"}
     recent_records = recent_k.to_dict('records')
@@ -871,21 +771,22 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             prefix = days_map[idx]
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
-            
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
                 points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
                 points.append({"val": l_val, "tag": f"{prefix}低"})
 
+    # MA5 計算 (現在保證 hist_strat 包含今日資料)
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
-        sum_val = sum(Decimal(str(x)) for x in last_5_closes)
-        avg_val = sum_val / Decimal("5")
-        ma5_raw = float(avg_val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        avg_val = sum(last_5_closes) / 5.0
+        ma5_raw = float(Decimal(str(avg_val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        
         ma5 = apply_sr_rules(ma5_raw, strategy_base_price)
         ma5_tag = "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
+    # 其餘策略點位
     if len(hist_strat) >= 2:
         last_candle = hist_strat.iloc[-1]
         p_open = apply_tick_rules(last_candle['Open'])
@@ -965,14 +866,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         if is_force or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show):
              full_calc_points.append(p) 
     
-    # [修正] 改用參數傳入的 saved_notes_dict
+    # 產生備註
     manual_note = ""
     if saved_notes_dict:
         manual_note = saved_notes_dict.get(code, "")
     
     strategy_note, auto_note = generate_note_from_points(full_calc_points, manual_note, show_3d=False)
     
-    # [修正] 改用參數傳入的 name_map_dict
     if name_hint:
         final_name = name_hint
     elif name_map_dict and code in name_map_dict:
@@ -985,7 +885,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     elif "空" in strategy_note: light = "🟢"
     final_name_display = f"{light} {final_name}"
     
-    # [修正] 改用參數傳入的 futures_set
     has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
