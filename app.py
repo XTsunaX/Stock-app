@@ -1086,7 +1086,8 @@ with tab1:
                     if c_raw in st.session_state.ignored_stocks: continue
                     if hide_non_stock:
                         is_etf = c_raw.startswith('00')
-                        is_warrant = (len(c_raw) > 4) & df_all['代號'].str.isdigit()
+                        # [修正] 移除 df_all 的錯誤引用，直接判斷當前代號
+                        is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
                         if is_etf or is_warrant: continue
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
