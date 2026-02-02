@@ -16,6 +16,9 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
+import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -410,12 +413,29 @@ def get_live_price(code):
     
     return None
 
-# [修正] 爬蟲邏輯強化：改用 fin-streamer 抓取，不再依賴不穩定的 class 名稱
+# [修正] 爬蟲邏輯強化：加入自動重試 (Retry) 與 隨機 User-Agent 機制
 def fetch_yahoo_web_backup(code):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        r = requests.get(url, headers=headers, timeout=5)
+        
+        # 設定重試機制
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1'
+        }
+        
+        r = session.get(url, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, 'html.parser')
         
         # 1. 嘗試透過 fin-streamer 標籤抓取 (最穩定)
@@ -431,18 +451,6 @@ def fetch_yahoo_web_backup(code):
             if meta_price and meta_price.get('content'):
                 try: price = float(meta_price.get('content').replace(',', ''))
                 except: pass
-
-        # 3. 最後嘗試尋找大字體 (但放寬條件)
-        if price is None:
-             # 尋找包含股價格式的 span
-             potential_prices = soup.find_all('span')
-             for sp in potential_prices:
-                 txt = sp.text.strip().replace(',', '')
-                 # 簡單判斷：是數字且長度合理，且父層結構看起來像股價顯示區
-                 if txt.replace('.', '', 1).isdigit() and len(txt) < 10:
-                     # 這裡風險較高，僅作為最後手段，且需搭配一些上下文檢查(略)
-                     # 為了安全，暫時不採用過於寬鬆的抓取，以免抓到成交量
-                     pass
 
         if price is None: return None, None
 
@@ -1153,6 +1161,8 @@ with tab1:
 
         # 2. 定義任務函式
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
+            # [修正] 加入隨機延遲，避免瞬間大量請求導致被鎖 IP
+            time.sleep(random.uniform(0.5, 1.5))
             try:
                 data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
                 return (t_code, t_source, t_extra, data)
@@ -1173,7 +1183,8 @@ with tab1:
             seen.add((code, source))
 
         # 3. 開始執行
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        # [修正] 將 max_workers 從 8 降為 4，減緩請求頻率
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {}
             for t in tasks_to_run:
                 future = executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy)
