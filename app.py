@@ -806,13 +806,28 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
                 points.append({"val": l_val, "tag": f"{prefix}低"})
 
+    # [修正] 5日線計算 (盤中用舊資料、盤後用新資料)
+    # hist_strat 已在前面依照 is_during_trading 處理過：
+    # - 盤中：不含今日 (因此 .tail(5) 是 T-1..T-5) -> 舊資料
+    # - 盤後：包含今日 (因此 .tail(5) 是 T..T-4) -> 新資料
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
         sum_val = sum(Decimal(str(x)) for x in last_5_closes)
         avg_val = sum_val / Decimal("5")
         ma5_raw = float(avg_val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         ma5 = apply_sr_rules(ma5_raw, strategy_base_price)
-        ma5_tag = "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平")
+        
+        # 決定多空判斷的比較價格：
+        # 我們希望「狀態」(多/空) 是即時的，因此需拿「當下價格」與 MA5 比較。
+        compare_price = strategy_base_price # 預設 (盤中時為昨收，盤後為今收)
+        
+        live_p = get_live_price(code)
+        if is_during_trading and live_p:
+            compare_price = live_p
+        elif not is_during_trading:
+            compare_price = strategy_base_price
+
+        ma5_tag = "多" if ma5_raw < compare_price else ("空" if ma5_raw > compare_price else "平")
         points.append({"val": ma5, "tag": ma5_tag, "force": True})
 
     if len(hist_strat) >= 2:
@@ -1077,7 +1092,7 @@ with tab1:
                     if c_raw in st.session_state.ignored_stocks: continue
                     if hide_non_stock:
                         is_etf = c_raw.startswith('00')
-                        is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
+                        is_warrant = (len(c_raw) > 4) & df_all['代號'].str.isdigit()
                         if is_etf or is_warrant: continue
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
