@@ -379,7 +379,20 @@ def fetch_futures_list():
     except: pass
     return set()
 
+# [修正] 優先嘗試 yfinance fast_info，其次 twstock
 def get_live_price(code):
+    # 優先: yfinance
+    try:
+        ticker = yf.Ticker(f"{code}.TW")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+        
+        ticker = yf.Ticker(f"{code}.TWO")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+    except: pass
+
+    # 其次: twstock
     try:
         realtime_data = twstock.realtime.get(code)
         if realtime_data and realtime_data.get('success'):
@@ -390,14 +403,7 @@ def get_live_price(code):
             if bids and bids[0] and bids[0] != '-':
                  return float(bids[0])
     except: pass
-    try:
-        ticker = yf.Ticker(f"{code}.TW")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-        ticker = yf.Ticker(f"{code}.TWO")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-    except: pass
+    
     return None
 
 def fetch_yahoo_web_backup(code):
@@ -754,27 +760,25 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     else:
         # 盤後 (13:30 後)
         if not is_today_in_hist and source_used != "web_backup":
-            live_price = None
+            # 1. 嘗試透過即時 API 取得 (yfinance > twstock)
+            live = get_live_price(code)
             
-            # [策略調整] 盤後強制優先嘗試 Yahoo Web 爬蟲 (因為 API 在盤後容易有延遲或快取問題)
-            try:
-                bk_df, _ = fetch_yahoo_web_backup(code)
-                if bk_df is not None and not bk_df.empty:
-                    # 簡單檢核是否為今日
-                    if bk_df.index[-1].date() == now.date():
-                        live_price = float(bk_df.iloc[-1]['Close'])
-            except: pass
+            # 2. [強化修正] 若即時 API 也失敗，強制嘗試 Yahoo Web 爬蟲 (確保 MA5 盤後可更新)
+            if live is None:
+                try:
+                    bk_df, _ = fetch_yahoo_web_backup(code)
+                    if bk_df is not None and not bk_df.empty:
+                        # 簡單檢核是否為今日
+                        if bk_df.index[-1].date() == now.date():
+                            live = float(bk_df.iloc[-1]['Close'])
+                except: pass
 
-            # 若爬蟲失敗，才使用 API 作為備援
-            if live_price is None:
-                live_price = get_live_price(code)
-
-            if live_price:
+            if live:
                 new_row = pd.DataFrame(
-                    {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
+                    {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
                 )
-                # 簡單防止重複 (如果 hist 最後一天已經是今天就不 concat)
+                # 防止重複插入 (若原資料源其實已有今日)
                 if hist_strat.index[-1].date() != now.date():
                     hist_strat = pd.concat([hist_strat, new_row])
 
