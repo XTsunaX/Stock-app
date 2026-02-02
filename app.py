@@ -752,9 +752,18 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
-        if not is_today_in_hist and source_used != "web_backup":
-            live = get_live_price(code)
-            if live:
+        # [修正] 盤後強制更新當日收盤價，確保 MA5 正確
+        live = get_live_price(code)
+        if live:
+            if is_today_in_hist:
+                # 若已有今日資料但可能非最新收盤，強制更新收盤價
+                idx = hist_strat.index[-1]
+                hist_strat.at[idx, 'Close'] = live
+                # 同步更新高低點以防收盤價突破盤中紀錄
+                if live > hist_strat.at[idx, 'High']: hist_strat.at[idx, 'High'] = live
+                if live < hist_strat.at[idx, 'Low']: hist_strat.at[idx, 'Low'] = live
+            elif source_used != "web_backup":
+                # 若無今日資料則補上一筆
                 new_row = pd.DataFrame(
                     {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
@@ -1077,7 +1086,7 @@ with tab1:
                     if c_raw in st.session_state.ignored_stocks: continue
                     if hide_non_stock:
                         is_etf = c_raw.startswith('00')
-                        is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
+                        is_warrant = (len(c_raw) > 4) & df_all['代號'].str.isdigit()
                         if is_etf or is_warrant: continue
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
