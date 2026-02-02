@@ -379,7 +379,7 @@ def fetch_futures_list():
     except: pass
     return set()
 
-# [修正] 將網頁爬蟲移至前方，以便被 get_live_price 呼叫，並強化多網址嘗試
+# [修正] 網頁爬蟲強化，針對上櫃股票與不同網址結構
 def fetch_yahoo_web_backup(code, return_price_only=False):
     urls_to_try = [
         f"https://tw.stock.yahoo.com/quote/{code}",
@@ -396,13 +396,17 @@ def fetch_yahoo_web_backup(code, return_price_only=False):
             
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            # 嘗試抓取主價格
+            # 嘗試抓取主價格 (針對不同可能的 Class 名稱)
             price_tag = soup.find('span', class_='Fz(32px)')
             if not price_tag:
-                 # 若 class 變更，嘗試較寬鬆的查找方式 (例如 main-0-QuoteHeader)
-                 continue 
+                 price_tag = soup.find('span', class_='Fz(24px)') # 手機版或某些版面
+            
+            if not price_tag: continue
                  
-            price = float(price_tag.text.replace(',', ''))
+            val_txt = price_tag.text.replace(',', '').strip()
+            if not val_txt or val_txt == '-': continue
+            
+            price = float(val_txt)
             
             if return_price_only:
                 return price
@@ -429,9 +433,9 @@ def fetch_yahoo_web_backup(code, return_price_only=False):
                 val_tag = item.find('span', class_='Fw(600)')
                 if label and val_tag:
                     lbl = label.text.strip()
-                    val_txt = val_tag.text.strip().replace(',', '')
-                    if val_txt == '-': continue
-                    val = float(val_txt)
+                    val_txt_detail = val_tag.text.strip().replace(',', '')
+                    if val_txt_detail == '-' or not val_txt_detail: continue
+                    val = float(val_txt_detail)
                     if "開盤" in lbl: open_p = val
                     elif "最高" in lbl: high_p = val
                     elif "最低" in lbl: low_p = val
@@ -450,7 +454,14 @@ def fetch_yahoo_web_backup(code, return_price_only=False):
     return None, None
 
 def get_live_price(code):
-    # 1. 優先嘗試 twstock，但必須檢查日期是否為今天
+    # 1. 優先嘗試 Yahoo 網頁版爬蟲 (盤後最準)
+    # [修正] 盤後時段 Yahoo 網頁通常最可靠， twstock 有時會停在 13:30 前
+    try:
+        web_price = fetch_yahoo_web_backup(code, return_price_only=True)
+        if web_price and web_price > 0: return web_price
+    except: pass
+
+    # 2. 嘗試 twstock，但必須檢查日期是否為今天
     try:
         realtime_data = twstock.realtime.get(code)
         if realtime_data and realtime_data.get('success'):
@@ -465,19 +476,15 @@ def get_live_price(code):
                         is_valid_date = True
                 except: pass
             
-            if is_valid_date:
+            # 若無法解析日期或日期是今天，才使用資料 (避免假日用到舊資料)
+            # 但若解析失敗通常意味著格式變了，保守起見還是用，除非確定是舊的
+            if is_valid_date or not time_str: 
                 price_str = realtime_data['realtime'].get('latest_trade_price')
                 if price_str and price_str != '-' and float(price_str) > 0:
                     return float(price_str)
                 bids = realtime_data['realtime'].get('best_bid_price', [])
                 if bids and bids[0] and bids[0] != '-':
                      return float(bids[0])
-    except: pass
-    
-    # 2. [修正] 若 twstock 資料過時或失敗，嘗試從 Yahoo 網頁直接爬取 (最準確的盤後收盤價)
-    try:
-        web_price = fetch_yahoo_web_backup(code, return_price_only=True)
-        if web_price: return web_price
     except: pass
     
     # 3. 最後備案：Yahoo Finance API (fast_info)
@@ -782,16 +789,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
+    # [修正] 時區統一處理，確保 "今天" 的判定是準確的
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    last_date = hist.index[-1]
-    # 將 last_date 轉為帶時區或無時區的本地日期，以便比較
-    if last_date.tzinfo is not None:
-        last_date_local = last_date.astimezone(tz).date()
+    last_dt_raw = hist.index[-1]
+    
+    # 確保 last_date 也是本地日期 (.date() 比對)
+    if last_dt_raw.tzinfo is None:
+        # 假設是 naive，視為本地時間 (若 API 回傳 UTC 可能會有誤差，但在 yfinance history 通常是 market time)
+        last_date_local = last_dt_raw.date()
     else:
-        last_date_local = last_date.date()
+        last_date_local = last_dt_raw.astimezone(tz).date()
         
-    is_today_in_hist = (last_date_local == now.date())
+    today_date = now.date()
+    is_today_in_hist = (last_date_local == today_date)
     is_during_trading = (now.time() < dt_time(13, 30))
     
     hist_strat = hist.copy()
@@ -800,21 +811,24 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
-        # [修正] 盤後強制更新當日收盤價，確保 MA5 正確
+        # [修正] 盤後強制更新邏輯：
+        # 1. 抓取 live price
+        # 2. 如果 live price 存在，不管 hist 裡面有沒有今天，都強制用 live price 代表今天
         live = get_live_price(code)
+        
         if live:
             if is_today_in_hist:
-                # 若已有今日資料但可能非最新收盤，強制更新收盤價
+                # 覆蓋今天的收盤價
                 idx = hist_strat.index[-1]
                 hist_strat.at[idx, 'Close'] = live
-                # 同步更新高低點以防收盤價突破盤中紀錄
+                # 同步更新 High/Low，避免收盤價突破盤中紀錄卻沒更新
                 if live > hist_strat.at[idx, 'High']: hist_strat.at[idx, 'High'] = live
                 if live < hist_strat.at[idx, 'Low']: hist_strat.at[idx, 'Low'] = live
             else:
-                # 若無今日資料則補上一筆 (無論 source_used 為何，只要是盤後且有新價格就補)
+                # 補上今天
                 new_row = pd.DataFrame(
                     {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
-                    index=[pd.to_datetime(now.date())]
+                    index=[pd.to_datetime(today_date)]
                 )
                 hist_strat = pd.concat([hist_strat, new_row])
 
