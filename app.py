@@ -638,6 +638,51 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             hist = df_fm
             source_used = "finmind"
 
+    # [修正] 關鍵修正：確保「今天」的即時資料存在 (Realtime Patch)
+    # 即使 yfinance/twstock history 沒有今天 (或切換到昨日)，強制用 realtime 補上
+    try:
+        rt_data = twstock.realtime.get(code)
+        if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
+            rt_price = float(rt_data['realtime']['latest_trade_price'])
+            rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
+            rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
+            rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
+            rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+            
+            # 解析日期
+            rt_time_str = rt_data['info']['time'] # e.g. "2024-01-01 13:30:00"
+            rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
+            rt_date_only = pd.Timestamp(rt_dt.date())
+
+            if hist.empty:
+                # 若完全無歷史資料，建立單筆
+                hist = pd.DataFrame([{
+                    'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
+                    'Close': rt_price, 'Volume': rt_vol
+                }], index=[rt_date_only])
+            else:
+                # 確保 index 沒有時區問題
+                if hist.index.tzinfo is not None:
+                    hist.index = hist.index.tz_localize(None)
+                
+                last_hist_date = hist.index[-1]
+                
+                if rt_date_only > last_hist_date:
+                    # 補上新的一天 (修正 "五日線跳回昨天" 及 "漲跌幅基準錯誤" 問題)
+                    new_row = pd.DataFrame([{
+                        'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
+                        'Close': rt_price, 'Volume': rt_vol
+                    }], index=[rt_date_only])
+                    hist = pd.concat([hist, new_row])
+                elif rt_date_only == last_hist_date:
+                    # 更新今天數據 (以 Realtime 為準，比 yfinance 更即時)
+                    hist.at[last_hist_date, 'Close'] = rt_price
+                    hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
+                    hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
+                    hist.at[last_hist_date, 'Volume'] = rt_vol
+    except:
+        pass # 若即時資料抓取失敗，就維持原狀
+
     if hist.empty: return None
 
     # 確保資料結構整潔
@@ -649,11 +694,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     hist_strat = hist.copy()
     
-    # 移除所有嘗試補「今日」資料的動作，確保資料一致性，讓使用者手動編輯
-    
     if hist_strat.empty: return None
 
     strategy_base_price = hist_strat.iloc[-1]['Close']
+    
+    # [修正] 漲跌幅計算：確保基準是「倒數第二筆」(即昨天)
     if len(hist_strat) >= 2:
         prev_of_base = hist_strat.iloc[-2]['Close']
     else:
