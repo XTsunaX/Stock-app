@@ -408,7 +408,7 @@ def fetch_yahoo_web_backup(code):
         soup = BeautifulSoup(r.text, 'html.parser')
         
         price_tag = soup.find('span', class_='Fz(32px)')
-        if not price_tag: return None
+        if not price_tag: return None, None
         price = float(price_tag.text.replace(',', ''))
         
         change_tag = soup.find('span', class_='Fz(20px)')
@@ -752,8 +752,21 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
+        # 盤後 (13:30 後)
         if not is_today_in_hist and source_used != "web_backup":
+            # 1. 嘗試透過 twstock/yf 即時 API 取得
             live = get_live_price(code)
+            
+            # 2. [新增修正] 若即時 API 失敗，嘗試透過 Yahoo Web 抓取今日收盤 (確保 MA5 盤後可更新)
+            if live is None:
+                try:
+                    bk_df, _ = fetch_yahoo_web_backup(code)
+                    if bk_df is not None and not bk_df.empty:
+                        # 簡單檢核是否為今日
+                        if bk_df.index[-1].date() == now.date():
+                            live = float(bk_df.iloc[-1]['Close'])
+                except: pass
+
             if live:
                 new_row = pd.DataFrame(
                     {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
