@@ -382,31 +382,15 @@ def fetch_futures_list():
     except: pass
     return set()
 
-# [方法1] yfinance fast_info (最快)
-def get_live_price(code):
-    try:
-        ticker = yf.Ticker(f"{code}.TW")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
-        
-        ticker = yf.Ticker(f"{code}.TWO")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
-    except: pass
-    return None
-
-# [方法2 - NEW] Google Finance 爬蟲 (最強大的備援，針對 Yahoo 失效的情況)
+# [方法1 - NEW] Google Finance 爬蟲 (通常最穩定)
 def fetch_google_finance(code):
     try:
-        # 上市
+        # 上市 (TPE)
         url = f"https://www.google.com/finance/quote/{code}:TPE"
         session = requests.Session()
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = session.get(url, headers=headers, timeout=4)
         soup = BeautifulSoup(r.text, 'html.parser')
-        # Google Finance 的價格 class (可能會變，但相對穩定)
         price_div = soup.find('div', class_='YMlKec fxKbKc')
         if price_div:
             return float(price_div.text.replace('$', '').replace(',', ''))
@@ -421,42 +405,27 @@ def fetch_google_finance(code):
     except: pass
     return None
 
-# [方法3 - NEW] 官方證交所盤後日報表 (God Tier，絕對準確，但在 14:00 後才有效)
-def fetch_twse_official_daily(code):
+# [方法2] yfinance fast_info
+def get_live_price_yf(code):
     try:
-        # 只在盤後嘗試，避免盤中浪費請求
-        now = datetime.now(pytz.timezone('Asia/Taipei'))
-        if now.hour < 14: return None
+        ticker = yf.Ticker(f"{code}.TW")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price) and price > 0: 
+            return float(price)
         
-        date_str = now.strftime('%Y%m%d')
-        # 上市
-        url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={code}"
-        r = requests.get(url, timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get('stat') == 'OK' and data.get('data'):
-                # 取最後一筆
-                last_row = data['data'][-1]
-                # 日期格式為 民國年/MM/DD
-                raw_date = last_row[0]
-                # 簡單檢查日期是否為今日 (民國轉西元)
-                roc_year = int(raw_date.split('/')[0])
-                if (roc_year + 1911) == now.year and int(raw_date.split('/')[1]) == now.month and int(raw_date.split('/')[2]) == now.day:
-                    # 收盤價在 index 6
-                    close_p = last_row[6].replace(',', '')
-                    if close_p != '--':
-                        return float(close_p)
+        ticker = yf.Ticker(f"{code}.TWO")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price) and price > 0: 
+            return float(price)
     except: pass
     return None
 
-# [方法4] Yahoo Quote API
+# [方法3] Yahoo Quote API (JSON)
 def fetch_yahoo_quote_api(code):
     try:
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={code}.TW"
         session = requests.Session()
-        retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         r = session.get(url, headers=headers, timeout=5)
         data = r.json()
         if 'quoteResponse' in data and 'result' in data['quoteResponse']:
@@ -464,7 +433,6 @@ def fetch_yahoo_quote_api(code):
             if len(result) > 0:
                 return float(result[0].get('regularMarketPrice', 0))
                 
-        # 上櫃
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={code}.TWO"
         r = session.get(url, headers=headers, timeout=5)
         data = r.json()
@@ -475,34 +443,28 @@ def fetch_yahoo_quote_api(code):
     except: pass
     return None
 
-# [方法5] Yahoo Chart API
-def fetch_yahoo_chart_api(code):
+# [方法4] 官方證交所盤後日報表
+def fetch_twse_official_daily(code):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW?interval=1d&range=5d"
-        session = requests.Session()
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = session.get(url, headers=headers, timeout=5)
-        data = r.json()
-        result = data.get('chart', {}).get('result', [])
-        if not result:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TWO?interval=1d&range=5d"
-            r = session.get(url, headers=headers, timeout=5)
+        # 只在盤後嘗試
+        now = datetime.now(pytz.timezone('Asia/Taipei'))
+        if now.hour < 14: return None
+        
+        date_str = now.strftime('%Y%m%d')
+        # 上市
+        url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={code}"
+        r = requests.get(url, timeout=3)
+        if r.status_code == 200:
             data = r.json()
-            result = data.get('chart', {}).get('result', [])
-            
-        if result:
-            quote = result[0]
-            timestamp = quote.get('timestamp', [])
-            indicators = quote.get('indicators', {}).get('quote', [{}])[0]
-            closes = indicators.get('close', [])
-            if timestamp and closes:
-                for i in range(len(closes)-1, -1, -1):
-                    if closes[i] is not None:
-                        ts = timestamp[i]
-                        dt = datetime.fromtimestamp(ts, pytz.timezone('Asia/Taipei')).date()
-                        return float(closes[i]), dt
+            if data.get('stat') == 'OK' and data.get('data'):
+                last_row = data['data'][-1]
+                raw_date = last_row[0] # 民國年/MM/DD
+                roc_year = int(raw_date.split('/')[0])
+                if (roc_year + 1911) == now.year and int(raw_date.split('/')[1]) == now.month and int(raw_date.split('/')[2]) == now.day:
+                    close_p = last_row[6].replace(',', '')
+                    if close_p != '--': return float(close_p)
     except: pass
-    return None, None
+    return None
 
 def fetch_finmind_backup(code):
     try:
@@ -718,8 +680,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     
     hist = pd.DataFrame()
     source_used = "none"
-    backup_prev_close = None
-
+    
     # 1. 抓歷史資料 (yfinance history)
     try:
         ticker = yf.Ticker(f"{code}.TW")
@@ -755,15 +716,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             hist = df_fm
             source_used = "finmind"
 
-    if hist.empty:
-        # [最後手段] Chart API 抓歷史
-        chart_p, chart_dt = fetch_yahoo_chart_api(code)
-        if chart_p:
-             # 如果完全沒歷史，至少造一個點
-             data = {'Open': [chart_p], 'High': [chart_p], 'Low': [chart_p], 'Close': [chart_p], 'Volume': [0]}
-             hist = pd.DataFrame(data, index=[pd.to_datetime(chart_dt)])
-             source_used = "chart_api_init"
-
     if hist.empty: return None
 
     # 整理歷史資料
@@ -773,60 +725,54 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     # 嚴格的時區處理
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
+    now_date_str = now.strftime('%Y-%m-%d')
     
-    if hist.index[-1].tzinfo is None:
-        last_date = hist.index[-1].date()
+    # 取得歷史資料最後一天的日期字串
+    last_idx = hist.index[-1]
+    if last_idx.tzinfo is None:
+        last_date_obj = last_idx
     else:
-        last_date = hist.index[-1].astimezone(tz).date()
-        
-    is_today_in_hist = (last_date == now.date())
+        last_date_obj = last_idx.astimezone(tz)
+    last_date_str = last_date_obj.strftime('%Y-%m-%d')
+    
+    is_today_in_hist = (last_date_str == now_date_str)
     is_during_trading = (now.time() < dt_time(13, 30))
     
     hist_strat = hist.copy()
+    update_src_tag = ""
     
     if is_during_trading:
         if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
         # 盤後 (13:30 後)
-        # 如果歷史資料中沒有今天的資料，或雖然有但我們想確保是最新，則進行補齊
-        # 注意: 若 yfinance 已經有今天資料 (is_today_in_hist=True)，通常我們信任它
-        # 但如果使用者反應資料舊，可能是 yf 抓到了開盤或盤中價。
-        # 策略: 盤後強制檢查最後一筆資料是否與 Google/Official 差異過大，或是直接覆蓋
+        # 策略：只要歷史資料不是今天，就強制補。或者即使是今天但我們懷疑是舊的，也補。
         
         live_price = None
         
         # [優先順序 1] Google Finance (最強備援)
-        live_price = fetch_google_finance(code)
-        
-        # [優先順序 2] 官方 TWSE (準確但慢)
         if live_price is None:
-            live_price = fetch_twse_official_daily(code)
-            
-        # [優先順序 3] Yahoo Quote API
+            live_price = fetch_google_finance(code)
+            if live_price: update_src_tag = "[G]"
+        
+        # [優先順序 2] Yahoo Quote API
         if live_price is None:
             live_price = fetch_yahoo_quote_api(code)
+            if live_price: update_src_tag = "[Y]"
             
-        # [優先順序 4] yfinance fast_info
+        # [優先順序 3] yfinance fast_info
         if live_price is None:
-            live_price = get_live_price(code)
-        
-        # [優先順序 5] Chart API
+            live_price = get_live_price_yf(code)
+            if live_price: update_src_tag = "[YF]"
+            
+        # [優先順序 4] 官方 TWSE (準確但慢)
         if live_price is None:
-            chart_p, chart_dt = fetch_yahoo_chart_api(code)
-            if chart_p and chart_dt == now.date():
-                live_price = chart_p
+            live_price = fetch_twse_official_daily(code)
+            if live_price: update_src_tag = "[T]"
 
         if live_price:
-            # 檢查最後一筆日期
-            last_idx_date = hist_strat.index[-1]
-            if last_idx_date.tzinfo is not None:
-                last_idx_date = last_idx_date.astimezone(tz).date()
-            else:
-                last_idx_date = last_idx_date.date()
-                
-            if last_idx_date != now.date():
-                # 沒有今天，直接補
+            if not is_today_in_hist:
+                # 補上一筆
                 new_row = pd.DataFrame(
                     {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
@@ -834,12 +780,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 hist_strat = pd.concat([hist_strat, new_row])
             else:
                 # 已經有今天，但可能是舊的盤中價，強制更新收盤價
-                # 注意：這樣會讓 Open/High/Low 也變成 Close，但對於計算 MA5 來說，Close 是最重要的
                 hist_strat.iloc[-1, hist_strat.columns.get_loc('Close')] = live_price
-                # 如果 High 小於新的 Close，更新 High
                 if hist_strat.iloc[-1]['High'] < live_price:
                     hist_strat.iloc[-1, hist_strat.columns.get_loc('High')] = live_price
-                # 如果 Low 大於新的 Close，更新 Low
                 if hist_strat.iloc[-1]['Low'] > live_price:
                     hist_strat.iloc[-1, hist_strat.columns.get_loc('Low')] = live_price
 
@@ -994,7 +937,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     light = "⚪"
     if "多" in strategy_note: light = "🔴"
     elif "空" in strategy_note: light = "🟢"
-    final_name_display = f"{light} {final_name}"
+    final_name_display = f"{light} {final_name} {update_src_tag}"
     
     # [修正] 改用參數傳入的 futures_set
     has_futures = "✅" if futures_set and code in futures_set else ""
