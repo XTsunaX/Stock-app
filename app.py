@@ -639,7 +639,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             source_used = "finmind"
 
     # [修正] 關鍵修正：確保「今天」的即時資料存在 (Realtime Patch)
-    # 即使 yfinance/twstock history 沒有今天 (或切換到昨日)，強制用 realtime 補上
+    # 改進邏輯：優先判定日期，若歷史資料停留在昨天，且今日是交易日，強制補一筆
     try:
         rt_data = twstock.realtime.get(code)
         if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
@@ -649,37 +649,58 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
             rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
             
-            # 解析日期
-            rt_time_str = rt_data['info']['time'] # e.g. "2024-01-01 13:30:00"
+            # 解析 Realtime 回傳的日期 (備用)
+            rt_time_str = rt_data['info']['time'] 
             rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
-            rt_date_only = pd.Timestamp(rt_dt.date())
+            rt_date_parsed = pd.Timestamp(rt_dt.date())
+
+            # 取得系統時間 (台灣)
+            tz_tw = pytz.timezone('Asia/Taipei')
+            now_tw = datetime.now(tz_tw)
+            today_date = pd.Timestamp(now_tw.date())
 
             if hist.empty:
-                # 若完全無歷史資料，建立單筆
                 hist = pd.DataFrame([{
                     'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
                     'Close': rt_price, 'Volume': rt_vol
-                }], index=[rt_date_only])
+                }], index=[today_date]) # 強制用今日日期
             else:
-                # 確保 index 沒有時區問題
                 if hist.index.tzinfo is not None:
                     hist.index = hist.index.tz_localize(None)
                 
                 last_hist_date = hist.index[-1]
                 
-                if rt_date_only > last_hist_date:
-                    # 補上新的一天 (修正 "五日線跳回昨天" 及 "漲跌幅基準錯誤" 問題)
+                # 判定是否需要新增一筆 (Append)
+                # 條件：最後一筆日期小於今日，且今日是平日(週一~週五)，且現在時間超過 09:00
+                # 這樣可以避免週六日時誤補，也能解決 twstock 日期可能是舊的但價格是新的問題
+                should_append = False
+                
+                if last_hist_date < today_date:
+                    if now_tw.weekday() < 5 and now_tw.hour >= 9:
+                        should_append = True
+                    # 若 twstock 自身回傳的日期確實比歷史新 (例如補上班日)，也允許 append
+                    elif rt_date_parsed > last_hist_date:
+                        should_append = True
+                
+                if should_append:
+                    # 補上新的一天 (使用 today_date 強制校正，解決日期滯後導致的覆蓋錯誤)
+                    target_index = today_date if now_tw.weekday() < 5 else rt_date_parsed
+                    
                     new_row = pd.DataFrame([{
                         'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
                         'Close': rt_price, 'Volume': rt_vol
-                    }], index=[rt_date_only])
+                    }], index=[target_index])
                     hist = pd.concat([hist, new_row])
-                elif rt_date_only == last_hist_date:
-                    # 更新今天數據 (以 Realtime 為準，比 yfinance 更即時)
-                    hist.at[last_hist_date, 'Close'] = rt_price
-                    hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
-                    hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
-                    hist.at[last_hist_date, 'Volume'] = rt_vol
+                    hist.sort_index(inplace=True)
+                else:
+                    # 若日期相同 (或不符合新增條件)，則更新最後一筆
+                    # 但需確保不是「用今日價格覆蓋了昨天」
+                    # 只有當 last_hist_date 確實等於 today_date (或 rt_date_parsed) 時才更新
+                    if last_hist_date == today_date or last_hist_date == rt_date_parsed:
+                        hist.at[last_hist_date, 'Close'] = rt_price
+                        hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
+                        hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
+                        hist.at[last_hist_date, 'Volume'] = rt_vol
     except:
         pass # 若即時資料抓取失敗，就維持原狀
 
