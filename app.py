@@ -379,27 +379,6 @@ def fetch_futures_list():
     except: pass
     return set()
 
-def get_live_price(code):
-    try:
-        realtime_data = twstock.realtime.get(code)
-        if realtime_data and realtime_data.get('success'):
-            price_str = realtime_data['realtime'].get('latest_trade_price')
-            if price_str and price_str != '-' and float(price_str) > 0:
-                return float(price_str)
-            bids = realtime_data['realtime'].get('best_bid_price', [])
-            if bids and bids[0] and bids[0] != '-':
-                 return float(bids[0])
-    except: pass
-    try:
-        ticker = yf.Ticker(f"{code}.TW")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-        ticker = yf.Ticker(f"{code}.TWO")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
-    except: pass
-    return None
-
 def fetch_yahoo_web_backup(code):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code}"
@@ -408,7 +387,7 @@ def fetch_yahoo_web_backup(code):
         soup = BeautifulSoup(r.text, 'html.parser')
         
         price_tag = soup.find('span', class_='Fz(32px)')
-        if not price_tag: return None
+        if not price_tag: return None, None
         price = float(price_tag.text.replace(',', ''))
         
         change_tag = soup.find('span', class_='Fz(20px)')
@@ -449,6 +428,38 @@ def fetch_yahoo_web_backup(code):
         return df, prev_close
     except:
         return None, None
+
+def get_live_price(code):
+    # 優先嘗試 twstock
+    try:
+        realtime_data = twstock.realtime.get(code)
+        if realtime_data and realtime_data.get('success'):
+            price_str = realtime_data['realtime'].get('latest_trade_price')
+            if price_str and price_str != '-' and float(price_str) > 0:
+                return float(price_str)
+            bids = realtime_data['realtime'].get('best_bid_price', [])
+            if bids and bids[0] and bids[0] != '-':
+                 return float(bids[0])
+    except: pass
+    
+    # 備案 1：Yahoo Finance API (fast_info)
+    try:
+        ticker = yf.Ticker(f"{code}.TW")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+        ticker = yf.Ticker(f"{code}.TWO")
+        price = ticker.fast_info.get('last_price')
+        if price and not math.isnan(price): return float(price)
+    except: pass
+    
+    # [新增] 備案 2：Yahoo 網頁版爬蟲 (最強制更新)
+    try:
+        df_web, _ = fetch_yahoo_web_backup(code)
+        if df_web is not None and not df_web.empty:
+            return float(df_web.iloc[-1]['Close'])
+    except: pass
+    
+    return None
 
 def fetch_finmind_backup(code):
     try:
@@ -742,8 +753,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    last_date = hist.index[-1].date()
-    is_today_in_hist = (last_date == now.date())
+    last_date = hist.index[-1]
+    # 將 last_date 轉為帶時區或無時區的本地日期，以便比較
+    if last_date.tzinfo is not None:
+        last_date_local = last_date.astimezone(tz).date()
+    else:
+        last_date_local = last_date.date()
+        
+    is_today_in_hist = (last_date_local == now.date())
     is_during_trading = (now.time() < dt_time(13, 30))
     
     hist_strat = hist.copy()
@@ -762,8 +779,9 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 # 同步更新高低點以防收盤價突破盤中紀錄
                 if live > hist_strat.at[idx, 'High']: hist_strat.at[idx, 'High'] = live
                 if live < hist_strat.at[idx, 'Low']: hist_strat.at[idx, 'Low'] = live
-            elif source_used != "web_backup":
-                # 若無今日資料則補上一筆
+            else:
+                # 若無今日資料則補上一筆 (無論 source_used 為何，只要是盤後且有新價格就補)
+                # 需確認 live 價格有效
                 new_row = pd.DataFrame(
                     {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
