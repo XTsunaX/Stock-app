@@ -1,10 +1,13 @@
 streamlit
 pandas
 yfinance>=0.2.40
+yahoo_fin
 requests
+requests_html
 beautifulsoup4
 numpy
 openpyxl
 lxml
 twstock
 FinMind
+feedparser
