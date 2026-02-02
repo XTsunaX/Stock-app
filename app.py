@@ -425,7 +425,9 @@ def fetch_yahoo_quote_api(code):
     try:
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={code}.TW"
         session = requests.Session()
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         r = session.get(url, headers=headers, timeout=5)
         data = r.json()
         if 'quoteResponse' in data and 'result' in data['quoteResponse']:
@@ -718,36 +720,41 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if hist.empty: return None
 
-    # 整理歷史資料
+    # [關鍵修正] 移除 Index 的時區資訊 (變成 naive)，避免 concat 失敗
+    if hist.index.tzinfo is not None:
+        hist.index = hist.index.tz_localize(None)
+
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # 嚴格的時區處理
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    now_date_str = now.strftime('%Y-%m-%d')
+    # 取今天的日期 (無時區)
+    today_naive = pd.to_datetime(now.date())
     
-    # 取得歷史資料最後一天的日期字串
-    last_idx = hist.index[-1]
-    if last_idx.tzinfo is None:
-        last_date_obj = last_idx
-    else:
-        last_date_obj = last_idx.astimezone(tz)
-    last_date_str = last_date_obj.strftime('%Y-%m-%d')
-    
-    is_today_in_hist = (last_date_str == now_date_str)
     is_during_trading = (now.time() < dt_time(13, 30))
-    
-    hist_strat = hist.copy()
     update_src_tag = ""
     
+    # 建立策略用 DataFrame 副本
+    hist_strat = hist.copy()
+    
     if is_during_trading:
-        if is_today_in_hist:
+        # 盤中: 如果歷史資料最後一筆日期是今天，先移除(因為它是不完整的)，我們應該等待外部傳入即時報價(如果有)
+        # 但這個函式目前主要負責"準備歷史資料"，即時監控由 app 端負責，
+        # 這裡我們只處理盤後補資料，所以盤中維持"昨天以前"的狀態即可。
+        if hist_strat.index[-1].date() == today_naive.date():
             hist_strat = hist_strat.iloc[:-1]
     else:
         # 盤後 (13:30 後)
-        # 策略：只要歷史資料不是今天，就強制補。或者即使是今天但我們懷疑是舊的，也補。
+        # 1. 檢查歷史資料最後一筆日期
+        last_date = hist_strat.index[-1].date()
         
+        # [強制策略]：不管歷史資料有沒有今天，我們都要嘗試抓"備援即時價"
+        # 因為 yfinance 雖然有日期，但價格可能是錯的(例如昨天收盤價)
+        # 所以先將"今天"的資料從 hist_strat 移除，然後重新抓最新的補上去
+        if last_date == today_naive.date():
+            hist_strat = hist_strat.iloc[:-1]
+            
         live_price = None
         
         # [優先順序 1] Google Finance (最強備援)
@@ -771,20 +778,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             if live_price: update_src_tag = "[T]"
 
         if live_price:
-            if not is_today_in_hist:
-                # 補上一筆
-                new_row = pd.DataFrame(
-                    {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
-                    index=[pd.to_datetime(now.date())]
-                )
-                hist_strat = pd.concat([hist_strat, new_row])
-            else:
-                # 已經有今天，但可能是舊的盤中價，強制更新收盤價
-                hist_strat.iloc[-1, hist_strat.columns.get_loc('Close')] = live_price
-                if hist_strat.iloc[-1]['High'] < live_price:
-                    hist_strat.iloc[-1, hist_strat.columns.get_loc('High')] = live_price
-                if hist_strat.iloc[-1]['Low'] > live_price:
-                    hist_strat.iloc[-1, hist_strat.columns.get_loc('Low')] = live_price
+            # 補上今天的資料
+            # 注意: 這裡只補 Close，其他設為相同，因為計算 MA5 只需要 Close
+            new_row = pd.DataFrame(
+                {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
+                index=[today_naive]
+            )
+            hist_strat = pd.concat([hist_strat, new_row])
 
     if hist_strat.empty: return None
 
