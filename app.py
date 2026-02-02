@@ -16,9 +16,6 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
-import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -382,91 +379,76 @@ def fetch_futures_list():
     except: pass
     return set()
 
-# [方法1 - NEW] Google Finance 爬蟲 (通常最穩定)
-def fetch_google_finance(code):
+def get_live_price(code):
     try:
-        # 上市 (TPE)
-        url = f"https://www.google.com/finance/quote/{code}:TPE"
-        session = requests.Session()
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        r = session.get(url, headers=headers, timeout=4)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        price_div = soup.find('div', class_='YMlKec fxKbKc')
-        if price_div:
-            return float(price_div.text.replace('$', '').replace(',', ''))
-            
-        # 上櫃 (TWO)
-        url = f"https://www.google.com/finance/quote/{code}:TWO"
-        r = session.get(url, headers=headers, timeout=4)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        price_div = soup.find('div', class_='YMlKec fxKbKc')
-        if price_div:
-            return float(price_div.text.replace('$', '').replace(',', ''))
+        realtime_data = twstock.realtime.get(code)
+        if realtime_data and realtime_data.get('success'):
+            price_str = realtime_data['realtime'].get('latest_trade_price')
+            if price_str and price_str != '-' and float(price_str) > 0:
+                return float(price_str)
+            bids = realtime_data['realtime'].get('best_bid_price', [])
+            if bids and bids[0] and bids[0] != '-':
+                 return float(bids[0])
     except: pass
-    return None
-
-# [方法2] yfinance fast_info
-def get_live_price_yf(code):
     try:
         ticker = yf.Ticker(f"{code}.TW")
         price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
-        
+        if price and not math.isnan(price): return float(price)
         ticker = yf.Ticker(f"{code}.TWO")
         price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
+        if price and not math.isnan(price): return float(price)
     except: pass
     return None
 
-# [方法3] Yahoo Quote API (JSON)
-def fetch_yahoo_quote_api(code):
+def fetch_yahoo_web_backup(code):
     try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={code}.TW"
-        session = requests.Session()
-        retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = session.get(url, headers=headers, timeout=5)
-        data = r.json()
-        if 'quoteResponse' in data and 'result' in data['quoteResponse']:
-            result = data['quoteResponse']['result']
-            if len(result) > 0:
-                return float(result[0].get('regularMarketPrice', 0))
-                
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={code}.TWO"
-        r = session.get(url, headers=headers, timeout=5)
-        data = r.json()
-        if 'quoteResponse' in data and 'result' in data['quoteResponse']:
-            result = data['quoteResponse']['result']
-            if len(result) > 0:
-                return float(result[0].get('regularMarketPrice', 0))
-    except: pass
-    return None
-
-# [方法4] 官方證交所盤後日報表
-def fetch_twse_official_daily(code):
-    try:
-        # 只在盤後嘗試
-        now = datetime.now(pytz.timezone('Asia/Taipei'))
-        if now.hour < 14: return None
+        url = f"https://tw.stock.yahoo.com/quote/{code}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(r.text, 'html.parser')
         
-        date_str = now.strftime('%Y%m%d')
-        # 上市
-        url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={code}"
-        r = requests.get(url, timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get('stat') == 'OK' and data.get('data'):
-                last_row = data['data'][-1]
-                raw_date = last_row[0] # 民國年/MM/DD
-                roc_year = int(raw_date.split('/')[0])
-                if (roc_year + 1911) == now.year and int(raw_date.split('/')[1]) == now.month and int(raw_date.split('/')[2]) == now.day:
-                    close_p = last_row[6].replace(',', '')
-                    if close_p != '--': return float(close_p)
-    except: pass
-    return None
+        price_tag = soup.find('span', class_='Fz(32px)')
+        if not price_tag: return None
+        price = float(price_tag.text.replace(',', ''))
+        
+        change_tag = soup.find('span', class_='Fz(20px)')
+        change = 0.0
+        if change_tag:
+             change_txt = change_tag.text.strip().replace('▲', '').replace('▼', '').replace('+', '').replace(',', '')
+             parent = change_tag.parent
+             if 'C($c-trend-down)' in str(parent):
+                 change = -float(change_txt)
+             else:
+                 change = float(change_txt)
+                 
+        prev_close = price - change
+        
+        open_p = price
+        high_p = price
+        low_p = price
+        
+        details = soup.find_all('li', class_='price-detail-item')
+        for item in details:
+            label = item.find('span', class_='C(#6e7780)')
+            val_tag = item.find('span', class_='Fw(600)')
+            if label and val_tag:
+                lbl = label.text.strip()
+                val_txt = val_tag.text.strip().replace(',', '')
+                if val_txt == '-': continue
+                val = float(val_txt)
+                if "開盤" in lbl: open_p = val
+                elif "最高" in lbl: high_p = val
+                elif "最低" in lbl: low_p = val
+
+        today = datetime.now().date()
+        data = {
+            'Open': [open_p], 'High': [high_p], 'Low': [low_p], 'Close': [price], 'Volume': [0]
+        }
+        df = pd.DataFrame(data, index=[pd.to_datetime(today)])
+        
+        return df, prev_close
+    except:
+        return None, None
 
 def fetch_finmind_backup(code):
     try:
@@ -474,11 +456,14 @@ def fetch_finmind_backup(code):
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={code}&start_date={start_date}"
         r = requests.get(url, timeout=5)
         data_json = r.json()
+        
         if data_json.get('msg') == 'success' and data_json.get('data'):
             df = pd.DataFrame(data_json['data'])
             df['Date'] = pd.to_datetime(df['date'])
             df = df.set_index('Date')
-            rename_map = {'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'}
+            rename_map = {
+                'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'
+            }
             df = df.rename(columns=rename_map)
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for c in cols:
@@ -486,6 +471,7 @@ def fetch_finmind_backup(code):
                     if c.lower() in df.columns: df[c] = df[c.lower()]
                     else: df[c] = 0.0 
                 df[c] = pd.to_numeric(df[c], errors='coerce')
+            
             return df[cols]
     except: pass
     return None
@@ -612,6 +598,7 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
+# [修正] 戰略備註生成器
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -682,15 +669,36 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     
     hist = pd.DataFrame()
     source_used = "none"
-    
-    # 1. 抓歷史資料 (yfinance history)
+    backup_prev_close = None
+
+    def is_valid_data(df_check, code):
+        if df_check is None or df_check.empty: return False
+        try:
+            last_row = df_check.iloc[-1]
+            last_price = last_row['Close']
+            if last_price <= 0: return False
+            if last_row['High'] < last_price or last_row['Low'] > last_price: return False
+            last_dt = df_check.index[-1]
+            if last_dt.tzinfo is not None:
+                last_dt = last_dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
+            now_dt = datetime.now().replace(tzinfo=None)
+            if (now_dt - last_dt).days > 3: return False
+            is_same_day = (last_dt.date() == now_dt.date())
+            if is_same_day:
+                live_price = get_live_price(code)
+                if live_price:
+                    diff_pct = abs(last_price - live_price) / live_price
+                    if diff_pct > 0.05: return False
+            return True
+        except: return False
+
     try:
         ticker = yf.Ticker(f"{code}.TW")
         hist_yf = ticker.history(period="3mo")
-        if hist_yf.empty:
+        if hist_yf.empty or not is_valid_data(hist_yf, code):
             ticker = yf.Ticker(f"{code}.TWO")
             hist_yf = ticker.history(period="3mo")
-        if not hist_yf.empty:
+        if not hist_yf.empty and is_valid_data(hist_yf, code):
             hist = hist_yf
             source_used = "yfinance"
     except: pass
@@ -707,84 +715,51 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 df_tw = df_tw.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                 for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
-                if not df_tw.empty:
+                if not df_tw.empty and is_valid_data(df_tw, code):
                     hist = df_tw[cols]
                     source_used = "twstock"
         except: pass
 
     if hist.empty:
         df_fm = fetch_finmind_backup(code)
-        if df_fm is not None and not df_fm.empty:
+        if df_fm is not None and not df_fm.empty and is_valid_data(df_fm, code):
             hist = df_fm
             source_used = "finmind"
 
-    if hist.empty: return None
+    if hist.empty:
+        df_web, web_prev_close = fetch_yahoo_web_backup(code)
+        if df_web is not None and not df_web.empty:
+            hist = df_web
+            hist['High'] = hist[['High', 'Close']].max(axis=1)
+            hist['Low'] = hist[['Low', 'Close']].min(axis=1)
+            backup_prev_close = web_prev_close
+            source_used = "web_backup"
 
-    # [關鍵修正] 移除 Index 的時區資訊 (變成 naive)，避免 concat 失敗
-    if hist.index.tzinfo is not None:
-        hist.index = hist.index.tz_localize(None)
+    if hist.empty: return None
 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
-    # 取今天的日期 (無時區)
-    today_naive = pd.to_datetime(now.date())
-    
+    last_date = hist.index[-1].date()
+    is_today_in_hist = (last_date == now.date())
     is_during_trading = (now.time() < dt_time(13, 30))
-    update_src_tag = ""
     
-    # 建立策略用 DataFrame 副本
     hist_strat = hist.copy()
     
     if is_during_trading:
-        # 盤中: 如果歷史資料最後一筆日期是今天，先移除(因為它是不完整的)，我們應該等待外部傳入即時報價(如果有)
-        # 但這個函式目前主要負責"準備歷史資料"，即時監控由 app 端負責，
-        # 這裡我們只處理盤後補資料，所以盤中維持"昨天以前"的狀態即可。
-        if hist_strat.index[-1].date() == today_naive.date():
+        if is_today_in_hist:
             hist_strat = hist_strat.iloc[:-1]
     else:
-        # 盤後 (13:30 後)
-        # 1. 檢查歷史資料最後一筆日期
-        last_date = hist_strat.index[-1].date()
-        
-        # [強制策略]：不管歷史資料有沒有今天，我們都要嘗試抓"備援即時價"
-        # 因為 yfinance 雖然有日期，但價格可能是錯的(例如昨天收盤價)
-        # 所以先將"今天"的資料從 hist_strat 移除，然後重新抓最新的補上去
-        if last_date == today_naive.date():
-            hist_strat = hist_strat.iloc[:-1]
-            
-        live_price = None
-        
-        # [優先順序 1] Google Finance (最強備援)
-        if live_price is None:
-            live_price = fetch_google_finance(code)
-            if live_price: update_src_tag = "[G]"
-        
-        # [優先順序 2] Yahoo Quote API
-        if live_price is None:
-            live_price = fetch_yahoo_quote_api(code)
-            if live_price: update_src_tag = "[Y]"
-            
-        # [優先順序 3] yfinance fast_info
-        if live_price is None:
-            live_price = get_live_price_yf(code)
-            if live_price: update_src_tag = "[YF]"
-            
-        # [優先順序 4] 官方 TWSE (準確但慢)
-        if live_price is None:
-            live_price = fetch_twse_official_daily(code)
-            if live_price: update_src_tag = "[T]"
-
-        if live_price:
-            # 補上今天的資料
-            # 注意: 這裡只補 Close，其他設為相同，因為計算 MA5 只需要 Close
-            new_row = pd.DataFrame(
-                {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
-                index=[today_naive]
-            )
-            hist_strat = pd.concat([hist_strat, new_row])
+        if not is_today_in_hist and source_used != "web_backup":
+            live = get_live_price(code)
+            if live:
+                new_row = pd.DataFrame(
+                    {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
+                    index=[pd.to_datetime(now.date())]
+                )
+                hist_strat = pd.concat([hist_strat, new_row])
 
     if hist_strat.empty: return None
 
@@ -937,7 +912,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     light = "⚪"
     if "多" in strategy_note: light = "🔴"
     elif "空" in strategy_note: light = "🟢"
-    final_name_display = f"{light} {final_name} {update_src_tag}"
+    final_name_display = f"{light} {final_name}"
     
     # [修正] 改用參數傳入的 futures_set
     has_futures = "✅" if futures_set and code in futures_set else ""
@@ -1143,8 +1118,6 @@ with tab1:
 
         # 2. 定義任務函式
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
-            # [修正] 加入隨機延遲，避免瞬間大量請求導致被鎖 IP
-            time.sleep(random.uniform(0.5, 1.5))
             try:
                 data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
                 return (t_code, t_source, t_extra, data)
@@ -1165,8 +1138,7 @@ with tab1:
             seen.add((code, source))
 
         # 3. 開始執行
-        # [修正] 將 max_workers 從 8 降為 4，減緩請求頻率
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_task = {}
             for t in tasks_to_run:
                 future = executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy)
