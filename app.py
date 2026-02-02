@@ -1432,7 +1432,7 @@ with tab1:
                                                 st.session_state.saved_notes[c_code] = pure_manual
                                         
                                         new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
-                                        st.session_state.stock_data.at[j, '狀態'] = new_status
+                                        st.session_state.stock_data.at[i, '狀態'] = new_status
                                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
