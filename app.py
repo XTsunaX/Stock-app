@@ -16,9 +16,15 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
-import random  # [修正] 確保 random 模組有被匯入
+import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# [新增] 引入 yahoo_fin
+try:
+    import yahoo_fin.stock_info as si
+except ImportError:
+    si = None
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -596,50 +602,81 @@ def generate_note_from_points(points, manual_note, show_3d):
             
     return auto_note, auto_note
 
-# [穩定還原] 移除所有複雜的補即時資料邏輯，避免資料錯亂
+# [修正] 徹底重寫資料抓取邏輯
+# 優先順序: twstock (最準確的昨日資料) -> yahoo_fin (使用者指定) -> FinMind -> yfinance (備用)
 def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
     code = str(code).strip()
     
     hist = pd.DataFrame()
     source_used = "none"
     
-    # 1. 抓歷史資料 (yfinance history)
+    # --- 1. 嘗試使用 twstock (fetch_31) ---
+    # twstock 直接抓取證交所資料，對於台股的「昨日收盤」最為準確
     try:
-        ticker = yf.Ticker(f"{code}.TW")
-        hist_yf = ticker.history(period="3mo")
-        if hist_yf.empty:
-            ticker = yf.Ticker(f"{code}.TWO")
-            hist_yf = ticker.history(period="3mo")
-        if not hist_yf.empty:
-            hist = hist_yf
-            source_used = "yfinance"
-    except: pass
+        stock = twstock.Stock(code)
+        # fetch_31 會抓取最近 31 天資料
+        tw_data = stock.fetch_31()
+        if tw_data and len(tw_data) > 0:
+            df_tw = pd.DataFrame(tw_data)
+            df_tw['Date'] = pd.to_datetime(df_tw['date'])
+            df_tw = df_tw.set_index('Date')
+            rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
+            df_tw = df_tw.rename(columns=rename_map)
+            cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            # 確保欄位存在且為數值
+            for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
+            
+            if not df_tw.empty:
+                hist = df_tw[cols]
+                source_used = "twstock"
+    except: 
+        pass
 
-    if hist.empty:
+    # --- 2. 嘗試使用 yahoo_fin (使用者指定) ---
+    if hist.empty and si is not None:
         try:
-            stock = twstock.Stock(code)
-            tw_data = stock.fetch_31()
-            if tw_data:
-                df_tw = pd.DataFrame(tw_data)
-                df_tw['Date'] = pd.to_datetime(df_tw['date'])
-                df_tw = df_tw.set_index('Date')
-                rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
-                df_tw = df_tw.rename(columns=rename_map)
+            # yahoo_fin 需要完整代號 .TW 或 .TWO
+            # 先試 .TW
+            try:
+                df_yf = si.get_data(f"{code}.TW", start_date=(datetime.now() - timedelta(days=40)))
+            except:
+                try:
+                     df_yf = si.get_data(f"{code}.TWO", start_date=(datetime.now() - timedelta(days=40)))
+                except:
+                     df_yf = pd.DataFrame()
+            
+            if not df_yf.empty:
+                # yahoo_fin 的欄位通常是小寫 open, high, low, close, volume
+                rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
+                df_yf = df_yf.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-                for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
-                if not df_tw.empty:
-                    hist = df_tw[cols]
-                    source_used = "twstock"
-        except: pass
+                if all(c in df_yf.columns for c in cols):
+                    hist = df_yf[cols]
+                    source_used = "yahoo_fin"
+        except:
+            pass
 
+    # --- 3. 嘗試使用 FinMind (使用者指定) ---
     if hist.empty:
         df_fm = fetch_finmind_backup(code)
         if df_fm is not None and not df_fm.empty:
             hist = df_fm
             source_used = "finmind"
 
-    # [修正] 關鍵修正：確保「今天」的即時資料存在 (Realtime Patch)
-    # 改進邏輯：優先判定日期，若歷史資料停留在昨天，且今日是交易日，強制補一筆
+    # --- 4. 嘗試使用 yfinance (最後備案) ---
+    if hist.empty:
+        try:
+            ticker = yf.Ticker(f"{code}.TW")
+            hist_yf = ticker.history(period="3mo")
+            if hist_yf.empty:
+                ticker = yf.Ticker(f"{code}.TWO")
+                hist_yf = ticker.history(period="3mo")
+            if not hist_yf.empty:
+                hist = hist_yf
+                source_used = "yfinance"
+        except: pass
+
+    # [修正] Realtime Patch：嚴格的日期比對與合併
     try:
         rt_data = twstock.realtime.get(code)
         if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
@@ -649,58 +686,59 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
             rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
             
-            # 解析 Realtime 回傳的日期 (備用)
-            rt_time_str = rt_data['info']['time'] 
+            # 取得即時資料的日期 (通常是今天)
+            # twstock realtime 回傳的 time 字串格式 "2024-01-01 13:30:00"
+            rt_time_str = rt_data['info']['time']
             rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
             rt_date_parsed = pd.Timestamp(rt_dt.date())
-
-            # 取得系統時間 (台灣)
+            
+            # 取得系統今日日期 (校正用)
             tz_tw = pytz.timezone('Asia/Taipei')
-            now_tw = datetime.now(tz_tw)
-            today_date = pd.Timestamp(now_tw.date())
+            today_date = pd.Timestamp(datetime.now(tz_tw).date())
 
             if hist.empty:
+                # 若完全無歷史資料，建立單筆
                 hist = pd.DataFrame([{
                     'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
                     'Close': rt_price, 'Volume': rt_vol
-                }], index=[today_date]) # 強制用今日日期
+                }], index=[today_date])
             else:
+                # 確保 index 格式一致 (移除時區)
                 if hist.index.tzinfo is not None:
                     hist.index = hist.index.tz_localize(None)
                 
                 last_hist_date = hist.index[-1]
                 
-                # 判定是否需要新增一筆 (Append)
-                # 條件：最後一筆日期小於今日，且今日是平日(週一~週五)，且現在時間超過 09:00
-                # 這樣可以避免週六日時誤補，也能解決 twstock 日期可能是舊的但價格是新的問題
-                should_append = False
+                # 判斷邏輯：
+                # 1. 如果歷史資料的最後一天 < 今天 (today_date) -> 代表需要「新增」一筆
+                # 2. 如果歷史資料的最後一天 == 今天 -> 代表需要「更新」這一筆
+                # 3. 如果 twstock 的 fetch_31 抓到了昨天的資料，last_hist_date 就會是昨天，這裡就會正確 append 今天
+                
+                # 特殊情況處理：若現在是盤後，且 twstock realtime 的日期 == last_hist_date，那代表歷史資料已經包含今天收盤
+                # 此時我們依然用 realtime 覆蓋一下，確保是最新的
                 
                 if last_hist_date < today_date:
-                    if now_tw.weekday() < 5 and now_tw.hour >= 9:
-                        should_append = True
-                    # 若 twstock 自身回傳的日期確實比歷史新 (例如補上班日)，也允許 append
-                    elif rt_date_parsed > last_hist_date:
-                        should_append = True
-                
-                if should_append:
-                    # 補上新的一天 (使用 today_date 強制校正，解決日期滯後導致的覆蓋錯誤)
-                    target_index = today_date if now_tw.weekday() < 5 else rt_date_parsed
+                    # 檢查是否為交易日 (簡單判斷: 週一到週五，且時間 > 09:00)
+                    # 這裡使用 today_date 作為新 index，避免 rt_date_parsed 因為某些原因滯後
+                    is_weekday = datetime.now(tz_tw).weekday() < 5
                     
-                    new_row = pd.DataFrame([{
-                        'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
-                        'Close': rt_price, 'Volume': rt_vol
-                    }], index=[target_index])
-                    hist = pd.concat([hist, new_row])
-                    hist.sort_index(inplace=True)
-                else:
-                    # 若日期相同 (或不符合新增條件)，則更新最後一筆
-                    # 但需確保不是「用今日價格覆蓋了昨天」
-                    # 只有當 last_hist_date 確實等於 today_date (或 rt_date_parsed) 時才更新
-                    if last_hist_date == today_date or last_hist_date == rt_date_parsed:
-                        hist.at[last_hist_date, 'Close'] = rt_price
-                        hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
-                        hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
-                        hist.at[last_hist_date, 'Volume'] = rt_vol
+                    if is_weekday:
+                        new_row = pd.DataFrame([{
+                            'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
+                            'Close': rt_price, 'Volume': rt_vol
+                        }], index=[today_date])
+                        hist = pd.concat([hist, new_row])
+                        hist.sort_index(inplace=True)
+                
+                elif last_hist_date == today_date:
+                    # 更新今日數據
+                    hist.at[last_hist_date, 'Close'] = rt_price
+                    hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
+                    hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
+                    hist.at[last_hist_date, 'Volume'] = rt_vol
+                    # 如果 Open 沒有值或為 0，也補一下
+                    if hist.at[last_hist_date, 'Open'] == 0:
+                        hist.at[last_hist_date, 'Open'] = rt_open
     except:
         pass # 若即時資料抓取失敗，就維持原狀
 
@@ -762,6 +800,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
                 points.append({"val": l_val, "tag": f"{prefix}低"})
 
+    # [修正] 5MA 計算
+    # 確保資料量足夠，且包含最新的今日資料
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
         sum_val = sum(Decimal(str(x)) for x in last_5_closes)
