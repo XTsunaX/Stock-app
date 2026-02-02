@@ -381,24 +381,28 @@ def fetch_futures_list():
 
 # [修正] 優先嘗試 yfinance fast_info，其次 twstock
 def get_live_price(code):
-    # 優先: yfinance
+    # 優先: yfinance (快取時間短，通常最準)
     try:
         ticker = yf.Ticker(f"{code}.TW")
+        # fast_info 通常包含 'last_price'
         price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
+        if price and not math.isnan(price) and price > 0: 
+            return float(price)
         
         ticker = yf.Ticker(f"{code}.TWO")
         price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price): return float(price)
+        if price and not math.isnan(price) and price > 0: 
+            return float(price)
     except: pass
 
-    # 其次: twstock
+    # 其次: twstock (Realtime API)
     try:
         realtime_data = twstock.realtime.get(code)
         if realtime_data and realtime_data.get('success'):
             price_str = realtime_data['realtime'].get('latest_trade_price')
             if price_str and price_str != '-' and float(price_str) > 0:
                 return float(price_str)
+            # 若無最新成交，嘗試最佳買入價
             bids = realtime_data['realtime'].get('best_bid_price', [])
             if bids and bids[0] and bids[0] != '-':
                  return float(bids[0])
@@ -406,6 +410,7 @@ def get_live_price(code):
     
     return None
 
+# [修正] 爬蟲邏輯強化：改用 fin-streamer 抓取，不再依賴不穩定的 class 名稱
 def fetch_yahoo_web_backup(code):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{code}"
@@ -413,42 +418,48 @@ def fetch_yahoo_web_backup(code):
         r = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        price_tag = soup.find('span', class_='Fz(32px)')
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change_tag = soup.find('span', class_='Fz(20px)')
+        # 1. 嘗試透過 fin-streamer 標籤抓取 (最穩定)
+        price = None
+        streamer = soup.find('fin-streamer', {'data-field': 'regularMarketPrice'})
+        if streamer and streamer.get('value'):
+            try: price = float(streamer.get('value').replace(',', ''))
+            except: pass
+            
+        # 2. 如果 fin-streamer 失敗，嘗試透過舊版 meta tag
+        if price is None:
+            meta_price = soup.find('meta', {'itemprop': 'price'})
+            if meta_price and meta_price.get('content'):
+                try: price = float(meta_price.get('content').replace(',', ''))
+                except: pass
+
+        # 3. 最後嘗試尋找大字體 (但放寬條件)
+        if price is None:
+             # 尋找包含股價格式的 span
+             potential_prices = soup.find_all('span')
+             for sp in potential_prices:
+                 txt = sp.text.strip().replace(',', '')
+                 # 簡單判斷：是數字且長度合理，且父層結構看起來像股價顯示區
+                 if txt.replace('.', '', 1).isdigit() and len(txt) < 10:
+                     # 這裡風險較高，僅作為最後手段，且需搭配一些上下文檢查(略)
+                     # 為了安全，暫時不採用過於寬鬆的抓取，以免抓到成交量
+                     pass
+
+        if price is None: return None, None
+
+        # 抓取漲跌幅 (用於計算昨收)
         change = 0.0
-        if change_tag:
-             change_txt = change_tag.text.strip().replace('▲', '').replace('▼', '').replace('+', '').replace(',', '')
-             parent = change_tag.parent
-             if 'C($c-trend-down)' in str(parent):
-                 change = -float(change_txt)
-             else:
-                 change = float(change_txt)
-                 
+        # 嘗試從 fin-streamer 抓取漲跌額
+        change_streamer = soup.find('fin-streamer', {'data-field': 'regularMarketChange'})
+        if change_streamer and change_streamer.get('value'):
+             try: change = float(change_streamer.get('value').replace(',', ''))
+             except: pass
+        
         prev_close = price - change
         
-        open_p = price
-        high_p = price
-        low_p = price
-        
-        details = soup.find_all('li', class_='price-detail-item')
-        for item in details:
-            label = item.find('span', class_='C(#6e7780)')
-            val_tag = item.find('span', class_='Fw(600)')
-            if label and val_tag:
-                lbl = label.text.strip()
-                val_txt = val_tag.text.strip().replace(',', '')
-                if val_txt == '-': continue
-                val = float(val_txt)
-                if "開盤" in lbl: open_p = val
-                elif "最高" in lbl: high_p = val
-                elif "最低" in lbl: low_p = val
-
+        # 構建簡易 DataFrame
         today = datetime.now().date()
         data = {
-            'Open': [open_p], 'High': [high_p], 'Low': [low_p], 'Close': [price], 'Volume': [0]
+            'Open': [price], 'High': [price], 'Low': [price], 'Close': [price], 'Volume': [0]
         }
         df = pd.DataFrame(data, index=[pd.to_datetime(today)])
         
@@ -760,22 +771,25 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     else:
         # 盤後 (13:30 後)
         if not is_today_in_hist and source_used != "web_backup":
-            # 1. 嘗試透過即時 API 取得 (yfinance > twstock)
-            live = get_live_price(code)
+            live_price = None
             
-            # 2. [強化修正] 若即時 API 也失敗，強制嘗試 Yahoo Web 爬蟲 (確保 MA5 盤後可更新)
-            if live is None:
+            # [優先順序 1] yfinance fast_info (最快)
+            # [優先順序 2] twstock realtime (穩定)
+            live_price = get_live_price(code)
+            
+            # [優先順序 3] Yahoo Web 爬蟲 (終極備援 - 使用新版 fin-streamer)
+            if live_price is None:
                 try:
                     bk_df, _ = fetch_yahoo_web_backup(code)
                     if bk_df is not None and not bk_df.empty:
                         # 簡單檢核是否為今日
                         if bk_df.index[-1].date() == now.date():
-                            live = float(bk_df.iloc[-1]['Close'])
+                            live_price = float(bk_df.iloc[-1]['Close'])
                 except: pass
 
-            if live:
+            if live_price:
                 new_row = pd.DataFrame(
-                    {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
+                    {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
                 )
                 # 防止重複插入 (若原資料源其實已有今日)
