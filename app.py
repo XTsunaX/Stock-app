@@ -16,7 +16,7 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
-import random
+import random  # [修正] 確保 random 模組有被匯入
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
