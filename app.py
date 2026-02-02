@@ -379,70 +379,108 @@ def fetch_futures_list():
     except: pass
     return set()
 
-def fetch_yahoo_web_backup(code):
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        r = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        
-        price_tag = soup.find('span', class_='Fz(32px)')
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change_tag = soup.find('span', class_='Fz(20px)')
-        change = 0.0
-        if change_tag:
-             change_txt = change_tag.text.strip().replace('▲', '').replace('▼', '').replace('+', '').replace(',', '')
-             parent = change_tag.parent
-             if 'C($c-trend-down)' in str(parent):
-                 change = -float(change_txt)
-             else:
-                 change = float(change_txt)
+# [修正] 將網頁爬蟲移至前方，以便被 get_live_price 呼叫，並強化多網址嘗試
+def fetch_yahoo_web_backup(code, return_price_only=False):
+    urls_to_try = [
+        f"https://tw.stock.yahoo.com/quote/{code}",
+        f"https://tw.stock.yahoo.com/quote/{code}.TW",
+        f"https://tw.stock.yahoo.com/quote/{code}.TWO"
+    ]
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    for url in urls_to_try:
+        try:
+            r = requests.get(url, headers=headers, timeout=3)
+            if r.status_code != 200: continue
+            
+            soup = BeautifulSoup(r.text, 'html.parser')
+            
+            # 嘗試抓取主價格
+            price_tag = soup.find('span', class_='Fz(32px)')
+            if not price_tag:
+                 # 若 class 變更，嘗試較寬鬆的查找方式 (例如 main-0-QuoteHeader)
+                 continue 
                  
-        prev_close = price - change
-        
-        open_p = price
-        high_p = price
-        low_p = price
-        
-        details = soup.find_all('li', class_='price-detail-item')
-        for item in details:
-            label = item.find('span', class_='C(#6e7780)')
-            val_tag = item.find('span', class_='Fw(600)')
-            if label and val_tag:
-                lbl = label.text.strip()
-                val_txt = val_tag.text.strip().replace(',', '')
-                if val_txt == '-': continue
-                val = float(val_txt)
-                if "開盤" in lbl: open_p = val
-                elif "最高" in lbl: high_p = val
-                elif "最低" in lbl: low_p = val
+            price = float(price_tag.text.replace(',', ''))
+            
+            if return_price_only:
+                return price
 
-        today = datetime.now().date()
-        data = {
-            'Open': [open_p], 'High': [high_p], 'Low': [low_p], 'Close': [price], 'Volume': [0]
-        }
-        df = pd.DataFrame(data, index=[pd.to_datetime(today)])
-        
-        return df, prev_close
-    except:
-        return None, None
+            change_tag = soup.find('span', class_='Fz(20px)')
+            change = 0.0
+            if change_tag:
+                 change_txt = change_tag.text.strip().replace('▲', '').replace('▼', '').replace('+', '').replace(',', '')
+                 parent = change_tag.parent
+                 if 'C($c-trend-down)' in str(parent):
+                     change = -float(change_txt)
+                 else:
+                     change = float(change_txt)
+                     
+            prev_close = price - change
+            
+            open_p = price
+            high_p = price
+            low_p = price
+            
+            details = soup.find_all('li', class_='price-detail-item')
+            for item in details:
+                label = item.find('span', class_='C(#6e7780)')
+                val_tag = item.find('span', class_='Fw(600)')
+                if label and val_tag:
+                    lbl = label.text.strip()
+                    val_txt = val_tag.text.strip().replace(',', '')
+                    if val_txt == '-': continue
+                    val = float(val_txt)
+                    if "開盤" in lbl: open_p = val
+                    elif "最高" in lbl: high_p = val
+                    elif "最低" in lbl: low_p = val
+
+            today = datetime.now().date()
+            data = {
+                'Open': [open_p], 'High': [high_p], 'Low': [low_p], 'Close': [price], 'Volume': [0]
+            }
+            df = pd.DataFrame(data, index=[pd.to_datetime(today)])
+            
+            return df, prev_close
+        except:
+            continue
+            
+    if return_price_only: return None
+    return None, None
 
 def get_live_price(code):
-    # 優先嘗試 twstock
+    # 1. 優先嘗試 twstock，但必須檢查日期是否為今天
     try:
         realtime_data = twstock.realtime.get(code)
         if realtime_data and realtime_data.get('success'):
-            price_str = realtime_data['realtime'].get('latest_trade_price')
-            if price_str and price_str != '-' and float(price_str) > 0:
-                return float(price_str)
-            bids = realtime_data['realtime'].get('best_bid_price', [])
-            if bids and bids[0] and bids[0] != '-':
-                 return float(bids[0])
+            info = realtime_data.get('info', {})
+            time_str = info.get('time', '')
+            # 格式範例: "2023-10-25 14:30:00"
+            is_valid_date = False
+            if time_str:
+                try:
+                    dt_record = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                    if dt_record.date() == datetime.now().date():
+                        is_valid_date = True
+                except: pass
+            
+            if is_valid_date:
+                price_str = realtime_data['realtime'].get('latest_trade_price')
+                if price_str and price_str != '-' and float(price_str) > 0:
+                    return float(price_str)
+                bids = realtime_data['realtime'].get('best_bid_price', [])
+                if bids and bids[0] and bids[0] != '-':
+                     return float(bids[0])
     except: pass
     
-    # 備案 1：Yahoo Finance API (fast_info)
+    # 2. [修正] 若 twstock 資料過時或失敗，嘗試從 Yahoo 網頁直接爬取 (最準確的盤後收盤價)
+    try:
+        web_price = fetch_yahoo_web_backup(code, return_price_only=True)
+        if web_price: return web_price
+    except: pass
+    
+    # 3. 最後備案：Yahoo Finance API (fast_info)
     try:
         ticker = yf.Ticker(f"{code}.TW")
         price = ticker.fast_info.get('last_price')
@@ -451,14 +489,7 @@ def get_live_price(code):
         price = ticker.fast_info.get('last_price')
         if price and not math.isnan(price): return float(price)
     except: pass
-    
-    # [新增] 備案 2：Yahoo 網頁版爬蟲 (最強制更新)
-    try:
-        df_web, _ = fetch_yahoo_web_backup(code)
-        if df_web is not None and not df_web.empty:
-            return float(df_web.iloc[-1]['Close'])
-    except: pass
-    
+
     return None
 
 def fetch_finmind_backup(code):
@@ -781,7 +812,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 if live < hist_strat.at[idx, 'Low']: hist_strat.at[idx, 'Low'] = live
             else:
                 # 若無今日資料則補上一筆 (無論 source_used 為何，只要是盤後且有新價格就補)
-                # 需確認 live 價格有效
                 new_row = pd.DataFrame(
                     {'Open': live, 'High': live, 'Low': live, 'Close': live, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
