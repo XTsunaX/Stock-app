@@ -16,6 +16,9 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
+import random  # [修正] 確保 random 模組有被匯入
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -378,32 +381,6 @@ def fetch_futures_list():
                     return set(df['Stock Code'].astype(str).str.strip().tolist())
     except: pass
     return set()
-
-def get_live_price(code):
-    try:
-        ticker = yf.Ticker(f"{code}.TW")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
-        
-        ticker = yf.Ticker(f"{code}.TWO")
-        price = ticker.fast_info.get('last_price')
-        if price and not math.isnan(price) and price > 0: 
-            return float(price)
-    except: pass
-    
-    try:
-        realtime_data = twstock.realtime.get(code)
-        if realtime_data and realtime_data.get('success'):
-            price_str = realtime_data['realtime'].get('latest_trade_price')
-            if price_str and price_str != '-' and float(price_str) > 0:
-                return float(price_str)
-            bids = realtime_data['realtime'].get('best_bid_price', [])
-            if bids and bids[0] and bids[0] != '-':
-                 return float(bids[0])
-    except: pass
-    
-    return None
 
 def fetch_finmind_backup(code):
     try:
