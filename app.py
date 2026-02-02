@@ -413,67 +413,73 @@ def get_live_price(code):
     
     return None
 
-# [修正] 爬蟲邏輯強化：加入自動重試 (Retry) 與 隨機 User-Agent 機制
-def fetch_yahoo_web_backup(code):
+# [重要修正] 棄用 HTML 爬蟲，改用 Yahoo Finance Chart API (JSON)
+# 這是最穩定的即時數據來源，幾乎不會被擋，且包含完整的當日 K 線資訊
+def fetch_yahoo_chart_api(code):
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{code}"
+        # 使用 5 天範圍，1 天頻率，確保能抓到最近的日 K
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW?interval=1d&range=5d"
         
-        # 設定重試機制
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504, 429])
         session.mount('https://', HTTPAdapter(max_retries=retries))
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
-        r = session.get(url, headers=headers, timeout=8)
-        soup = BeautifulSoup(r.text, 'html.parser')
+        r = session.get(url, headers=headers, timeout=5)
+        data = r.json()
         
-        # 1. 嘗試透過 fin-streamer 標籤抓取 (最穩定)
-        price = None
-        streamer = soup.find('fin-streamer', {'data-field': 'regularMarketPrice'})
-        if streamer and streamer.get('value'):
-            try: price = float(streamer.get('value').replace(',', ''))
-            except: pass
+        result = data.get('chart', {}).get('result', [])
+        if not result:
+            # 嘗試上櫃 .TWO
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TWO?interval=1d&range=5d"
+            r = session.get(url, headers=headers, timeout=5)
+            data = r.json()
+            result = data.get('chart', {}).get('result', [])
             
-        # 2. 如果 fin-streamer 失敗，嘗試透過舊版 meta tag
-        if price is None:
-            meta_price = soup.find('meta', {'itemprop': 'price'})
-            if meta_price and meta_price.get('content'):
-                try: price = float(meta_price.get('content').replace(',', ''))
-                except: pass
-
-        if price is None: return None, None
-
-        # 抓取漲跌幅 (用於計算昨收)
-        change = 0.0
-        # 嘗試從 fin-streamer 抓取漲跌額
-        change_streamer = soup.find('fin-streamer', {'data-field': 'regularMarketChange'})
-        if change_streamer and change_streamer.get('value'):
-             try: change = float(change_streamer.get('value').replace(',', ''))
-             except: pass
-        
-        prev_close = price - change
-        
-        # 構建簡易 DataFrame
-        today = datetime.now().date()
-        data = {
-            'Open': [price], 'High': [price], 'Low': [price], 'Close': [price], 'Volume': [0]
-        }
-        df = pd.DataFrame(data, index=[pd.to_datetime(today)])
-        
-        return df, prev_close
-    except:
-        return None, None
+        if result:
+            quote = result[0]
+            meta = quote.get('meta', {})
+            timestamp = quote.get('timestamp', [])
+            indicators = quote.get('indicators', {}).get('quote', [{}])[0]
+            
+            closes = indicators.get('close', [])
+            opens = indicators.get('open', [])
+            highs = indicators.get('high', [])
+            lows = indicators.get('low', [])
+            volumes = indicators.get('volume', [])
+            
+            if timestamp and closes:
+                # 取最後一筆資料
+                last_idx = -1
+                # 排除最後一筆如果是 None 的情況 (盤中可能發生)
+                if closes[last_idx] is None:
+                    last_idx -= 1
+                
+                if abs(last_idx) <= len(closes):
+                    last_ts = timestamp[last_idx]
+                    last_date = datetime.fromtimestamp(last_ts).date()
+                    
+                    price = closes[last_idx]
+                    prev_close = meta.get('chartPreviousClose', price)
+                    
+                    # 建立 DataFrame 結構
+                    df_data = {
+                        'Open': [opens[last_idx] if opens[last_idx] else price],
+                        'High': [highs[last_idx] if highs[last_idx] else price],
+                        'Low': [lows[last_idx] if lows[last_idx] else price],
+                        'Close': [price],
+                        'Volume': [volumes[last_idx] if volumes[last_idx] else 0]
+                    }
+                    df = pd.DataFrame(df_data, index=[pd.to_datetime(last_date)])
+                    return df, prev_close
+                    
+    except Exception:
+        pass
+    
+    return None, None
 
 def fetch_finmind_backup(code):
     try:
@@ -708,15 +714,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 last_dt = last_dt.astimezone(pytz.timezone('Asia/Taipei')).replace(tzinfo=None)
             now_dt = datetime.now().replace(tzinfo=None)
             if (now_dt - last_dt).days > 3: return False
-            is_same_day = (last_dt.date() == now_dt.date())
-            if is_same_day:
-                live_price = get_live_price(code)
-                if live_price:
-                    diff_pct = abs(last_price - live_price) / live_price
-                    if diff_pct > 0.05: return False
+            # [修正] 移除嚴格的 live_price 檢查，因為 live_price 可能失效
             return True
         except: return False
 
+    # 1. 抓歷史資料 (yfinance history)
     try:
         ticker = yf.Ticker(f"{code}.TW")
         hist_yf = ticker.history(period="3mo")
@@ -752,13 +754,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             source_used = "finmind"
 
     if hist.empty:
-        df_web, web_prev_close = fetch_yahoo_web_backup(code)
-        if df_web is not None and not df_web.empty:
-            hist = df_web
-            hist['High'] = hist[['High', 'Close']].max(axis=1)
-            hist['Low'] = hist[['Low', 'Close']].min(axis=1)
-            backup_prev_close = web_prev_close
-            source_used = "web_backup"
+        # [修正] 使用新的 Chart API 作為備援
+        df_chart, _ = fetch_yahoo_chart_api(code)
+        if df_chart is not None and not df_chart.empty:
+            hist = df_chart
+            source_used = "chart_api"
 
     if hist.empty: return None
 
@@ -778,21 +778,20 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             hist_strat = hist_strat.iloc[:-1]
     else:
         # 盤後 (13:30 後)
-        if not is_today_in_hist and source_used != "web_backup":
+        # 如果歷史資料中沒有今天的資料 (代表尚未更新)，則必須補上
+        if not is_today_in_hist:
             live_price = None
             
-            # [優先順序 1] yfinance fast_info (最快)
-            # [優先順序 2] twstock realtime (穩定)
+            # [優先順序 1] yfinance fast_info
             live_price = get_live_price(code)
             
-            # [優先順序 3] Yahoo Web 爬蟲 (終極備援 - 使用新版 fin-streamer)
+            # [優先順序 2] Chart API (非常重要: 這是收盤後最準的來源)
             if live_price is None:
                 try:
-                    bk_df, _ = fetch_yahoo_web_backup(code)
-                    if bk_df is not None and not bk_df.empty:
-                        # 簡單檢核是否為今日
-                        if bk_df.index[-1].date() == now.date():
-                            live_price = float(bk_df.iloc[-1]['Close'])
+                    df_chart, _ = fetch_yahoo_chart_api(code)
+                    if df_chart is not None and not df_chart.empty:
+                        if df_chart.index[-1].date() == now.date():
+                            live_price = float(df_chart.iloc[-1]['Close'])
                 except: pass
 
             if live_price:
@@ -800,7 +799,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                     {'Open': live_price, 'High': live_price, 'Low': live_price, 'Close': live_price, 'Volume': 0},
                     index=[pd.to_datetime(now.date())]
                 )
-                # 防止重複插入 (若原資料源其實已有今日)
                 if hist_strat.index[-1].date() != now.date():
                     hist_strat = pd.concat([hist_strat, new_row])
 
