@@ -372,7 +372,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
     st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
-    st.link_button("🚨 證交所處置股公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
+    st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
+    st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", use_container_width=True)
 
 @st.cache_data(ttl=86400)
 def fetch_futures_list():
@@ -687,7 +688,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
             
             # 取得即時資料的日期 (通常是今天)
-            # twstock realtime 回傳的 time 字串格式 "2024-01-01 13:30:00"
             rt_time_str = rt_data['info']['time']
             rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
             rt_date_parsed = pd.Timestamp(rt_dt.date())
@@ -709,17 +709,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 
                 last_hist_date = hist.index[-1]
                 
-                # 判斷邏輯：
-                # 1. 如果歷史資料的最後一天 < 今天 (today_date) -> 代表需要「新增」一筆
-                # 2. 如果歷史資料的最後一天 == 今天 -> 代表需要「更新」這一筆
-                # 3. 如果 twstock 的 fetch_31 抓到了昨天的資料，last_hist_date 就會是昨天，這裡就會正確 append 今天
-                
-                # 特殊情況處理：若現在是盤後，且 twstock realtime 的日期 == last_hist_date，那代表歷史資料已經包含今天收盤
-                # 此時我們依然用 realtime 覆蓋一下，確保是最新的
-                
                 if last_hist_date < today_date:
-                    # 檢查是否為交易日 (簡單判斷: 週一到週五，且時間 > 09:00)
-                    # 這裡使用 today_date 作為新 index，避免 rt_date_parsed 因為某些原因滯後
                     is_weekday = datetime.now(tz_tw).weekday() < 5
                     
                     if is_weekday:
@@ -736,15 +726,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                     hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
                     hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
                     hist.at[last_hist_date, 'Volume'] = rt_vol
-                    # 如果 Open 沒有值或為 0，也補一下
                     if hist.at[last_hist_date, 'Open'] == 0:
                         hist.at[last_hist_date, 'Open'] = rt_open
     except:
-        pass # 若即時資料抓取失敗，就維持原狀
+        pass 
 
     if hist.empty: return None
 
-    # 確保資料結構整潔
     if hist.index.tzinfo is not None:
         hist.index = hist.index.tz_localize(None)
 
@@ -757,7 +745,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     strategy_base_price = hist_strat.iloc[-1]['Close']
     
-    # [修正] 漲跌幅計算：確保基準是「倒數第二筆」(即昨天)
     if len(hist_strat) >= 2:
         prev_of_base = hist_strat.iloc[-2]['Close']
     else:
@@ -800,8 +787,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
                 points.append({"val": l_val, "tag": f"{prefix}低"})
 
-    # [修正] 5MA 計算
-    # 確保資料量足夠，且包含最新的今日資料
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
         sum_val = sum(Decimal(str(x)) for x in last_5_closes)
@@ -890,14 +875,12 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         if is_force or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show):
              full_calc_points.append(p) 
     
-    # [修正] 改用參數傳入的 saved_notes_dict
     manual_note = ""
     if saved_notes_dict:
         manual_note = saved_notes_dict.get(code, "")
     
     strategy_note, auto_note = generate_note_from_points(full_calc_points, manual_note, show_3d=False)
     
-    # [修正] 改用參數傳入的 name_map_dict
     if name_hint:
         final_name = name_hint
     elif name_map_dict and code in name_map_dict:
@@ -910,7 +893,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     elif "空" in strategy_note: light = "🟢"
     final_name_display = f"{light} {final_name}"
     
-    # [修正] 改用參數傳入的 futures_set
     has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
@@ -926,7 +908,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # 主介面 (Tabs)
 # ==========================================
 
-# [修正] 新增 台股行事曆 分頁
 tab1, tab2, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📅 台股行事曆"])
 
 with tab1:
@@ -993,7 +974,6 @@ with tab1:
             placeholder="輸入 2330 或 台積電..."
         )
 
-    # [修正] 主畫面按鈕並排 - 移除可能導致按鈕消失的 CSS
     c_run, c_space = st.columns([1.5, 5])
     
     with c_run:
@@ -1103,18 +1083,11 @@ with tab1:
         st.session_state.stock_data = pd.DataFrame() 
         fetch_cache = {}
         
-        # ------------------------------------------------------------------
-        # [多執行緒平行處理核心]
-        # ------------------------------------------------------------------
-        
-        # 1. 準備執行緒需要的靜態資料副本
         futures_copy = set(st.session_state.futures_list)
         notes_copy = dict(st.session_state.saved_notes)
         code_map_copy, _ = load_local_stock_names()
 
-        # 2. 定義任務函式
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
-            # [修正] 加入隨機延遲，避免瞬間大量請求導致被鎖 IP
             time.sleep(random.uniform(0.5, 1.5))
             try:
                 data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
@@ -1128,15 +1101,12 @@ with tab1:
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
             
-            # 將任務參數打包
             tasks_to_run.append((code, name, source, extra))
             
             if source == 'upload': 
                 upload_current += 1
             seen.add((code, source))
 
-        # 3. 開始執行
-        # [修正] 將 max_workers 從 8 降為 4，減緩請求頻率
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {}
             for t in tasks_to_run:
@@ -1161,8 +1131,6 @@ with tab1:
                     data['_source_rank'] = 1 if t_source == 'upload' else 2
                     existing_data[t_code] = data
         
-        # ------------------------------------------------------------------
-        
         bar.empty()
         status_text.empty()
         
@@ -1170,7 +1138,6 @@ with tab1:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
 
-    # [修正] 確保當有資料時，下方按鈕區塊一定會顯示，不受 btn_run 狀態影響
     if not st.session_state.stock_data.empty:
         df_all = st.session_state.stock_data.copy()
         
@@ -1269,11 +1236,9 @@ with tab1:
         if not edited_df.empty:
             trigger_rerun = False
             
-            # [修正] 刪除並遞補邏輯優化
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
-                    # 1. 處理移除
                     remove_codes = to_remove["代號"].unique()
                     for c in remove_codes:
                         st.session_state.ignored_stocks.add(str(c))
@@ -1282,7 +1247,6 @@ with tab1:
                         ~st.session_state.stock_data["代號"].isin(remove_codes)
                     ]
                     
-                    # 2. 立即遞補 (在存檔前)
                     upload_count = len(st.session_state.stock_data[st.session_state.stock_data['_source'] == 'upload'])
                     limit = st.session_state.limit_rows
                     needed = limit - upload_count
@@ -1303,7 +1267,6 @@ with tab1:
                              if c_code in st.session_state.ignored_stocks: continue
                              if c_code in existing_codes: continue
                              
-                             # 抓取資料
                              data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
                              if data:
                                  data['_source'] = c_source
@@ -1318,11 +1281,9 @@ with tab1:
                              
                              if replenished_count >= needed: break
                     
-                    # 3. 存檔並重整
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
 
-            # 自動更新價格邏輯 (僅在未觸發刪除重整時執行)
             if not trigger_rerun and st.session_state.auto_update_last_row:
                 last_visible_idx = len(edited_df) - 1
                 if last_visible_idx >= 0:
@@ -1348,7 +1309,7 @@ with tab1:
                                                 base_auto = auto_notes_dict.get(c_code, "")
                                                 pure_manual = ""
                                                 b_auto = str(base_auto).strip()
-                                                n_note = str(new_note).strip()
+                                                n_note = str(nn).strip()
                                                 
                                                 if b_auto and n_note.startswith(b_auto):
                                                     pure_manual = n_note[len(b_auto):]
@@ -1367,7 +1328,6 @@ with tab1:
             if trigger_rerun:
                 st.rerun()
 
-        # 自動遞補邏輯 (針對非刪除動作導致的缺額)
         df_curr = st.session_state.stock_data
         if not df_curr.empty:
             if '_source' not in df_curr.columns: upload_count = len(df_curr)
@@ -1413,7 +1373,6 @@ with tab1:
 
         st.markdown("---")
         
-        # [修正] 調整按鈕顯示邏輯與排版，確保不消失
         col_btn, col_clear, _ = st.columns([2, 2, 4])
         with col_btn:
             btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
@@ -1571,9 +1530,7 @@ with tab2:
             column_config={"_profit": None, "_note_type": None, "_is_base": None}
         )
 
-# [修正] 台股行事曆 (修正版：含左右切換與週五選順延排除)
 with tab3:
-    # 透過回呼函式處理按鈕邏輯
     def change_month(delta):
         st.session_state.cal_month += delta
         if st.session_state.cal_month > 12:
@@ -1583,22 +1540,14 @@ with tab3:
             st.session_state.cal_month = 12
             st.session_state.cal_year -= 1
         
-        # [關鍵修復] 強制清除下拉選單的暫存狀態，讓 selectbox 重新讀取 session_state
         if 'sel_year_box' in st.session_state:
             del st.session_state['sel_year_box']
         if 'sel_month_box' in st.session_state:
             del st.session_state['sel_month_box']
 
-    # 頂部：下拉式選單 (恢復)
     col_sel_y, col_sel_m = st.columns(2)
     with col_sel_y:
-        # 使用 key 綁定 session_state，但因為有按鈕互動，需額外處理同步
-        # 這裡採用：如果 user 改變 selectbox -> 更新 state
-        # 如果 user 按按鈕 -> 更新 state 並刪除 key 以重置 selectbox
-        
-        # 為了避免 key 衝突，這裡使用動態 index
         current_year_idx = range(2024, 2031).index(st.session_state.cal_year)
-        
         new_year = st.selectbox(
             "年份", 
             range(2024, 2031), 
@@ -1624,7 +1573,6 @@ with tab3:
     sel_year = st.session_state.cal_year
     sel_month = st.session_state.cal_month
 
-    # 中央：導覽列與大標題
     col_prev, col_header, col_next = st.columns([1, 8, 1])
     
     with col_prev:
@@ -1636,10 +1584,8 @@ with tab3:
     with col_header:
         st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
-    # 取得該年度的國定假日資料
     def get_holidays(year):
         h = {}
-        # 2025 年
         if year == 2025:
              h.update({
                  (1, 1): "元旦",
@@ -1650,7 +1596,6 @@ with tab3:
                  (10, 6): "中秋節", (10, 10): "國慶日"
              })
              
-        # 2026 年 (民國 115 年) 完整列表
         if year == 2026:
             h.update({
                 (1, 1): "元旦",
@@ -1673,11 +1618,10 @@ with tab3:
     def is_market_closed_func(d_date):
         if d_date.weekday() >= 5: return True
         name = current_holidays.get((d_date.month, d_date.day), "")
-        if name and name != "封關日": # 移除行憲紀念日的排除邏輯，使其休市
+        if name and name != "封關日":
              return True
         return False
 
-    # 計算結算日 (嚴格順延邏輯 + 跨月檢查)
     real_settlements = {} 
     
     def calculate_month_settlements(y, m):
@@ -1701,7 +1645,6 @@ with tab3:
                 
         monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
         
-        # 計算該月份「月結算」的實際日期 (用於排除同日週五選)
         real_monthly_date = None
         if monthly_raw:
             check = monthly_raw
@@ -1728,10 +1671,8 @@ with tab3:
             
         return local_results
 
-    # 1. 取得當前月份資料
     current_month_data = calculate_month_settlements(sel_year, sel_month)
     
-    # 2. 取得前一個月資料 (處理跨月順延，例如 2月週選延到3月)
     if sel_month == 1:
         prev_y, prev_m = sel_year - 1, 12
     else:
@@ -1739,21 +1680,15 @@ with tab3:
         
     prev_month_data = calculate_month_settlements(prev_y, prev_m)
     
-    # 合併兩月資料進行檢查
     all_raw_data = prev_month_data + current_month_data
     
     for raw_date, s_type, s_code, m_date in all_raw_data:
         check_date = raw_date
         while is_market_closed_func(check_date):
             check_date += timedelta(days=1)
-            # 防止無限迴圈
             if (check_date - raw_date).days > 30: break
         
-        # [篩選1] 只顯示落在「當前選取月份」的結算日
         if check_date.year == sel_year and check_date.month == sel_month:
-            
-            # [篩選2] 若週五選順延後撞到「該契約所屬月份」的月結算日，則不顯示
-            # 注意：m_date 是該 raw_date 原始月份的月結算日
             if s_type == 'F' and check_date == m_date:
                 continue
             
