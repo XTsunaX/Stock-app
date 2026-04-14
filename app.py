@@ -537,7 +537,6 @@ def recalculate_row(row, points_map):
         return status
     except: return status
 
-# [修正] 戰略備註生成器 (穩定版)
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
     
@@ -603,8 +602,6 @@ def generate_note_from_points(points, manual_note, show_3d):
             
     return auto_note, auto_note
 
-# [修正] 徹底重寫資料抓取邏輯
-# 優先順序: twstock (最準確的昨日資料) -> yahoo_fin (使用者指定) -> FinMind -> yfinance (備用)
 def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
     code = str(code).strip()
     
@@ -612,10 +609,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     source_used = "none"
     
     # --- 1. 嘗試使用 twstock (fetch_31) ---
-    # twstock 直接抓取證交所資料，對於台股的「昨日收盤」最為準確
     try:
         stock = twstock.Stock(code)
-        # fetch_31 會抓取最近 31 天資料
         tw_data = stock.fetch_31()
         if tw_data and len(tw_data) > 0:
             df_tw = pd.DataFrame(tw_data)
@@ -624,7 +619,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
             df_tw = df_tw.rename(columns=rename_map)
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            # 確保欄位存在且為數值
             for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
             
             if not df_tw.empty:
@@ -636,8 +630,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     # --- 2. 嘗試使用 yahoo_fin (使用者指定) ---
     if hist.empty and si is not None:
         try:
-            # yahoo_fin 需要完整代號 .TW 或 .TWO
-            # 先試 .TW
             try:
                 df_yf = si.get_data(f"{code}.TW", start_date=(datetime.now() - timedelta(days=40)))
             except:
@@ -647,7 +639,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                      df_yf = pd.DataFrame()
             
             if not df_yf.empty:
-                # yahoo_fin 的欄位通常是小寫 open, high, low, close, volume
                 rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
                 df_yf = df_yf.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
@@ -677,7 +668,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 source_used = "yfinance"
         except: pass
 
-    # [修正] Realtime Patch：嚴格的日期比對與合併
     try:
         rt_data = twstock.realtime.get(code)
         if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
@@ -687,23 +677,19 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
             rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
             
-            # 取得即時資料的日期 (通常是今天)
             rt_time_str = rt_data['info']['time']
             rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
             rt_date_parsed = pd.Timestamp(rt_dt.date())
             
-            # 取得系統今日日期 (校正用)
             tz_tw = pytz.timezone('Asia/Taipei')
             today_date = pd.Timestamp(datetime.now(tz_tw).date())
 
             if hist.empty:
-                # 若完全無歷史資料，建立單筆
                 hist = pd.DataFrame([{
                     'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
                     'Close': rt_price, 'Volume': rt_vol
                 }], index=[today_date])
             else:
-                # 確保 index 格式一致 (移除時區)
                 if hist.index.tzinfo is not None:
                     hist.index = hist.index.tz_localize(None)
                 
@@ -721,7 +707,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                         hist.sort_index(inplace=True)
                 
                 elif last_hist_date == today_date:
-                    # 更新今日數據
                     hist.at[last_hist_date, 'Close'] = rt_price
                     hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
                     hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
@@ -1190,6 +1175,10 @@ with tab1:
         cols_to_fmt = ["當日漲停價", "當日跌停價", "+3%", "-3%", "自訂價(可修)"]
         for c in cols_to_fmt:
             if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
+
+        # [修正處] 預先將「收盤價」與「漲跌幅」轉換為物件 (object) 型態，避免寫入字串時發生 TypeError 錯誤
+        if "收盤價" in df_display.columns: df_display["收盤價"] = df_display["收盤價"].astype(object)
+        if "漲跌幅" in df_display.columns: df_display["漲跌幅"] = df_display["漲跌幅"].astype(object)
 
         if "收盤價" in df_display.columns and "漲跌幅" in df_display.columns:
             for i in range(len(df_display)):
