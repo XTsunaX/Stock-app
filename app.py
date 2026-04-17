@@ -1176,7 +1176,6 @@ with tab1:
         for c in cols_to_fmt:
             if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
 
-        # [修正處] 預先將「收盤價」與「漲跌幅」轉換為物件 (object) 型態，避免寫入字串時發生 TypeError 錯誤
         if "收盤價" in df_display.columns: df_display["收盤價"] = df_display["收盤價"].astype(object)
         if "漲跌幅" in df_display.columns: df_display["漲跌幅"] = df_display["漲跌幅"].astype(object)
 
@@ -1535,20 +1534,37 @@ with tab_fibo:
         for r in ratios:
             up_trend = float(Decimal(str(fibo_high - (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
             down_trend = float(Decimal(str(fibo_low + (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            
+            # 使用 :g 格式化字串，自動去除浮點數後方多餘的 0 (如 -2.0 會變成 -2)
+            r_str = f"{r:g}"
+            
             fibo_data.append({
-                "比例": r,
+                "比例": r_str,
                 "上升趨勢(整數)": int(up_trend),
-                "下降趨勢(整數)": int(down_trend)
+                "下降趨勢(整數)": int(down_trend),
+                "_raw_r": r  # 隱藏欄位，用於樣式判斷
             })
         
         df_fibo = pd.DataFrame(fibo_data)
         
         def style_fibo(row):
-            if row["比例"] in [0, 1]:
+            # 指定重要點位
+            important_ratios = [0, 0.382, 0.618, 1, 1.618, 2, 2.618]
+            # 取絕對值確保負數的對應重要點位也會被上色
+            if abs(row["_raw_r"]) in important_ratios:
                 return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
             return [''] * len(row)
             
-        st.dataframe(df_fibo.style.apply(style_fibo, axis=1), use_container_width=True, hide_index=True)
+        # 計算表格高度使其一次完整顯示，不再需要滾動 (約每行 36px + 標題列)
+        table_height = (len(df_fibo) + 1) * 36
+            
+        st.dataframe(
+            df_fibo.style.apply(style_fibo, axis=1), 
+            use_container_width=True, 
+            hide_index=True,
+            height=table_height,
+            column_config={"_raw_r": None} # 將用來輔助判斷的原始數值欄位隱藏
+        )
     else:
         st.warning("波段高點必須大於波段低點且大於0")
 
