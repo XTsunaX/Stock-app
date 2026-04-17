@@ -893,7 +893,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # 主介面 (Tabs)
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📅 台股行事曆"])
+tab1, tab2, tab_fibo, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📅 台股行事曆"])
 
 with tab1:
     col_search, col_file = st.columns([2, 1])
@@ -1438,7 +1438,7 @@ with tab2:
     with c2: shares = st.number_input("股數", value=1000, step=1000)
     with c3: discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0)
     with c4: min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
-    with c5: tick_count = st.number_input("顯示檔數 (檔)", value=5, min_value=1, max_value=50, step=1)
+    with c5: tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1)
     direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
@@ -1518,6 +1518,39 @@ with tab2:
             df_calc.style.apply(style_calc_row, axis=1), use_container_width=False, hide_index=True, height=table_height,
             column_config={"_profit": None, "_note_type": None, "_is_base": None}
         )
+
+with tab_fibo:
+    st.markdown("#### 📈 費波計算")
+    col_high, col_low = st.columns(2)
+    with col_high:
+        fibo_high = st.number_input("輸入波段高點：", value=33310.0, step=1.0)
+    with col_low:
+        fibo_low = st.number_input("輸入波段低點：", value=33071.0, step=1.0)
+        
+    if fibo_high > 0 and fibo_low > 0 and fibo_high >= fibo_low:
+        diff = fibo_high - fibo_low
+        ratios = [-2.618, -2.5, -2.382, -2, -1.618, -1.5, -1.382, 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.382, 1.5, 1.618, 2, 2.382, 2.5, 2.618]
+        
+        fibo_data = []
+        for r in ratios:
+            up_trend = float(Decimal(str(fibo_high - (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            down_trend = float(Decimal(str(fibo_low + (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            fibo_data.append({
+                "比例": r,
+                "上升趨勢(整數)": int(up_trend),
+                "下降趨勢(整數)": int(down_trend)
+            })
+        
+        df_fibo = pd.DataFrame(fibo_data)
+        
+        def style_fibo(row):
+            if row["比例"] in [0, 1]:
+                return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
+            return [''] * len(row)
+            
+        st.dataframe(df_fibo.style.apply(style_fibo, axis=1), use_container_width=True, hide_index=True)
+    else:
+        st.warning("波段高點必須大於波段低點且大於0")
 
 with tab3:
     def change_month(delta):
