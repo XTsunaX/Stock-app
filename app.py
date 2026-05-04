@@ -88,7 +88,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
     try:
-        # 移除 session=yf_session，讓 yfinance 自行處理
+        # 移除 session 參數，讓 yfinance 自行處理連線避免 RateLimitError
         stock_data = yf.Ticker(ticker)
         df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
 
@@ -1311,14 +1311,13 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
-    
     if not df_calc.empty:
-        # [修復] 將要顯示的欄位獨立出來，不依賴 Streamlit 的隱藏功能
+        # [修復] 將要顯示的欄位獨立出來，不依賴 Streamlit column_config 的隱藏功能
         display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
-        df_display = df_calc[display_cols]
+        df_display = df_calc[display_cols].copy()
         
         def style_calc_row(row):
-            # 透過 row.name (index) 去原始 df_calc 抓取判斷條件
+            # 透過 row.name 取得對應原始 df_calc 的輔助判斷欄位
             idx = row.name
             is_base = df_calc.loc[idx, '_is_base']
             nt = df_calc.loc[idx, '_note_type']
@@ -1331,14 +1330,16 @@ with tab2:
             if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
             return ['color: gray'] * len(row)
 
-        table_height = (len(df_calc) + 1) * 35 
-        st.dataframe(
-            df_display.style.apply(style_calc_row, axis=1), 
-            use_container_width=True, 
-            hide_index=True, 
-            height=table_height
-        )
+        styled_df = df_display.style.apply(style_calc_row, axis=1)
+        
+        # 隱藏 Index 的相容寫法 (避免使用 st.dataframe 內的 hide_index 導致報錯消失)
+        try:
+            styled_df = styled_df.hide(axis="index")
+        except:
+            pass
 
+        table_height = (len(df_calc) + 1) * 35 
+        st.dataframe(styled_df, use_container_width=True, height=table_height)
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1478,9 +1479,16 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # [修改] 使用 drop 移除隱藏欄位確保表格穩定顯示
-                    styled_fibo = df_fibo.drop(columns=['_raw_r']).style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
-                    st.dataframe(styled_fibo, use_container_width=True, hide_index=True, height=table_height)
+                    # 隱藏 Index 及輔助欄位相容寫法
+                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
+                    styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
+                    
+                    try:
+                        styled_fibo = styled_fibo.hide(axis="index")
+                    except:
+                        pass
+                        
+                    st.dataframe(styled_fibo, use_container_width=True, height=table_height)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
