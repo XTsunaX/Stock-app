@@ -14,3 +14,4 @@ feedparser
 plotly
 numpy
 yahoo_fin
+tvdatafeed
