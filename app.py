@@ -1140,6 +1140,7 @@ with tab2:
     
     for i in ticks_range:
         p = move_tick(view_p, i)
+        
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
@@ -1177,25 +1178,29 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
-    def style_calc_row(row):
-        is_base = row['_is_base']
-        nt = row['_note_type']
-        prof = row['_profit']
-        if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
-        if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
-        if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-        if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-        return ['color: gray'] * len(row)
-
+    
     if not df_calc.empty:
-        # [修復] 將輔助欄位隔離，避免表格消失
-        df_calc_disp = df_calc[["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]].copy()
-        styled_calc = df_calc_disp.style.apply(lambda r: style_calc_row(df_calc.loc[r.name]), axis=1)
-        try: styled_calc = styled_calc.hide(axis="index")
-        except: pass
+        # [修復] 將顯示欄位抽出，並從原資料取得對應條件以修正 Shape Mismatch 錯誤
+        display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
+        df_calc_disp = df_calc[display_cols]
+        
+        def style_calc_row_disp(row):
+            idx = row.name
+            is_base = df_calc.loc[idx, '_is_base']
+            nt = df_calc.loc[idx, '_note_type']
+            prof = df_calc.loc[idx, '_profit']
+            
+            n_cols = len(display_cols)
+            if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * n_cols
+            if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * n_cols
+            if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * n_cols
+            if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * n_cols 
+            if prof < 0: return ['color: #00cc00; font-weight: bold'] * n_cols 
+            return ['color: gray'] * n_cols
+
         table_height = (len(df_calc) + 1) * 35 
-        st.dataframe(styled_calc, use_container_width=True, height=table_height)
+        styled_calc = df_calc_disp.style.apply(style_calc_row_disp, axis=1)
+        st.dataframe(styled_calc, use_container_width=True, hide_index=True, height=table_height)
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1301,7 +1306,7 @@ with tab_fibo:
         plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, line_width=st.session_state.ma_w, show_vol=s_vol)
 
     with tab_fibo_manual:
-        st.write("📌 **手 পণ্ডিত輸入高低點，計算費波納契回撤與延伸點位**")
+        st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
         col_table, col_empty = st.columns([1, 3])
         
         with col_table:
@@ -1329,20 +1334,18 @@ with tab_fibo:
                     
                     df_fibo = pd.DataFrame(fibo_data)
                     
+                    # [修復] 將隱藏邏輯分離，避免 Shape Mismatch
+                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
+                    
                     def style_fibo_manual(row):
                         important_ratios = [0.0, 0.382, 0.5, 0.618, 1.0]
                         if df_fibo.loc[row.name, "_raw_r"] in important_ratios:
-                            return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
-                        return [''] * len(row)
+                            return ['background-color: #ffffcc; color: black; font-weight: bold;'] * 2
+                        return [''] * 2
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
-                    styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
-                    
-                    try: styled_fibo = styled_fibo.hide(axis="index")
-                    except: pass
-                        
-                    st.dataframe(styled_fibo, use_container_width=True, height=table_height)
+                    styled_fibo = df_fibo_disp.style.apply(style_fibo_manual, axis=1)
+                    st.dataframe(styled_fibo, use_container_width=True, hide_index=True, height=table_height)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
