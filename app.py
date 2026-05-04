@@ -100,7 +100,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             if not df.empty:
                 ticker = ticker_two 
 
-        # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
+        # TWF=F (台指期) 異常保護
         if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
             st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
             ticker = "^TWII"
@@ -160,7 +160,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
     else: fig.add_trace(kline_trace)
 
-    # 繪製均線 (5MA=橘, 10MA=淺藍, 20MA=綠, 60MA=黃)
+    # 繪製均線
     ma_settings = {
         'MA5': ('orange', ma_flags['5']),
         'MA10': ('lightblue', ma_flags['10']),
@@ -362,7 +362,6 @@ if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = "2454
 if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = "2603 長榮"
 if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = "3450 聯鈞"
 
-# 控制圖表預設時間週期 ("1d" 或 "5m")
 if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
 if 'fibo_font_size' not in st.session_state: st.session_state.fibo_font_size = 15
 
@@ -1274,7 +1273,9 @@ with tab2:
     
     for i in ticks_range:
         p = move_tick(view_p, i)
-        if p > limit_up or p < limit_down: continue
+        
+        # [修復] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
+        if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
             buy_price = base_p; sell_price = p
@@ -1311,13 +1312,14 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
+    
     if not df_calc.empty:
-        # [修復] 將要顯示的欄位獨立出來，不依賴 Streamlit column_config 的隱藏功能
+        # [修復] 將要顯示的乾淨欄位獨立，不依賴 Streamlit column_config 的隱藏功能，解決表格崩潰消失
         display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
         df_display = df_calc[display_cols].copy()
         
         def style_calc_row(row):
-            # 透過 row.name 取得對應原始 df_calc 的輔助判斷欄位
+            # 透過 row.name (index) 去原始 df_calc 抓取判斷條件
             idx = row.name
             is_base = df_calc.loc[idx, '_is_base']
             nt = df_calc.loc[idx, '_note_type']
@@ -1330,16 +1332,9 @@ with tab2:
             if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
             return ['color: gray'] * len(row)
 
-        styled_df = df_display.style.apply(style_calc_row, axis=1)
-        
-        # 隱藏 Index 的相容寫法 (避免使用 st.dataframe 內的 hide_index 導致報錯消失)
-        try:
-            styled_df = styled_df.hide(axis="index")
-        except:
-            pass
-
         table_height = (len(df_calc) + 1) * 35 
-        st.dataframe(styled_df, use_container_width=True, height=table_height)
+        styled_df = df_display.style.apply(style_calc_row, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=table_height)
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1479,16 +1474,11 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # 隱藏 Index 及輔助欄位相容寫法
+                    # 使用與上面相同的方式，確保安全隱藏
                     df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
                     styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
-                    
-                    try:
-                        styled_fibo = styled_fibo.hide(axis="index")
-                    except:
-                        pass
                         
-                    st.dataframe(styled_fibo, use_container_width=True, height=table_height)
+                    st.dataframe(styled_fibo, use_container_width=True, hide_index=True, height=table_height)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
