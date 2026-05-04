@@ -46,10 +46,11 @@ def round_to_tick(price):
 
 def plot_fibonacci_chart(symbol, interval, lookback=90):
     # 轉換 yfinance 的代號 (台股需加 .TW)
-    # 註：未來串接永豐證券 API 時，請將此區塊替換為永豐的 shioaji 取價邏輯
     ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^")) else f"{symbol}.TW"
 
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    
+    # 改用 yf.Ticker() 避免多層級欄位導致的 KeyError
     stock_data = yf.Ticker(ticker)
     df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
 
@@ -57,17 +58,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料。")
         return
 
-    if df.empty or len(df) < lookback:
-        st.error(f"無法獲取足夠的數據 ({ticker}, {interval})。")
-        return
-
     # 取過去 90 根 K 棒
     df_subset = df.tail(lookback).copy()
     
-    # [修正] 新增防呆：移除掉 High 或 Low 是 NaN 的無效資料列
+    # 移除空值防呆
     df_subset = df_subset.dropna(subset=['High', 'Low'])
     
-    # [修正] 新增防呆：如果清掉 NaN 後沒有資料了，就提示錯誤並退出
     if df_subset.empty:
         st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
         return
@@ -76,7 +72,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
         high_90 = float(df_subset['High'].max())
         low_90 = float(df_subset['Low'].min())
         
-        # [修正] 避免高低點一樣導致除以 0 等預期外錯誤
         if high_90 == low_90:
             st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
             return
@@ -86,14 +81,22 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
         return
 
     diff = high_90 - low_90
-
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
     
     fig = go.Figure()
 
+    # 將 x 軸轉為字串格式 (Category)，藉此消除無交易時段的空白
+    fmt = '%Y-%m-%d %H:%M:%S'
+    x_strings = df_subset.index.strftime(fmt).tolist()
+    
+    if interval in ["1d", "1wk", "1mo"]:
+        x_display = df_subset.index.strftime('%Y-%m-%d').tolist()
+    else:
+        x_display = df_subset.index.strftime('%m-%d %H:%M').tolist()
+
     # K 線圖
     fig.add_trace(go.Candlestick(
-        x=df_subset.index,
+        x=x_strings,
         open=df_subset['Open'],
         high=df_subset['High'],
         low=df_subset['Low'],
@@ -102,30 +105,54 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
     ))
 
     # 標記 90K 的最高與最低點
-    fig.add_annotation(x=df_subset['High'].idxmax(), y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
-    fig.add_annotation(x=df_subset['Low'].idxmin(), y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
+    high_idx_str = df_subset['High'].idxmax().strftime(fmt)
+    low_idx_str = df_subset['Low'].idxmin().strftime(fmt)
+
+    fig.add_annotation(x=high_idx_str, y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
+    fig.add_annotation(x=low_idx_str, y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
 
     # 費波納契線條
-    last_date = df_subset.index[-1]
+    last_date_str = x_strings[-1]
+    first_date_str = x_strings[0]
+    
     for r in ratios:
         price = low_90 + r * diff
         rounded_price = round_to_tick(price)
         
         fig.add_shape(type="line",
-            x0=df_subset.index[0], y0=price, x1=last_date, y1=price,
+            x0=first_date_str, y0=price, x1=last_date_str, y1=price,
             line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid")
         )
         
         fig.add_annotation(
-            x=last_date, y=price,
+            x=last_date_str, y=price,
             text=f"{r}({rounded_price:.2f})",
             showarrow=False, xanchor="left", xshift=10,
             font=dict(size=10, color="orange" if 0 <= r <= 1 else "gray")
         )
 
+    # 限制 Y 軸視角範圍：鎖定在 -1 到 1 的費波區間 (隱藏太遠的線段)
+    y_min_view = low_90 - diff * 1.05  # -1 比例稍微往下
+    y_max_view = high_90 + diff * 0.05 # 1 比例稍微往上
+
+    if pd.isna(y_min_view) or pd.isna(y_max_view):
+        y_min_view, y_max_view = None, None
+
     fig.update_layout(
         title=f"{ticker} - {interval} 費波納契 90K 分析",
         yaxis_title="點數",
+        yaxis=dict(
+            range=[y_min_view, y_max_view] if y_min_view and y_max_view else None,
+            autorange=False if y_min_view and y_max_view else True,
+            fixedrange=False # 允許使用者手動縮放/平移看到其他被隱藏的線條
+        ),
+        xaxis=dict(
+            type='category', # 使用類別型 X 軸來隱藏跳空的時段
+            tickmode='array',
+            tickvals=x_strings[::max(1, len(x_strings)//10)], # 均勻顯示標籤
+            ticktext=x_display[::max(1, len(x_display)//10)],
+            showgrid=False
+        ),
         xaxis_rangeslider_visible=False,
         height=700,
         template="plotly_dark"
@@ -1630,7 +1657,22 @@ with tab2:
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
-    target_stock = st.text_input("輸入股票代號 (如: 2330 或 ^TWII)", value="^TWII")
+    # 讀取現有的股票清單
+    code_map_fibo, name_map_fibo = load_local_stock_names()
+    fibo_stock_options = [f"{c} {n}" for c, n in sorted(code_map_fibo.items())]
+    
+    # 加入預設大盤選項
+    fibo_options_with_idx = ["^TWII 加權指數"] + fibo_stock_options
+    
+    # 將原本的 text_input 改為與戰略室一樣的 selectbox 下拉選單
+    selected_fibo_stock = st.selectbox(
+        "🔍 搜尋股票 (中文/代號)",
+        options=fibo_options_with_idx,
+        index=0
+    )
+    
+    # 解析出代號 (從選單值分割出的第一個元素)
+    target_stock = selected_fibo_stock.split(' ')[0]
     
     # 迷你分頁設計
     t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1分", "5分", "15分", "60分", "日", "週", "月"])
