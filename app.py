@@ -1311,22 +1311,34 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
-    def style_calc_row(row):
-        is_base = row.get('_is_base', False)
-        nt = row.get('_note_type', '')
-        prof = row.get('_profit', 0)
-        
-        if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
-        if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
-        if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-        if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-        return ['color: gray'] * len(row)
-
+    
     if not df_calc.empty:
-        # [修正] DataFrame 渲染方式：改用 drop 將隱藏欄位徹底丟棄，避免 style 和 column_config 衝突
-        styled_df = df_calc.drop(columns=['_profit', '_note_type', '_is_base']).style.apply(lambda r: style_calc_row(df_calc.loc[r.name]), axis=1)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=(len(df_calc) + 1) * 35)
+        # [修復] 將要顯示的欄位獨立出來，不依賴 Streamlit 的隱藏功能
+        display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
+        df_display = df_calc[display_cols]
+        
+        def style_calc_row(row):
+            # 透過 row.name (index) 去原始 df_calc 抓取判斷條件
+            idx = row.name
+            is_base = df_calc.loc[idx, '_is_base']
+            nt = df_calc.loc[idx, '_note_type']
+            prof = df_calc.loc[idx, '_profit']
+            
+            if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+            if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+            if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+            if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
+            if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+            return ['color: gray'] * len(row)
+
+        table_height = (len(df_calc) + 1) * 35 
+        st.dataframe(
+            df_display.style.apply(style_calc_row, axis=1), 
+            use_container_width=True, 
+            hide_index=True, 
+            height=table_height
+        )
+
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
