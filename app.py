@@ -19,12 +19,96 @@ import calendar
 import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import plotly.graph_objects as go
+import numpy as np
 
 # [新增] 引入 yahoo_fin
 try:
     import yahoo_fin.stock_info as si
 except ImportError:
     si = None
+
+# ==========================================
+# 費波計算核心函數 (新增部分)
+# ==========================================
+def get_taiwan_tick_size(price):
+    """符合台股點數跳動邏輯"""
+    if price < 10: return 0.01
+    elif price < 50: return 0.05
+    elif price < 100: return 0.1
+    elif price < 500: return 0.5
+    elif price < 1000: return 1
+    else: return 5
+
+def round_to_tick(price):
+    tick = get_taiwan_tick_size(price)
+    return round(price / tick) * tick
+
+def plot_fibonacci_chart(symbol, interval, lookback=90):
+    # 轉換 yfinance 的代號 (台股需加 .TW)
+    # 註：未來串接永豐證券 API 時，請將此區塊替換為永豐的 shioaji 取價邏輯
+    ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^")) else f"{symbol}.TW"
+
+    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    df = yf.download(ticker, interval=interval, period=period_map.get(interval, "max"), progress=False)
+
+    if df.empty or len(df) < lookback:
+        st.error(f"無法獲取足夠的數據 ({ticker}, {interval})。")
+        return
+
+    # 取過去 90 根 K 棒
+    df_subset = df.tail(lookback).copy()
+    high_90 = float(df_subset['High'].max())
+    low_90 = float(df_subset['Low'].min())
+    diff = high_90 - low_90
+
+    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+    
+    fig = go.Figure()
+
+    # K 線圖
+    fig.add_trace(go.Candlestick(
+        x=df_subset.index,
+        open=df_subset['Open'],
+        high=df_subset['High'],
+        low=df_subset['Low'],
+        close=df_subset['Close'],
+        name="K線"
+    ))
+
+    # 標記 90K 的最高與最低點
+    fig.add_annotation(x=df_subset['High'].idxmax(), y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
+    fig.add_annotation(x=df_subset['Low'].idxmin(), y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
+
+    # 費波納契線條
+    last_date = df_subset.index[-1]
+    for r in ratios:
+        price = low_90 + r * diff
+        rounded_price = round_to_tick(price)
+        
+        fig.add_shape(type="line",
+            x0=df_subset.index[0], y0=price, x1=last_date, y1=price,
+            line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid")
+        )
+        
+        fig.add_annotation(
+            x=last_date, y=price,
+            text=f"{r}({rounded_price:.2f})",
+            showarrow=False, xanchor="left", xshift=10,
+            font=dict(size=10, color="orange" if 0 <= r <= 1 else "gray")
+        )
+
+    fig.update_layout(
+        title=f"{ticker} - {interval} 費波納契 90K 分析",
+        yaxis_title="點數",
+        xaxis_rangeslider_visible=False,
+        height=700,
+        template="plotly_dark"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    last_update = df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')
+    st.caption(f"📊 數據最後更新時間: {last_update} (目前為 YF 數據，待替換為永豐即時 API)")
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -1303,7 +1387,7 @@ with tab1:
                                                     pure_manual = n_note[len(b_auto):]
                                                 else:
                                                     pure_manual = f"[M]{n_note}"
-                                                    
+                                                
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = pure_manual
                                         
@@ -1520,53 +1604,19 @@ with tab2:
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
-    col_high, col_low = st.columns(2)
-    with col_high:
-        fibo_high = st.number_input("輸入波段高點：", value=33310.0, step=1.0)
-    with col_low:
-        fibo_low = st.number_input("輸入波段低點：", value=33071.0, step=1.0)
-        
-    if fibo_high > 0 and fibo_low > 0 and fibo_high >= fibo_low:
-        diff = fibo_high - fibo_low
-        ratios = [-2.618, -2.5, -2.382, -2, -1.618, -1.5, -1.382, 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.382, 1.5, 1.618, 2, 2.382, 2.5, 2.618]
-        
-        fibo_data = []
-        for r in ratios:
-            up_trend = float(Decimal(str(fibo_high - (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
-            down_trend = float(Decimal(str(fibo_low + (r * diff))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
-            
-            # 使用 :g 格式化字串，自動去除浮點數後方多餘的 0 (如 -2.0 會變成 -2)
-            r_str = f"{r:g}"
-            
-            fibo_data.append({
-                "比例": r_str,
-                "上升趨勢(整數)": int(up_trend),
-                "下降趨勢(整數)": int(down_trend),
-                "_raw_r": r  # 隱藏欄位，用於樣式判斷
-            })
-        
-        df_fibo = pd.DataFrame(fibo_data)
-        
-        def style_fibo(row):
-            # 指定重要點位
-            important_ratios = [0, 0.382, 0.618, 1, 1.618, 2, 2.618]
-            # 取絕對值確保負數的對應重要點位也會被上色
-            if abs(row["_raw_r"]) in important_ratios:
-                return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
-            return [''] * len(row)
-            
-        # 計算表格高度使其一次完整顯示，不再需要滾動 (約每行 36px + 標題列)
-        table_height = (len(df_fibo) + 1) * 36
-            
-        st.dataframe(
-            df_fibo.style.apply(style_fibo, axis=1), 
-            use_container_width=True, 
-            hide_index=True,
-            height=table_height,
-            column_config={"_raw_r": None} # 將用來輔助判斷的原始數值欄位隱藏
-        )
-    else:
-        st.warning("波段高點必須大於波段低點且大於0")
+    
+    target_stock = st.text_input("輸入股票代號 (如: 2330 或 ^TWII)", value="^TWII")
+    
+    # 迷你分頁設計
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1分", "5分", "15分", "60分", "日", "週", "月"])
+
+    with t1: plot_fibonacci_chart(target_stock, "1m")
+    with t2: plot_fibonacci_chart(target_stock, "5m")
+    with t3: plot_fibonacci_chart(target_stock, "15m")
+    with t4: plot_fibonacci_chart(target_stock, "60m")
+    with t5: plot_fibonacci_chart(target_stock, "1d")
+    with t6: plot_fibonacci_chart(target_stock, "1wk")
+    with t7: plot_fibonacci_chart(target_stock, "1mo")
 
 with tab3:
     def change_month(delta):
