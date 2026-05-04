@@ -498,16 +498,24 @@ def fetch_finmind_backup(code):
     except: pass
     return None
 
-def apply_sr_rules(price, base_price):
+def get_tick_size(price):
+    try: price = float(price)
+    except: return 0.01
+    if pd.isna(price) or price <= 0: return 0.01
+    if price < 10: return 0.01
+    if price < 50: return 0.05
+    if price < 100: return 0.1
+    if price < 500: return 0.5
+    if price < 1000: return 1.0
+    return 5.0
+
+def apply_tick_rules(price):
     try:
         p = float(price)
         if math.isnan(p): return 0.0
         tick = get_tick_size(p)
-        d_val = Decimal(str(p))
-        d_tick = Decimal(str(tick))
-        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
-        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
-        else: return round_to_tick(p)
+        rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
+        return float(rounded)
     except: return price
 
 def calculate_limits(price):
@@ -535,6 +543,18 @@ def move_tick(price, steps):
                 tick = get_tick_size(curr - 0.0001)
                 curr = round(curr - tick, 2)
         return curr
+    except: return price
+
+def apply_sr_rules(price, base_price):
+    try:
+        p = float(price)
+        if math.isnan(p): return 0.0
+        tick = get_tick_size(p)
+        d_val = Decimal(str(p))
+        d_tick = Decimal(str(tick))
+        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
+        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
+        else: return apply_tick_rules(p)
     except: return price
 
 def fmt_price(v):
@@ -769,8 +789,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     for idx, row in enumerate(recent_records):
         if idx in days_map:
             prefix = days_map[idx]
-            h_val = round_to_tick(row['High'])
-            l_val = round_to_tick(row['Low'])
+            h_val = apply_tick_rules(row['High'])
+            l_val = apply_tick_rules(row['Low'])
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show: points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show: points.append({"val": l_val, "tag": f"{prefix}低"})
 
@@ -784,11 +804,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 2:
         last_candle = hist_strat.iloc[-1]
-        p_open = round_to_tick(last_candle['Open'])
+        p_open = apply_tick_rules(last_candle['Open'])
         if limit_down_show <= p_open <= limit_up_show: points.append({"val": p_open, "tag": ""})
 
-        p_high = round_to_tick(last_candle['High'])
-        p_low = round_to_tick(last_candle['Low'])
+        p_high = apply_tick_rules(last_candle['High'])
+        p_low = apply_tick_rules(last_candle['Low'])
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
         if limit_down_show <= p_low <= limit_up_show: 
              tag_low = "跌停" if limit_down_T and abs(p_low - limit_down_T) < 0.01 else ""
@@ -796,8 +816,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 3:
         pre_prev_candle = hist_strat.iloc[-2]
-        pp_high = round_to_tick(pre_prev_candle['High'])
-        pp_low = round_to_tick(pre_prev_candle['Low'])
+        pp_high = apply_tick_rules(pre_prev_candle['High'])
+        pp_low = apply_tick_rules(pre_prev_candle['Low'])
         if limit_down_show <= pp_high <= limit_up_show: points.append({"val": pp_high, "tag": ""})
         if limit_down_show <= pp_low <= limit_up_show: points.append({"val": pp_low, "tag": ""})
 
@@ -809,8 +829,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         low_vals = hist_strat['Low'][hist_strat['Low'] > 0]
         low_90_raw = low_vals.min() if not low_vals.empty else hist_strat['Low'].min()
             
-        high_90 = round_to_tick(high_90_raw)
-        low_90 = round_to_tick(low_90_raw)
+        high_90 = apply_tick_rules(high_90_raw)
+        low_90 = apply_tick_rules(low_90_raw)
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
@@ -1274,7 +1294,8 @@ with tab2:
     
     for i in ticks_range:
         p = move_tick(view_p, i)
-        # [修復1] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
+        
+        # [修復] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
@@ -1302,7 +1323,7 @@ with tab2:
         if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
         
         note_type = ""
-        # [修復2] 加入容差值保護
+        # 這裡也加入容差值確保標籤正確
         if abs(p - limit_up) < 0.001: note_type = "up"
         elif abs(p - limit_down) < 0.001: note_type = "down"
         is_base = (abs(p - base_p) < 0.001)
@@ -1313,18 +1334,21 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
+    
+    # [修復] 使用原始正常運作的方式，只保留必要的 column_config
     def style_calc_row(row):
-        if row['_is_base']: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+        is_base = row['_is_base']
         nt = row['_note_type']
-        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
-        elif nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
         prof = row['_profit']
+        
+        if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+        if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
         if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-        elif prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-        else: return ['color: gray'] * len(row)
+        if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+        return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修復3] 恢復最原本成功顯示的渲染架構，依賴 column_config 來隱藏欄位
         table_height = (len(df_calc) + 1) * 35 
         st.dataframe(
             df_calc.style.apply(style_calc_row, axis=1), 
@@ -1472,6 +1496,7 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
+                    # 隱藏 Index 及輔助欄位相容寫法
                     df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
                     styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
                     
