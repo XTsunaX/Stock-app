@@ -30,6 +30,15 @@ except ImportError:
     si = None
 
 # ==========================================
+# 建立全域 YFinance Session 降低 RateLimit 發生率
+# ==========================================
+yf_session = requests.Session()
+yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+})
+
+# ==========================================
 # 費波計算核心函數
 # ==========================================
 def get_taiwan_tick_size(price):
@@ -89,24 +98,33 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
-    stock_data = yf.Ticker(ticker)
-    df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-
-    # 自動處理上櫃代號
-    if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
-        ticker_two = ticker.replace(".TW", ".TWO")
-        stock_data = yf.Ticker(ticker_two)
+    # 加上 try-except 防止 YFRateLimitError 導致整個網頁崩潰
+    try:
+        stock_data = yf.Ticker(ticker, session=yf_session)
         df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-        if not df.empty:
-            ticker = ticker_two 
 
-    # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
-    if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
-        st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
-        ticker = "^TWII"
-        display_name = "加權指數(^TWII) *替代台指"
-        stock_data = yf.Ticker(ticker)
-        df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+        # 自動處理上櫃代號
+        if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+            ticker_two = ticker.replace(".TW", ".TWO")
+            stock_data = yf.Ticker(ticker_two, session=yf_session)
+            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            if not df.empty:
+                ticker = ticker_two 
+
+        # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
+        if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
+            st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
+            ticker = "^TWII"
+            display_name = "加權指數(^TWII) *替代台指"
+            stock_data = yf.Ticker(ticker, session=yf_session)
+            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            
+    except Exception as e:
+        if "RateLimitError" in str(type(e)):
+            st.error("⚠️ Yahoo Finance 存取頻率受限 (YFRateLimitError)。這通常是因雲端伺服器共用 IP 導致，請稍後再試。")
+        else:
+            st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
+        return
 
     if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
@@ -688,15 +706,16 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if hist.empty:
         try:
-            ticker = yf.Ticker(f"{code}.TW")
-            hist_yf = ticker.history(period="3mo")
+            ticker_obj = yf.Ticker(f"{code}.TW", session=yf_session)
+            hist_yf = ticker_obj.history(period="3mo")
             if hist_yf.empty:
-                ticker = yf.Ticker(f"{code}.TWO")
-                hist_yf = ticker.history(period="3mo")
+                ticker_obj = yf.Ticker(f"{code}.TWO", session=yf_session)
+                hist_yf = ticker_obj.history(period="3mo")
             if not hist_yf.empty:
                 hist = hist_yf
                 source_used = "yfinance"
-        except: pass
+        except Exception: 
+            pass
 
     try:
         rt_data = twstock.realtime.get(code)
@@ -1307,9 +1326,9 @@ with tab2:
         
     df_calc = pd.DataFrame(calc_data)
     def style_calc_row(row):
-        is_base = df_calc.loc[row.name, '_is_base']
-        nt = df_calc.loc[row.name, '_note_type']
-        prof = df_calc.loc[row.name, '_profit']
+        is_base = row['_is_base']
+        nt = row['_note_type']
+        prof = row['_profit']
         if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
         if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
         if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
@@ -1318,10 +1337,19 @@ with tab2:
         return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修復] 將隱藏欄位丟棄後再顯示，避免 Streamlit column_config 發生隱藏欄位匹配報錯導致消失
-        df_display_style = df_calc.drop(columns=['_profit', '_note_type', '_is_base'])
-        styled_df = df_display_style.style.apply(style_calc_row, axis=1)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        # [修復] 使用 column_config 隱藏欄位，避免 dataframe 整個消失
+        styled_df = df_calc.style.apply(style_calc_row, axis=1)
+        st.dataframe(
+            styled_df, 
+            use_container_width=True, 
+            hide_index=True, 
+            height=(len(df_calc) + 1) * 35,
+            column_config={
+                "_profit": None, 
+                "_note_type": None, 
+                "_is_base": None
+            }
+        )
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1355,13 +1383,11 @@ with tab_fibo:
             st.session_state.custom_tag_5 = c5.text_input("快速標籤 5", value=st.session_state.custom_tag_5)
 
         st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
-        # 動態渲染按鈕列
         btn_labels = [
             ("加權指數(^TWII)", "^TWII"),
             ("小型台指(TWF=F)", "TWF=F"),
             ("微型台指(TWF=F)", "TWF=F")
         ]
-        # 過濾空字串標籤
         for tag in [st.session_state.custom_tag_1, st.session_state.custom_tag_2, st.session_state.custom_tag_3, st.session_state.custom_tag_4, st.session_state.custom_tag_5]:
             if tag.strip(): btn_labels.append((get_display_label(tag.strip(), tag.strip()), tag.strip()))
         
@@ -1398,7 +1424,6 @@ with tab_fibo:
         
         final_target = st.session_state.fibo_search_input
         
-        # --- 均線與成交量設定 ---
         st.write("---")
         st.write("⚙️ **圖表顯示設定**")
         col_m1, col_m2, col_m3, col_m4, col_v, col_w = st.columns([1, 1, 1, 1, 1.5, 2.5])
@@ -1411,7 +1436,6 @@ with tab_fibo:
         
         ma_flags = {'5': s_ma5, '10': s_ma10, '20': s_ma20, '60': s_ma60}
 
-        # --- 將 st.tabs 替換為 st.radio 以支援自動跳轉切換 ---
         st.write("---")
         interval_options = {"1m": "1分", "5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
@@ -1424,17 +1448,13 @@ with tab_fibo:
             horizontal=True
         )
         
-        # 取回真正的 key (例如 "1d")
         selected_interval = list(interval_options.keys())[list(interval_options.values()).index(selected_interval_label)]
-        st.session_state.fibo_interval = selected_interval # 更新狀態
+        st.session_state.fibo_interval = selected_interval 
         
-        # 繪製單一圖表
         plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=ma_w, show_vol=s_vol)
 
     with tab_fibo_manual:
         st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
-        
-        # [修改] 透過 st.columns 縮排並靠左
         col_table, col_empty = st.columns([1, 2])
         
         with col_table:
@@ -1452,7 +1472,6 @@ with tab_fibo:
                     fibo_data = []
                     for r in ratios_manual:
                         price = fibo_low + (r * diff)
-                        # [修改] 直接 mathematically round 2 decimals
                         calc_price = round(price, 2)
                         r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
                         fibo_data.append({
@@ -1464,7 +1483,6 @@ with tab_fibo:
                     df_fibo = pd.DataFrame(fibo_data)
                     
                     def style_fibo_manual(row):
-                        # [修改] 保留 0, 0.382, 0.5, 0.618, 1
                         important_ratios = [0.0, 0.382, 0.5, 0.618, 1.0]
                         if row["_raw_r"] in important_ratios:
                             return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
