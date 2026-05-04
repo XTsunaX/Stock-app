@@ -21,11 +21,71 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 
-# [新增] 引入 yahoo_fin
+# [新增] 引入 yahoo_fin 與 tvDatafeed
 try:
     import yahoo_fin.stock_info as si
 except ImportError:
     si = None
+
+try:
+    from tvDatafeed import TvDatafeed, Interval
+    tv = TvDatafeed()
+    TV_AVAILABLE = True
+except ImportError:
+    TV_AVAILABLE = False
+
+# ==========================================
+# 0. 頁面設定與初始化 & Config 處理
+# ==========================================
+st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+
+CONFIG_FILE = "config.json"
+DATA_CACHE_FILE = "data_cache.json"
+URL_CACHE_FILE = "url_cache.json"
+SEARCH_CACHE_FILE = "search_cache.json"
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f: return json.load(f)
+        except: return {}
+    return {}
+
+def save_config_full():
+    try:
+        config = {
+            "font_size": st.session_state.get('font_size', 15),
+            "limit_rows": st.session_state.get('limit_rows', 5),
+            "auto_update": st.session_state.get('auto_update_last_row', True),
+            "delay_sec": st.session_state.get('update_delay_sec', 1.0),
+            "custom_tags": [
+                st.session_state.get('custom_tag_1', "2330 台積電"),
+                st.session_state.get('custom_tag_2', "2317 鴻海"),
+                st.session_state.get('custom_tag_3', "2454 聯發科"),
+                st.session_state.get('custom_tag_4', "2603 長榮"),
+                st.session_state.get('custom_tag_5', "3450 聯鈞")
+            ],
+            "ma_w": st.session_state.get('ma_w', 1.5)
+        }
+        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
+        return True
+    except: return False
+
+saved_config = load_config()
+
+# 狀態初始化 (包含自動儲存的參數)
+if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 15)
+if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_config.get('limit_rows', 5)
+if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
+if 'update_delay_sec' not in st.session_state: st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
+if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_w', 1.5)
+
+saved_tags = saved_config.get('custom_tags', ["2330 台積電", "2317 鴻海", "2454 聯發科", "2603 長榮", "3450 聯鈞"])
+if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = saved_tags[0] if len(saved_tags) > 0 else ""
+if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = saved_tags[1] if len(saved_tags) > 1 else ""
+if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = saved_tags[2] if len(saved_tags) > 2 else ""
+if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = saved_tags[3] if len(saved_tags) > 3 else ""
+if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = saved_tags[4] if len(saved_tags) > 4 else ""
 
 # ==========================================
 # 費波計算核心函數
@@ -45,24 +105,41 @@ def round_to_tick(price):
     rounded = (p_dec / t_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * t_dec
     return float(rounded)
 
-def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=None, ma_width=1.5, show_vol=True):
+def fetch_tv_data(symbol, exchange, interval, lookback):
+    if not TV_AVAILABLE:
+        return pd.DataFrame()
+    try:
+        tv_interval_map = {
+            "1m": Interval.in_1_minute, "5m": Interval.in_5_minute, 
+            "15m": Interval.in_15_minute, "60m": Interval.in_1_hour, 
+            "1d": Interval.in_daily, "1wk": Interval.in_weekly, "1mo": Interval.in_monthly
+        }
+        df = tv.get_hist(symbol=symbol, exchange=exchange, interval=tv_interval_map[interval], n_bars=lookback + 20)
+        if df is not None and not df.empty:
+            df = df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
+            return df
+    except Exception as e:
+        pass
+    return pd.DataFrame()
+
+def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=None, line_width=1.5, show_vol=True):
     if ma_flags is None:
         ma_flags = {'5': True, '10': True, '20': True, '60': True}
 
     code_map_fibo, name_map_fibo = load_local_stock_names()
     
-    # 處理輸入(支援名稱或代號)
     raw_input = symbol.strip()
     ticker_code = raw_input
     display_name = raw_input
+    is_tv_futures = False
 
-    # 針對大盤與期貨的特例處理
     if raw_input in ["^TWII", "加權指數"]:
         ticker_code = "^TWII"
         display_name = "加權指數(^TWII)"
-    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指"]:
-        ticker_code = "TWF=F"
-        display_name = "台指期貨(TWF=F)"
+    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指", "TX1!"]:
+        ticker_code = "TX1!"
+        display_name = "台指期貨(TradingView 延遲15分)"
+        is_tv_futures = True
     else:
         if " " in raw_input:
             parts = raw_input.split(" ", 1)
@@ -84,57 +161,54 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 else:
                     ticker_code = raw_input
 
-    ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
-    try:
-        # 移除 session 參數，讓 yfinance 自行處理連線避免 RateLimitError
-        stock_data = yf.Ticker(ticker)
-        df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-
-        # 自動處理上櫃代號
-        if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
-            ticker_two = ticker.replace(".TW", ".TWO")
-            stock_data = yf.Ticker(ticker_two)
-            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-            if not df.empty:
-                ticker = ticker_two 
-
-        # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
-        if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
-            st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
+    df = pd.DataFrame()
+    if is_tv_futures:
+        df = fetch_tv_data("TX1!", "TAIFEX", interval, lookback)
+        if df.empty:
+            st.warning("⚠️ TradingView 獲取失敗 (請確認已安裝 tvdatafeed)，自動退回 Yahoo Finance...")
             ticker = "^TWII"
             display_name = "加權指數(^TWII) *替代台指"
+            is_tv_futures = False
+            ticker_code = "^TWII"
+
+    if not is_tv_futures:
+        ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
+        try:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-            
-    except Exception as e:
-        st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
-        return
+            if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+                ticker_two = ticker.replace(".TW", ".TWO")
+                stock_data = yf.Ticker(ticker_two)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if not df.empty: ticker = ticker_two 
+        except Exception as e:
+            st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
+            return
 
     if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
-        st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
+        st.warning(f"無法獲取有效的交易數據 ({ticker_code}, {interval})，可能是該區間無資料或代號錯誤。")
         return
 
-    # 計算均線 (在裁切前計算確保準確)
+    # 計算均線
     if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
     if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
     if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
     if ma_flags['60']: df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 裁切近期 60 根 K 棒
     df_subset = df.tail(lookback).copy()
     df_subset = df_subset.dropna(subset=['High', 'Low'])
     
     if df_subset.empty:
-        st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
+        st.error(f"該股票 ({ticker_code}, {interval}) 的近期 K 線資料不完整或為空。")
         return
 
     try:
         high_60 = float(df_subset['High'].max())
         low_60 = float(df_subset['Low'].min())
         if high_60 == low_60:
-            st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
+            st.warning(f"該股票 ({ticker_code}, {interval}) 近期高低點相同，無法畫出波段比例。")
             return
     except Exception as e:
         st.error(f"計算高低點時發生錯誤：{e}")
@@ -155,12 +229,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     kline_trace = go.Candlestick(
         x=x_strings, open=df_subset['Open'], high=df_subset['High'],
-        low=df_subset['Low'], close=df_subset['Close'], name="K線"
+        low=df_subset['Low'], close=df_subset['Close'], name="K線",
+        increasing_line_width=line_width, decreasing_line_width=line_width
     )
     if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
     else: fig.add_trace(kline_trace)
 
-    # 繪製均線
     ma_settings = {
         'MA5': ('orange', ma_flags['5']),
         'MA10': ('lightblue', ma_flags['10']),
@@ -169,11 +243,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     }
     for ma_name, (color, is_show) in ma_settings.items():
         if is_show and ma_name in df_subset.columns:
-            ma_trace = go.Scatter(x=x_strings, y=df_subset[ma_name], mode='lines', name=ma_name, line=dict(color=color, width=ma_width))
+            ma_trace = go.Scatter(x=x_strings, y=df_subset[ma_name], mode='lines', name=ma_name, line=dict(color=color, width=line_width))
             if show_vol and 'Volume' in df_subset.columns: fig.add_trace(ma_trace, row=1, col=1)
             else: fig.add_trace(ma_trace)
 
-    # 繪製成交量
     if show_vol and 'Volume' in df_subset.columns:
         colors = ['red' if close >= open else 'green' for close, open in zip(df_subset['Close'], df_subset['Open'])]
         vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
@@ -209,7 +282,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     interval_display_map = {"1m": "1分K", "5m": "5分K", "15m": "15分K", "60m": "60分K", "1d": "日K", "1wk": "週K", "1mo": "月K"}
     interval_name = interval_display_map.get(interval, interval)
-    ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
+    ticker_suffix = ".TW" if not is_tv_futures and ticker_code.isdigit() else ""
     
     layout_update = dict(
         title=f"{display_name}{ticker_suffix} - {interval_name}",
@@ -233,14 +306,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     fig.update_layout(**layout_update)
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF 數據。)")
+    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF / TV 數據。)")
 
-
-# ==========================================
-# 0. 頁面設定與初始化
-# ==========================================
-st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
-
+# CSS 優化
 st.markdown("""
 <style>
     [data-testid="stSidebar"] button { white-space: nowrap !important; text-overflow: clip !important; padding-left: 5px !important; padding-right: 5px !important; }
@@ -261,25 +329,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚡ 當沖戰略室 ⚡")
-
-CONFIG_FILE = "config.json"
-DATA_CACHE_FILE = "data_cache.json"
-URL_CACHE_FILE = "url_cache.json"
-SEARCH_CACHE_FILE = "search_cache.json"
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f: return json.load(f)
-        except: return {}
-    return {}
-
-def save_config(font_size, limit_rows, auto_update, delay_sec):
-    try:
-        config = {"font_size": font_size, "limit_rows": limit_rows, "auto_update": auto_update, "delay_sec": delay_sec}
-        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
-        return True
-    except: return False
 
 def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
     try:
@@ -353,29 +402,9 @@ if 'search_multiselect' not in st.session_state: st.session_state.search_multise
 if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 
-# Fibo 標籤與狀態初始化
 if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = "^TWII 加權指數"
 if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
-if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = "2330 台積電"
-if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = "2317 鴻海"
-if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = "2454 聯發科"
-if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = "2603 長榮"
-if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = "3450 聯鈞"
-
-# 控制圖表預設時間週期 ("1d" 或 "5m")
 if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
-if 'fibo_font_size' not in st.session_state: st.session_state.fibo_font_size = 15
-
-tz_tw = pytz.timezone('Asia/Taipei')
-now_tw = datetime.now(tz_tw)
-if 'cal_year' not in st.session_state: st.session_state.cal_year = now_tw.year
-if 'cal_month' not in st.session_state: st.session_state.cal_month = now_tw.month
-
-saved_config = load_config()
-if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 15)
-if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_config.get('limit_rows', 5)
-if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
-if 'update_delay_sec' not in st.session_state: st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
 
 @st.cache_data
 def load_local_stock_names():
@@ -407,19 +436,21 @@ def search_code_online(query):
     if query in name_map: return name_map[query]
     return None
 
+def auto_save_trigger():
+    save_config_full()
+
 with st.sidebar:
     st.header("⚙️ 設定")
-    current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider')
+    current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider', on_change=auto_save_trigger)
     st.session_state.font_size = current_font_size
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
     show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值)")
     st.markdown("---")
-    current_limit_rows = st.number_input("顯示筆數 (檔案/雲端)", min_value=1, value=st.session_state.limit_rows, key='limit_rows_input')
+    current_limit_rows = st.number_input("顯示筆數 (檔案/雲端)", min_value=1, value=st.session_state.limit_rows, key='limit_rows_input', on_change=auto_save_trigger)
     st.session_state.limit_rows = current_limit_rows
     
-    if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows, st.session_state.auto_update_last_row, st.session_state.update_delay_sec):
-            st.toast("設定已儲存！", icon="✅")
+    if st.button("💾 手動儲存設定"):
+        if save_config_full(): st.toast("設定已儲存！", icon="✅")
             
     st.markdown("### 資料管理")
     if st.session_state.ignored_stocks:
@@ -498,24 +529,16 @@ def fetch_finmind_backup(code):
     except: pass
     return None
 
-def get_tick_size(price):
-    try: price = float(price)
-    except: return 0.01
-    if pd.isna(price) or price <= 0: return 0.01
-    if price < 10: return 0.01
-    if price < 50: return 0.05
-    if price < 100: return 0.1
-    if price < 500: return 0.5
-    if price < 1000: return 1.0
-    return 5.0
-
-def apply_tick_rules(price):
+def apply_sr_rules(price, base_price):
     try:
         p = float(price)
         if math.isnan(p): return 0.0
         tick = get_tick_size(p)
-        rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
-        return float(rounded)
+        d_val = Decimal(str(p))
+        d_tick = Decimal(str(tick))
+        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
+        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
+        else: return round_to_tick(p)
     except: return price
 
 def calculate_limits(price):
@@ -543,18 +566,6 @@ def move_tick(price, steps):
                 tick = get_tick_size(curr - 0.0001)
                 curr = round(curr - tick, 2)
         return curr
-    except: return price
-
-def apply_sr_rules(price, base_price):
-    try:
-        p = float(price)
-        if math.isnan(p): return 0.0
-        tick = get_tick_size(p)
-        d_val = Decimal(str(p))
-        d_tick = Decimal(str(tick))
-        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
-        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
-        else: return apply_tick_rules(p)
     except: return price
 
 def fmt_price(v):
@@ -789,8 +800,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     for idx, row in enumerate(recent_records):
         if idx in days_map:
             prefix = days_map[idx]
-            h_val = apply_tick_rules(row['High'])
-            l_val = apply_tick_rules(row['Low'])
+            h_val = round_to_tick(row['High'])
+            l_val = round_to_tick(row['Low'])
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show: points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show: points.append({"val": l_val, "tag": f"{prefix}低"})
 
@@ -804,11 +815,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 2:
         last_candle = hist_strat.iloc[-1]
-        p_open = apply_tick_rules(last_candle['Open'])
+        p_open = round_to_tick(last_candle['Open'])
         if limit_down_show <= p_open <= limit_up_show: points.append({"val": p_open, "tag": ""})
 
-        p_high = apply_tick_rules(last_candle['High'])
-        p_low = apply_tick_rules(last_candle['Low'])
+        p_high = round_to_tick(last_candle['High'])
+        p_low = round_to_tick(last_candle['Low'])
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
         if limit_down_show <= p_low <= limit_up_show: 
              tag_low = "跌停" if limit_down_T and abs(p_low - limit_down_T) < 0.01 else ""
@@ -816,8 +827,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 3:
         pre_prev_candle = hist_strat.iloc[-2]
-        pp_high = apply_tick_rules(pre_prev_candle['High'])
-        pp_low = apply_tick_rules(pre_prev_candle['Low'])
+        pp_high = round_to_tick(pre_prev_candle['High'])
+        pp_low = round_to_tick(pre_prev_candle['Low'])
         if limit_down_show <= pp_high <= limit_up_show: points.append({"val": pp_high, "tag": ""})
         if limit_down_show <= pp_low <= limit_up_show: points.append({"val": pp_low, "tag": ""})
 
@@ -829,8 +840,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         low_vals = hist_strat['Low'][hist_strat['Low'] > 0]
         low_90_raw = low_vals.min() if not low_vals.empty else hist_strat['Low'].min()
             
-        high_90 = apply_tick_rules(high_90_raw)
-        low_90 = apply_tick_rules(low_90_raw)
+        high_90 = round_to_tick(high_90_raw)
+        low_90 = round_to_tick(low_90_raw)
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
@@ -1295,7 +1306,7 @@ with tab2:
     for i in ticks_range:
         p = move_tick(view_p, i)
         
-        # [修復] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
+        # [修復：加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的異常]
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
@@ -1334,21 +1345,18 @@ with tab2:
         })
         
     df_calc = pd.DataFrame(calc_data)
-    
-    # [修復] 使用原始正常運作的方式，只保留必要的 column_config
     def style_calc_row(row):
-        is_base = row['_is_base']
+        if row['_is_base']: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
         nt = row['_note_type']
-        prof = row['_profit']
-        
-        if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
         if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
-        if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+        elif nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
+        prof = row['_profit']
         if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-        if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-        return ['color: gray'] * len(row)
+        elif prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+        else: return ['color: gray'] * len(row)
 
     if not df_calc.empty:
+        # [修復：使用最原始的 column_config 方式，安全且不會產生形狀不匹的 ValueError]
         table_height = (len(df_calc) + 1) * 35 
         st.dataframe(
             df_calc.style.apply(style_calc_row, axis=1), 
@@ -1380,14 +1388,15 @@ with tab_fibo:
 
         with st.expander("⚙️ 設定快速標籤"):
             st.info("💡 將圖表字體大小設定獨立：")
-            st.session_state.fibo_font_size = st.slider("圖表標籤字體大小", min_value=8, max_value=24, value=st.session_state.fibo_font_size)
+            st.slider("圖表標籤字體大小", min_value=8, max_value=24, value=st.session_state.font_size, key="fibo_font_size", on_change=auto_save_trigger)
             st.write("---")
             c1, c2, c3, c4, c5 = st.columns(5)
-            st.session_state.custom_tag_1 = c1.text_input("快速標籤 1", value=st.session_state.custom_tag_1)
-            st.session_state.custom_tag_2 = c2.text_input("快速標籤 2", value=st.session_state.custom_tag_2)
-            st.session_state.custom_tag_3 = c3.text_input("快速標籤 3", value=st.session_state.custom_tag_3)
-            st.session_state.custom_tag_4 = c4.text_input("快速標籤 4", value=st.session_state.custom_tag_4)
-            st.session_state.custom_tag_5 = c5.text_input("快速標籤 5", value=st.session_state.custom_tag_5)
+            # 將自訂標籤綁定 on_change 自動儲存
+            c1.text_input("快速標籤 1", key="custom_tag_1", on_change=auto_save_trigger)
+            c2.text_input("快速標籤 2", key="custom_tag_2", on_change=auto_save_trigger)
+            c3.text_input("快速標籤 3", key="custom_tag_3", on_change=auto_save_trigger)
+            c4.text_input("快速標籤 4", key="custom_tag_4", on_change=auto_save_trigger)
+            c5.text_input("快速標籤 5", key="custom_tag_5", on_change=auto_save_trigger)
 
         st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
         btn_labels = [
@@ -1396,7 +1405,7 @@ with tab_fibo:
             ("微型台指(TWF=F)", "TWF=F")
         ]
         for tag in [st.session_state.custom_tag_1, st.session_state.custom_tag_2, st.session_state.custom_tag_3, st.session_state.custom_tag_4, st.session_state.custom_tag_5]:
-            if tag.strip(): btn_labels.append((get_display_label(tag.strip(), tag.strip()), tag.strip()))
+            if tag and tag.strip(): btn_labels.append((get_display_label(tag.strip(), tag.strip()), tag.strip()))
         
         if btn_labels:
             tag_cols = st.columns(len(btn_labels))
@@ -1439,7 +1448,9 @@ with tab_fibo:
         s_ma20 = col_m3.checkbox("20MA (綠)", value=True)
         s_ma60 = col_m4.checkbox("60MA (黃)", value=True)
         s_vol = col_v.checkbox("📊 顯示成交量", value=True)
-        ma_w = col_w.slider("均線粗細", min_value=1.0, max_value=5.0, value=1.5, step=0.5, label_visibility="collapsed")
+        
+        # K線與均線粗細綁定自動儲存
+        col_w.slider("K線與均線粗細", min_value=1.0, max_value=5.0, step=0.5, key="ma_w", on_change=auto_save_trigger, label_visibility="collapsed")
         
         ma_flags = {'5': s_ma5, '10': s_ma10, '20': s_ma20, '60': s_ma60}
 
@@ -1458,11 +1469,11 @@ with tab_fibo:
         selected_interval = list(interval_options.keys())[list(interval_options.values()).index(selected_interval_label)]
         st.session_state.fibo_interval = selected_interval 
         
-        plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=ma_w, show_vol=s_vol)
+        plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, line_width=st.session_state.ma_w, show_vol=s_vol)
 
     with tab_fibo_manual:
         st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
-        col_table, col_empty = st.columns([1, 2])
+        col_table, col_empty = st.columns([1, 3]) # 更進一步靠左縮排
         
         with col_table:
             col_h, col_l = st.columns(2)
@@ -1489,23 +1500,18 @@ with tab_fibo:
                     
                     df_fibo = pd.DataFrame(fibo_data)
                     
+                    # [修復] 將隱藏邏輯分離，避免 Shape Mismatch
+                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
                     def style_fibo_manual(row):
                         important_ratios = [0.0, 0.382, 0.5, 0.618, 1.0]
+                        # 對照原始 df 的 _raw_r
                         if df_fibo.loc[row.name, "_raw_r"] in important_ratios:
-                            return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
-                        return [''] * len(row)
+                            return ['background-color: #ffffcc; color: black; font-weight: bold;'] * 2
+                        return [''] * 2
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # 隱藏 Index 及輔助欄位相容寫法
-                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
-                    styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
-                    
-                    try:
-                        styled_fibo = styled_fibo.hide(axis="index")
-                    except:
-                        pass
-                        
-                    st.dataframe(styled_fibo, use_container_width=True, height=table_height)
+                    styled_fibo = df_fibo_disp.style.apply(style_fibo_manual, axis=1)
+                    st.dataframe(styled_fibo, use_container_width=True, hide_index=True, height=table_height)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
