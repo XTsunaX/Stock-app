@@ -105,7 +105,7 @@ if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_
 if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
 
 # ==========================================
-# 2. 資料快取與輔助查詢函數 (必須先定義！)
+# 2. 資料快取與輔助查詢函數
 # ==========================================
 @st.cache_data
 def load_local_stock_names():
@@ -244,7 +244,7 @@ if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 
 # ==========================================
-# 3. 計算核心函數 (費波與戰略室共用)
+# 3. 數學與邏輯計算函數 (輔助函數：必須在圖表函數前定義)
 # ==========================================
 def get_taiwan_tick_size(price):
     try: price = float(price)
@@ -637,8 +637,196 @@ def fetch_tv_data(symbol, exchange, interval, lookback):
     except Exception as e: pass
     return pd.DataFrame()
 
+# ==========================================
+# 4. 費波圖表繪製主函數 (必須在輔助函數後定義)
+# ==========================================
+def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=None, line_width=1.5, show_vol=True):
+    if ma_flags is None:
+        ma_flags = {'5': True, '10': True, '20': True, '60': True}
 
-# CSS 優化與標題
+    code_map_fibo, name_map_fibo = load_local_stock_names()
+    
+    raw_input = symbol.strip()
+    ticker_code = raw_input
+    display_name = raw_input
+    is_tv_futures = False
+
+    if raw_input in ["^TWII", "加權指數"]:
+        ticker_code = "^TWII"
+        display_name = "加權指數(^TWII)"
+    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指", "TX1!"]:
+        ticker_code = "TX1!"
+        display_name = "台指期貨(TradingView 延遲15分)"
+        is_tv_futures = True
+    else:
+        if " " in raw_input:
+            parts = raw_input.split(" ", 1)
+            if parts[0].isdigit() or parts[0].endswith(".TW") or parts[0].endswith(".TWO"):
+                ticker_code = parts[0]
+                display_name = f"{parts[1]}({parts[0]})"
+            elif parts[1].isdigit() or parts[1].endswith(".TW") or parts[1].endswith(".TWO"):
+                ticker_code = parts[1]
+                display_name = f"{parts[0]}({parts[1]})"
+        else:
+            if raw_input.isdigit():
+                ticker_code = raw_input
+                name = code_map_fibo.get(ticker_code, "")
+                display_name = f"{name}({ticker_code})" if name else ticker_code
+            else:
+                if raw_input in name_map_fibo:
+                    ticker_code = name_map_fibo[raw_input]
+                    display_name = f"{raw_input}({ticker_code})"
+                else:
+                    ticker_code = raw_input
+
+    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    
+    df = pd.DataFrame()
+    if is_tv_futures:
+        df = fetch_tv_data("TX1!", "TAIFEX", interval, lookback)
+        if df.empty:
+            st.warning("⚠️ TradingView 獲取失敗 (請確認已安裝 tvdatafeed)，自動退回 Yahoo Finance...")
+            ticker = "^TWII"
+            display_name = "加權指數(^TWII) *替代台指"
+            is_tv_futures = False
+            ticker_code = "^TWII"
+
+    if not is_tv_futures:
+        ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
+        try:
+            stock_data = yf.Ticker(ticker)
+            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+                ticker_two = ticker.replace(".TW", ".TWO")
+                stock_data = yf.Ticker(ticker_two)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if not df.empty: ticker = ticker_two 
+        except Exception as e:
+            st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
+            return
+
+    if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
+        st.warning(f"無法獲取有效的交易數據 ({ticker_code}, {interval})，可能是該區間無資料或代號錯誤。")
+        return
+
+    # 計算均線
+    if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
+    if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
+    if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
+    if ma_flags['60']: df['MA60'] = df['Close'].rolling(window=60).mean()
+
+    df_subset = df.tail(lookback).copy()
+    df_subset = df_subset.dropna(subset=['High', 'Low'])
+    
+    if df_subset.empty:
+        st.error(f"該股票 ({ticker_code}, {interval}) 的近期 K 線資料不完整或為空。")
+        return
+
+    try:
+        high_60 = float(df_subset['High'].max())
+        low_60 = float(df_subset['Low'].min())
+        if high_60 == low_60:
+            st.warning(f"該股票 ({ticker_code}, {interval}) 近期高低點相同，無法畫出波段比例。")
+            return
+    except Exception as e:
+        st.error(f"計算高低點時發生錯誤：{e}")
+        return
+
+    diff = high_60 - low_60
+    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+    
+    fmt = '%Y-%m-%d %H:%M:%S'
+    x_strings = df_subset.index.strftime(fmt).tolist()
+    if interval in ["1d", "1wk", "1mo"]: x_display = df_subset.index.strftime('%Y-%m-%d').tolist()
+    else: x_display = df_subset.index.strftime('%m-%d %H:%M').tolist()
+
+    if show_vol and 'Volume' in df_subset.columns:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+    else:
+        fig = go.Figure()
+
+    kline_trace = go.Candlestick(
+        x=x_strings, open=df_subset['Open'], high=df_subset['High'],
+        low=df_subset['Low'], close=df_subset['Close'], name="K線",
+        increasing_line_width=line_width, decreasing_line_width=line_width
+    )
+    if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
+    else: fig.add_trace(kline_trace)
+
+    ma_settings = {
+        'MA5': ('orange', ma_flags['5']),
+        'MA10': ('lightblue', ma_flags['10']),
+        'MA20': ('green', ma_flags['20']),
+        'MA60': ('yellow', ma_flags['60'])
+    }
+    for ma_name, (color, is_show) in ma_settings.items():
+        if is_show and ma_name in df_subset.columns:
+            ma_trace = go.Scatter(x=x_strings, y=df_subset[ma_name], mode='lines', name=ma_name, line=dict(color=color, width=line_width))
+            if show_vol and 'Volume' in df_subset.columns: fig.add_trace(ma_trace, row=1, col=1)
+            else: fig.add_trace(ma_trace)
+
+    if show_vol and 'Volume' in df_subset.columns:
+        colors = ['red' if close >= open else 'green' for close, open in zip(df_subset['Close'], df_subset['Open'])]
+        vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
+        fig.add_trace(vol_trace, row=2, col=1)
+
+    high_idx_str = df_subset['High'].idxmax().strftime(fmt)
+    low_idx_str = df_subset['Low'].idxmin().strftime(fmt)
+    disp_high = round_to_tick(high_60)
+    disp_low = round_to_tick(low_60)
+    
+    target_row = 1 if (show_vol and 'Volume' in df_subset.columns) else None
+    target_col = 1 if (show_vol and 'Volume' in df_subset.columns) else None
+
+    fig.add_annotation(x=high_idx_str, y=high_60, text=f"最高:{disp_high:g}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red", size=font_size), row=target_row, col=target_col)
+    fig.add_annotation(x=low_idx_str, y=low_60, text=f"最低:{disp_low:g}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green", size=font_size), row=target_row, col=target_col)
+
+    last_date_str = x_strings[-1]
+    first_date_str = x_strings[0]
+    
+    for r in ratios:
+        price = low_60 + r * diff
+        rounded_price = round_to_tick(price)
+        fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
+            line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid"), row=target_row, col=target_col)
+            
+        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
+        fig.add_annotation(x=last_date_str, y=price, text=f"{r_label} ({rounded_price:g})",
+            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color="orange" if 0 <= r <= 1 else "gray"), row=target_row, col=target_col)
+
+    y_min_view = low_60 - diff * 1.05
+    y_max_view = high_60 + diff * 0.05
+    if pd.isna(y_min_view) or pd.isna(y_max_view): y_min_view, y_max_view = None, None
+
+    interval_display_map = {"1m": "1分K", "5m": "5分K", "15m": "15分K", "60m": "60分K", "1d": "日K", "1wk": "週K", "1mo": "月K"}
+    interval_name = interval_display_map.get(interval, interval)
+    ticker_suffix = ".TW" if not is_tv_futures and ticker_code.isdigit() else ""
+    
+    layout_update = dict(
+        title=f"{display_name}{ticker_suffix} - {interval_name}",
+        template="plotly_dark",
+        height=800 if show_vol else 700,
+        showlegend=True,
+    )
+
+    if show_vol and 'Volume' in df_subset.columns:
+        fig.update_yaxes(title_text="點數", range=[y_min_view, y_max_view] if y_min_view and y_max_view else None, autorange=False if y_min_view and y_max_view else True, fixedrange=False, row=1, col=1)
+        fig.update_yaxes(title_text="成交量", fixedrange=False, row=2, col=1)
+        fig.update_xaxes(type='category', tickmode='array', tickvals=x_strings[::max(1, len(x_strings)//10)], ticktext=x_display[::max(1, len(x_display)//10)], showgrid=False, rangeslider_visible=False, row=2, col=1)
+        fig.update_xaxes(type='category', showgrid=False, rangeslider_visible=False, showticklabels=False, row=1, col=1) 
+    else:
+        layout_update.update(
+            yaxis_title="點數",
+            yaxis=dict(range=[y_min_view, y_max_view] if y_min_view and y_max_view else None, autorange=False if y_min_view and y_max_view else True, fixedrange=False),
+            xaxis=dict(type='category', tickmode='array', tickvals=x_strings[::max(1, len(x_strings)//10)], ticktext=x_display[::max(1, len(x_display)//10)], showgrid=False),
+            xaxis_rangeslider_visible=False
+        )
+
+    fig.update_layout(**layout_update)
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF / TV 數據。)")
+
+# CSS 優化
 st.markdown("""
 <style>
     [data-testid="stSidebar"] button { white-space: nowrap !important; text-overflow: clip !important; padding-left: 5px !important; padding-right: 5px !important; }
@@ -1140,7 +1328,6 @@ with tab2:
     
     for i in ticks_range:
         p = move_tick(view_p, i)
-        
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
@@ -1180,9 +1367,8 @@ with tab2:
     df_calc = pd.DataFrame(calc_data)
     
     if not df_calc.empty:
-        # [修復] 將顯示欄位抽出，並從原資料取得對應條件以修正 Shape Mismatch 錯誤
         display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
-        df_calc_disp = df_calc[display_cols]
+        df_calc_disp = df_calc[display_cols].copy()
         
         def style_calc_row_disp(row):
             idx = row.name
@@ -1334,7 +1520,6 @@ with tab_fibo:
                     
                     df_fibo = pd.DataFrame(fibo_data)
                     
-                    # [修復] 將隱藏邏輯分離，避免 Shape Mismatch
                     df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
                     
                     def style_fibo_manual(row):
