@@ -29,78 +29,10 @@ except ImportError:
     si = None
 
 # ==========================================
-# 0. 頁面設定與初始化
-# ==========================================
-st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
-
-# CSS 優化
-st.markdown("""
-<style>
-    /* 側邊欄按鈕文字不換行 */
-    [data-testid="stSidebar"] button {
-        white-space: nowrap !important;
-        text-overflow: clip !important;
-        padding-left: 5px !important;
-        padding-right: 5px !important;
-    }
-    /* 調整按鈕高度使其垂直置中 */
-    div.stButton > button {
-        min-height: 45px;
-        font-size: 20px;
-    }
-    /* Dataframe 與按鈕間距 */
-    .stButton { margin-top: 5px; }
-    
-    /* 月曆標題樣式 */
-    .calendar-header {
-        font-size: 2.5em;
-        font-weight: 900;
-        text-align: center;
-        color: #ff9800;
-        margin-bottom: 10px;
-        line-height: 1.5;
-        font-family: 'Arial', sans-serif;
-    }
-    
-    /* 月曆格子樣式 */
-    .cal-box { 
-        text-align: center; 
-        padding: 5px; 
-        border-radius: 4px; 
-        margin: 2px; 
-        min-height: 90px; 
-        border: 1px solid #555;
-        font-size: 0.9em;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-    .cal-open { background-color: #000000 !important; color: #ffffff !important; }
-    .cal-closed { background-color: #d32f2f !important; color: #ffffff !important; font-weight: bold; }
-    .cal-week { background-color: #f0f0f0; color: #333; font-weight: bold; display: flex; align-items: center; justify-content: center; font-size: 0.8em; }
-    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
-    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
-    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
-    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.5); border-radius: 3px; padding: 1px;}
-    .today-border { border: 3px solid #ffff00 !important; }
-    div[data-testid="column"] { text-align: center; }
-</style>
-""", unsafe_allow_html=True)
-
-# 初始化 Session State
-if 'fibo_search_input' not in st.session_state:
-    st.session_state.fibo_search_input = "^TWII"
-if 'custom_tag_1' not in st.session_state:
-    st.session_state.custom_tag_1 = "2330"
-if 'custom_tag_2' not in st.session_state:
-    st.session_state.custom_tag_2 = "2317"
-if 'custom_tag_3' not in st.session_state:
-    st.session_state.custom_tag_3 = "2454"
-
-# ==========================================
 # 費波計算核心函數
 # ==========================================
 def get_taiwan_tick_size(price):
+    """符合台股點數跳動邏輯"""
     if price < 10: return 0.01
     elif price < 50: return 0.05
     elif price < 100: return 0.1
@@ -110,31 +42,47 @@ def get_taiwan_tick_size(price):
 
 def round_to_tick(price):
     tick = get_taiwan_tick_size(price)
-    return round(price / tick) * tick
+    # 使用 Decimal 處理浮點數精度問題，避免出現 .000000004
+    p_dec = Decimal(str(price))
+    t_dec = Decimal(str(tick))
+    rounded = (p_dec / t_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * t_dec
+    return float(rounded)
 
-def plot_fibonacci_chart(symbol, interval, lookback=90):
+def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=12):
     # 處理代號
+    display_name = symbol
     if " " in symbol:
-        symbol = symbol.split(" ")[0]
-        
+        parts = symbol.split(" ", 1)
+        symbol = parts[0]
+        display_name = f"{parts[1]}({parts[0]})"
+    else:
+        # 如果只有輸入代號，嘗試尋找股名
+        code_map_fibo, _ = load_local_stock_names()
+        if symbol in code_map_fibo:
+            display_name = f"{code_map_fibo[symbol]}({symbol})"
+        elif symbol == "^TWII":
+            display_name = "加權指數(^TWII)"
+        elif symbol == "TWF=F":
+            display_name = "台指期貨(TWF=F)"
+
     ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^") or "=" in symbol) else f"{symbol}.TW"
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
     stock_data = yf.Ticker(ticker)
     df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
 
-    # [修正] 如果 .TW 抓不到資料，自動嘗試 .TWO (上櫃)
     if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
         ticker_two = ticker.replace(".TW", ".TWO")
         stock_data = yf.Ticker(ticker_two)
         df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
         if not df.empty:
-            ticker = ticker_two # 更新為正確的代號顯示
+            ticker = ticker_two 
 
     if 'High' not in df.columns or 'Low' not in df.columns:
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
         return
 
+    # 改為取 60 根 K 棒
     df_subset = df.tail(lookback).copy()
     df_subset = df_subset.dropna(subset=['High', 'Low'])
     
@@ -143,16 +91,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
         return
 
     try:
-        high_90 = float(df_subset['High'].max())
-        low_90 = float(df_subset['Low'].min())
-        if high_90 == low_90:
+        high_60 = float(df_subset['High'].max())
+        low_60 = float(df_subset['Low'].min())
+        if high_60 == low_60:
             st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
             return
     except Exception as e:
         st.error(f"計算高低點時發生錯誤：{e}")
         return
 
-    diff = high_90 - low_90
+    diff = high_60 - low_60
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
     fig = go.Figure()
 
@@ -168,26 +116,41 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
 
     high_idx_str = df_subset['High'].idxmax().strftime(fmt)
     low_idx_str = df_subset['Low'].idxmin().strftime(fmt)
-    fig.add_annotation(x=high_idx_str, y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
-    fig.add_annotation(x=low_idx_str, y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
+    
+    # 修正高低點顯示精度
+    disp_high = round_to_tick(high_60)
+    disp_low = round_to_tick(low_60)
+    
+    fig.add_annotation(x=high_idx_str, y=high_60, text=f"最高:{disp_high:g}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red", size=font_size))
+    fig.add_annotation(x=low_idx_str, y=low_60, text=f"最低:{disp_low:g}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green", size=font_size))
 
     last_date_str = x_strings[-1]
     first_date_str = x_strings[0]
     
     for r in ratios:
-        price = low_90 + r * diff
+        price = low_60 + r * diff
         rounded_price = round_to_tick(price)
         fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
             line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid"))
-        fig.add_annotation(x=last_date_str, y=price, text=f"{r}({rounded_price:.2f})",
-            showarrow=False, xanchor="left", xshift=10, font=dict(size=10, color="orange" if 0 <= r <= 1 else "gray"))
+            
+        # 1.0 和 0.0 顯示為整數
+        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
+            
+        fig.add_annotation(x=last_date_str, y=price, text=f"{r_label} ({rounded_price:g})",
+            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color="orange" if 0 <= r <= 1 else "gray"))
 
-    y_min_view = low_90 - diff * 1.05
-    y_max_view = high_90 + diff * 0.05
+    y_min_view = low_60 - diff * 1.05
+    y_max_view = high_60 + diff * 0.05
     if pd.isna(y_min_view) or pd.isna(y_max_view): y_min_view, y_max_view = None, None
 
+    # 標題更改為 股名(股號)-時間標籤
+    interval_display_map = {"1m": "1分", "5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
+    interval_name = interval_display_map.get(interval, interval)
+    
+    ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
+    
     fig.update_layout(
-        title=f"{ticker} - {interval} 費波納契 90K 分析", yaxis_title="點數",
+        title=f"{display_name}{ticker_suffix} - {interval_name}K 費波納契60K分析", yaxis_title="點數",
         yaxis=dict(range=[y_min_view, y_max_view] if y_min_view and y_max_view else None, autorange=False if y_min_view and y_max_view else True, fixedrange=False),
         xaxis=dict(type='category', tickmode='array', tickvals=x_strings[::max(1, len(x_strings)//10)], ticktext=x_display[::max(1, len(x_display)//10)], showgrid=False),
         xaxis_rangeslider_visible=False, height=700, template="plotly_dark"
@@ -196,8 +159,33 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
     st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF 數據。註: 完整期貨夜盤需待永豐API串接)")
 
 # ==========================================
-# (其餘戰略室/損益室核心函數保留與先前完全相同)
+# 0. 頁面設定與初始化
 # ==========================================
+st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+
+# CSS 優化
+st.markdown("""
+<style>
+    [data-testid="stSidebar"] button { white-space: nowrap !important; text-overflow: clip !important; padding-left: 5px !important; padding-right: 5px !important; }
+    div.stButton > button { min-height: 45px; font-size: 20px; }
+    .stButton { margin-top: 5px; }
+    .calendar-header { font-size: 2.5em; font-weight: 900; text-align: center; color: #ff9800; margin-bottom: 10px; line-height: 1.5; font-family: 'Arial', sans-serif; }
+    .cal-box { text-align: center; padding: 5px; border-radius: 4px; margin: 2px; min-height: 90px; border: 1px solid #555; font-size: 0.9em; display: flex; flex-direction: column; justify-content: space-between; }
+    .cal-open { background-color: #000000 !important; color: #ffffff !important; }
+    .cal-closed { background-color: #d32f2f !important; color: #ffffff !important; font-weight: bold; }
+    .cal-week { background-color: #f0f0f0; color: #333; font-weight: bold; display: flex; align-items: center; justify-content: center; font-size: 0.8em; }
+    .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
+    .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
+    .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
+    .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.5); border-radius: 3px; padding: 1px;}
+    .today-border { border: 3px solid #ffff00 !important; }
+    div[data-testid="column"] { text-align: center; }
+</style>
+""", unsafe_allow_html=True)
+
+# 1. 標題
+st.title("⚡ 當沖戰略室 ⚡")
+
 CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
 URL_CACHE_FILE = "url_cache.json"
@@ -288,6 +276,15 @@ if 'cloud_url_input' not in st.session_state: st.session_state.cloud_url_input =
 if 'search_multiselect' not in st.session_state: st.session_state.search_multiselect = load_search_cache()
 if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
+
+# Fibo 標籤與狀態初始化
+if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = "^TWII 加權指數"
+if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
+if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = "2330 台積電"
+if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = "2317 鴻海"
+if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = "2454 聯發科"
+if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = "2603 長榮"
+if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = "3450 聯鈞"
 
 tz_tw = pytz.timezone('Asia/Taipei')
 now_tw = datetime.now(tz_tw)
@@ -421,16 +418,17 @@ def fetch_finmind_backup(code):
     except: pass
     return None
 
-def get_tick_size(price):
-    try: price = float(price)
-    except: return 0.01
-    if pd.isna(price) or price <= 0: return 0.01
-    if price < 10: return 0.01
-    if price < 50: return 0.05
-    if price < 100: return 0.1
-    if price < 500: return 0.5
-    if price < 1000: return 1.0
-    return 5.0
+def apply_sr_rules(price, base_price):
+    try:
+        p = float(price)
+        if math.isnan(p): return 0.0
+        tick = get_tick_size(p)
+        d_val = Decimal(str(p))
+        d_tick = Decimal(str(tick))
+        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
+        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
+        else: return round_to_tick(p)
+    except: return price
 
 def calculate_limits(price):
     try:
@@ -445,15 +443,6 @@ def calculate_limits(price):
         return float(f"{limit_up:.2f}"), float(f"{limit_down:.2f}")
     except: return 0, 0
 
-def apply_tick_rules(price):
-    try:
-        p = float(price)
-        if math.isnan(p): return 0.0
-        tick = get_tick_size(p)
-        rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
-        return float(rounded)
-    except: return price
-
 def move_tick(price, steps):
     try:
         curr = float(price)
@@ -466,18 +455,6 @@ def move_tick(price, steps):
                 tick = get_tick_size(curr - 0.0001)
                 curr = round(curr - tick, 2)
         return curr
-    except: return price
-
-def apply_sr_rules(price, base_price):
-    try:
-        p = float(price)
-        if math.isnan(p): return 0.0
-        tick = get_tick_size(p)
-        d_val = Decimal(str(p))
-        d_tick = Decimal(str(tick))
-        if p < base_price: return float(math.ceil(d_val / d_tick) * d_tick)
-        elif p > base_price: return float(math.floor(d_val / d_tick) * d_tick)
-        else: return apply_tick_rules(p)
     except: return price
 
 def fmt_price(v):
@@ -711,8 +688,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     for idx, row in enumerate(recent_records):
         if idx in days_map:
             prefix = days_map[idx]
-            h_val = apply_tick_rules(row['High'])
-            l_val = apply_tick_rules(row['Low'])
+            h_val = round_to_tick(row['High'])
+            l_val = round_to_tick(row['Low'])
             if h_val > 0 and limit_down_show <= h_val <= limit_up_show: points.append({"val": h_val, "tag": f"{prefix}高"})
             if l_val > 0 and limit_down_show <= l_val <= limit_up_show: points.append({"val": l_val, "tag": f"{prefix}低"})
 
@@ -726,11 +703,11 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 2:
         last_candle = hist_strat.iloc[-1]
-        p_open = apply_tick_rules(last_candle['Open'])
+        p_open = round_to_tick(last_candle['Open'])
         if limit_down_show <= p_open <= limit_up_show: points.append({"val": p_open, "tag": ""})
 
-        p_high = apply_tick_rules(last_candle['High'])
-        p_low = apply_tick_rules(last_candle['Low'])
+        p_high = round_to_tick(last_candle['High'])
+        p_low = round_to_tick(last_candle['Low'])
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
         if limit_down_show <= p_low <= limit_up_show: 
              tag_low = "跌停" if limit_down_T and abs(p_low - limit_down_T) < 0.01 else ""
@@ -738,8 +715,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if len(hist_strat) >= 3:
         pre_prev_candle = hist_strat.iloc[-2]
-        pp_high = apply_tick_rules(pre_prev_candle['High'])
-        pp_low = apply_tick_rules(pre_prev_candle['Low'])
+        pp_high = round_to_tick(pre_prev_candle['High'])
+        pp_low = round_to_tick(pre_prev_candle['Low'])
         if limit_down_show <= pp_high <= limit_up_show: points.append({"val": pp_high, "tag": ""})
         if limit_down_show <= pp_low <= limit_up_show: points.append({"val": pp_low, "tag": ""})
 
@@ -751,8 +728,8 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         low_vals = hist_strat['Low'][hist_strat['Low'] > 0]
         low_90_raw = low_vals.min() if not low_vals.empty else hist_strat['Low'].min()
             
-        high_90 = apply_tick_rules(high_90_raw)
-        low_90 = apply_tick_rules(low_90_raw)
+        high_90 = round_to_tick(high_90_raw)
+        low_90 = round_to_tick(low_90_raw)
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
@@ -1273,102 +1250,136 @@ with tab2:
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
-    # 建立兩個子分頁
     tab_fibo_chart, tab_fibo_manual = st.tabs(["📊 圖表分析", "🧮 手動計算"])
 
     with tab_fibo_chart:
-        # [新增] 設定自訂標籤 (使用 expander 收納)
-        with st.expander("⚙️ 設定快速標籤"):
-            c1, c2, c3 = st.columns(3)
-            tag1 = c1.text_input("自訂標籤 1", value=st.session_state.custom_tag_1)
-            tag2 = c2.text_input("自訂標籤 2", value=st.session_state.custom_tag_2)
-            tag3 = c3.text_input("自訂標籤 3", value=st.session_state.custom_tag_3)
-            st.session_state.custom_tag_1 = tag1
-            st.session_state.custom_tag_2 = tag2
-            st.session_state.custom_tag_3 = tag3
-            st.info("💡 註：此處修改後，下方的快速標籤按鈕會立即更新。期貨相關資料(TWF=F)受限於免費資料源，無法完整呈現夜盤，未來串接永豐API即可改善。")
+        # [修正] 標籤按鈕點擊更新邏輯，使用 callback 函式
+        def set_fibo_search(val):
+            st.session_state.fibo_search_input = val
+            st.session_state.fibo_trigger_search = True
 
-        # [新增] 快速查詢標籤區塊
-        st.write("📌 **快速查詢標籤** (點擊直接帶入查詢)")
-        tag_cols = st.columns(6)
-        if tag_cols[0].button("加權點數", use_container_width=True): st.session_state.fibo_search_input = "^TWII"
-        if tag_cols[1].button("小台指", use_container_width=True): st.session_state.fibo_search_input = "TWF=F"
-        if tag_cols[2].button("微型台指", use_container_width=True): st.session_state.fibo_search_input = "TWF=F"
-        if tag_cols[3].button(st.session_state.custom_tag_1, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_1
-        if tag_cols[4].button(st.session_state.custom_tag_2, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_2
-        if tag_cols[5].button(st.session_state.custom_tag_3, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_3
+        with st.expander("⚙️ 設定快速標籤 (可修改名稱或代號)"):
+            c1, c2, c3, c4, c5 = st.columns(5)
+            st.session_state.custom_tag_1 = c1.text_input("快速標籤 1", value=st.session_state.custom_tag_1)
+            st.session_state.custom_tag_2 = c2.text_input("快速標籤 2", value=st.session_state.custom_tag_2)
+            st.session_state.custom_tag_3 = c3.text_input("快速標籤 3", value=st.session_state.custom_tag_3)
+            st.session_state.custom_tag_4 = c4.text_input("快速標籤 4", value=st.session_state.custom_tag_4)
+            st.session_state.custom_tag_5 = c5.text_input("快速標籤 5", value=st.session_state.custom_tag_5)
+            
+            st.info("💡 圖表字體大小設定：")
+            fibo_font_size = st.slider("調整圖表標籤字體大小", min_value=8, max_value=24, value=12)
 
-        # 讀取股票選單 (結合預設輸入值)
-        code_map_fibo, name_map_fibo = load_local_stock_names()
-        fibo_stock_options = [f"{c} {n}" for c, n in sorted(code_map_fibo.items())]
+        st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
+        # 8個按鈕排成一列
+        tag_cols = st.columns(8)
+        tag_cols[0].button("加權指數", on_click=set_fibo_search, args=("^TWII",), use_container_width=True)
+        tag_cols[1].button("小型台指", on_click=set_fibo_search, args=("TWF=F",), use_container_width=True)
+        tag_cols[2].button("微型台指", on_click=set_fibo_search, args=("TWF=F",), use_container_width=True)
         
-        current_input = st.text_input(
-            "🔍 輸入查詢代號 (可使用上方快捷按鈕或手動輸入)",
-            value=st.session_state.fibo_search_input,
-            key="fibo_manual_input"
+        tag_cols[3].button(st.session_state.custom_tag_1, on_click=set_fibo_search, args=(st.session_state.custom_tag_1,), use_container_width=True)
+        tag_cols[4].button(st.session_state.custom_tag_2, on_click=set_fibo_search, args=(st.session_state.custom_tag_2,), use_container_width=True)
+        tag_cols[5].button(st.session_state.custom_tag_3, on_click=set_fibo_search, args=(st.session_state.custom_tag_3,), use_container_width=True)
+        tag_cols[6].button(st.session_state.custom_tag_4, on_click=set_fibo_search, args=(st.session_state.custom_tag_4,), use_container_width=True)
+        tag_cols[7].button(st.session_state.custom_tag_5, on_click=set_fibo_search, args=(st.session_state.custom_tag_5,), use_container_width=True)
+
+        code_map_fibo, name_map_fibo = load_local_stock_names()
+        # 產生供搜尋的清單：先顯示股名，後顯示代號
+        fibo_stock_options = [f"{n} {c}" for c, n in sorted(code_map_fibo.items())]
+        
+        # 使用 selectbox 讓使用者可打字搜尋 (輸入中文或代號皆可)
+        # 由於我們用了 on_click callback，selectbox 需要跟 session_state 同步
+        selected_raw = st.selectbox(
+            "🔍 搜尋股票 (可直接輸入股號或股名查找，或點擊上方快捷按鈕)",
+            options=["^TWII 加權指數", "TWF=F 台指期貨"] + fibo_stock_options,
+            index=0 if st.session_state.fibo_search_input == "^TWII 加權指數" else None,
+            key="fibo_selectbox"
         )
         
-        # 確保狀態同步
-        if current_input != st.session_state.fibo_search_input:
-            st.session_state.fibo_search_input = current_input
+        # 決定最後要傳給圖表的代號
+        # 如果使用者點了按鈕，優先使用按鈕的值；否則使用下拉選單輸入的值
+        if st.session_state.fibo_trigger_search:
+            final_target = st.session_state.fibo_search_input
+            st.session_state.fibo_trigger_search = False # 重置
+        else:
+            final_target = selected_raw if selected_raw else "^TWII"
 
-        target_stock = st.session_state.fibo_search_input.split(' ')[0]
+        # 解析代號。我們的選單格式是 "名稱 代號" 或 "代號 名稱" 或純 "代號"
+        parts = final_target.split(' ')
+        if len(parts) > 1:
+            # 如果第二個部分是純數字或是帶有後綴的，那就是代號
+            if parts[1].isdigit() or parts[1].endswith("=F"):
+                target_stock = parts[1]
+            else:
+                target_stock = parts[0]
+        else:
+            target_stock = parts[0]
+            
+        # 預設分頁邏輯：如果是加權、小台、微台，預設為 "5分" (索引 1)，否則為 "日" (索引 4)
+        default_tab_idx = 1 if target_stock in ["^TWII", "TWF=F"] else 4
         
-        # 迷你分頁設計
+        # Streamlit 目前無法動態切換 tab，所以我們直接畫圖
+        st.write("---")
         t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1分", "5分", "15分", "60分", "日", "週", "月"])
-
-        with t1: plot_fibonacci_chart(target_stock, "1m")
-        with t2: plot_fibonacci_chart(target_stock, "5m")
-        with t3: plot_fibonacci_chart(target_stock, "15m")
-        with t4: plot_fibonacci_chart(target_stock, "60m")
-        with t5: plot_fibonacci_chart(target_stock, "1d")
-        with t6: plot_fibonacci_chart(target_stock, "1wk")
-        with t7: plot_fibonacci_chart(target_stock, "1mo")
+        
+        # 自動依照預設分頁先畫一次在對應的 tab 裡，其他 tab 點進去再畫
+        with t1: plot_fibonacci_chart(target_stock, "1m", font_size=fibo_font_size)
+        with t2: plot_fibonacci_chart(target_stock, "5m", font_size=fibo_font_size)
+        with t3: plot_fibonacci_chart(target_stock, "15m", font_size=fibo_font_size)
+        with t4: plot_fibonacci_chart(target_stock, "60m", font_size=fibo_font_size)
+        with t5: plot_fibonacci_chart(target_stock, "1d", font_size=fibo_font_size)
+        with t6: plot_fibonacci_chart(target_stock, "1wk", font_size=fibo_font_size)
+        with t7: plot_fibonacci_chart(target_stock, "1mo", font_size=fibo_font_size)
 
     with tab_fibo_manual:
         st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
-        col_h, col_l = st.columns(2)
-        with col_h:
-            fibo_high = st.number_input("輸入波段高點：", value=33310.0, step=1.0)
-        with col_l:
-            fibo_low = st.number_input("輸入波段低點：", value=33071.0, step=1.0)
-            
-        if fibo_high > 0 and fibo_low > 0 and fibo_high >= fibo_low:
-            diff = fibo_high - fibo_low
-            ratios_manual = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
-            
-            fibo_data = []
-            for r in ratios_manual:
-                price = fibo_low + (r * diff)
-                # 使用與台股相同的跳動邏輯四捨五入
-                calc_price = round_to_tick(price)
+        
+        # 版面縮排：使用空白 column 擠壓內容
+        spacer_left, content_col, spacer_right = st.columns([1, 2, 1])
+        
+        with content_col:
+            col_h, col_l = st.columns(2)
+            with col_h:
+                # 預設給 None 保持空白
+                fibo_high = st.number_input("輸入波段高點：", value=None, step=1.0, format="%f")
+            with col_l:
+                fibo_low = st.number_input("輸入波段低點：", value=None, step=1.0, format="%f")
                 
-                fibo_data.append({
-                    "比例": f"{r:g}",
-                    "計算點位": calc_price,
-                    "_raw_r": r  # 隱藏欄位，用於樣式判斷
-                })
-            
-            df_fibo = pd.DataFrame(fibo_data)
-            
-            def style_fibo_manual(row):
-                # 您指定的重要點位 (0 到 1 區間)
-                important_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-                # 這裡使用絕對值比對或是直接比對皆可，依您需求我們 highlight 這幾個點位
-                if row["_raw_r"] in important_ratios:
-                    return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
-                return [''] * len(row)
-                
-            table_height = (len(df_fibo) + 1) * 36
-            st.dataframe(
-                df_fibo.style.apply(style_fibo_manual, axis=1), 
-                use_container_width=True, 
-                hide_index=True,
-                height=table_height,
-                column_config={"_raw_r": None}
-            )
-        else:
-            st.warning("波段高點必須大於波段低點且大於0")
+            if fibo_high is not None and fibo_low is not None:
+                if fibo_high > 0 and fibo_low > 0 and fibo_high >= fibo_low:
+                    diff = fibo_high - fibo_low
+                    ratios_manual = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+                    
+                    fibo_data = []
+                    for r in ratios_manual:
+                        price = fibo_low + (r * diff)
+                        calc_price = round_to_tick(price)
+                        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
+                        fibo_data.append({
+                            "比例": r_label,
+                            "計算點位": calc_price,
+                            "_raw_r": r 
+                        })
+                    
+                    df_fibo = pd.DataFrame(fibo_data)
+                    
+                    def style_fibo_manual(row):
+                        important_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+                        if row["_raw_r"] in important_ratios:
+                            return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
+                        return [''] * len(row)
+                        
+                    table_height = (len(df_fibo) + 1) * 36
+                    st.dataframe(
+                        df_fibo.style.apply(style_fibo_manual, axis=1), 
+                        use_container_width=True, 
+                        hide_index=True,
+                        height=table_height,
+                        column_config={"_raw_r": None}
+                    )
+                else:
+                    st.warning("波段高點必須大於波段低點且大於0")
+            else:
+                st.info("請在上方輸入高低點數值開始計算。")
 
 with tab3:
     def change_month(delta):
