@@ -759,15 +759,30 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
+    # 取得真實即時收盤與漲跌幅 (供表格顯示用，不受 13:45 限制)
+    live_base_price = hist.iloc[-1]['Close']
+    if len(hist) >= 2: live_prev_price = hist.iloc[-2]['Close']
+    else: live_prev_price = live_base_price
+    if live_prev_price > 0: live_pct_change = ((live_base_price - live_prev_price) / live_prev_price) * 100
+    else: live_pct_change = 0.0
+
     hist_strat = hist.copy()
+    
+    # [修正] 13:45 前排除今日資料，套用昨日指標；13:45 後才更新成當日指標
+    tz_tw_calc = pytz.timezone('Asia/Taipei')
+    now_tw_calc = datetime.now(tz_tw_calc)
+    switch_time = dt_time(13, 45)
+    
+    if now_tw_calc.time() < switch_time:
+        if not hist_strat.empty and hist_strat.index[-1].date() == now_tw_calc.date():
+            if len(hist_strat) > 1:
+                hist_strat = hist_strat.iloc[:-1]
+
     if hist_strat.empty: return None
 
     strategy_base_price = hist_strat.iloc[-1]['Close']
     if len(hist_strat) >= 2: prev_of_base = hist_strat.iloc[-2]['Close']
     else: prev_of_base = strategy_base_price 
-
-    if prev_of_base > 0: pct_change = ((strategy_base_price - prev_of_base) / prev_of_base) * 100
-    else: pct_change = 0.0
 
     base_price_for_limit = strategy_base_price
     limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
@@ -868,7 +883,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
-        "代號": code, "名稱": final_name_display, "收盤價": round(strategy_base_price, 2), "漲跌幅": pct_change, "期貨": has_futures, 
+        "代號": code, "名稱": final_name_display, "收盤價": round(live_base_price, 2), "漲跌幅": live_pct_change, "期貨": has_futures, 
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note 
     }
