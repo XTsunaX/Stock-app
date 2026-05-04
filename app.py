@@ -58,8 +58,28 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
 
     # 取過去 90 根 K 棒
     df_subset = df.tail(lookback).copy()
-    high_90 = float(df_subset['High'].max())
-    low_90 = float(df_subset['Low'].min())
+    
+    # [修正] 新增防呆：移除掉 High 或 Low 是 NaN 的無效資料列
+    df_subset = df_subset.dropna(subset=['High', 'Low'])
+    
+    # [修正] 新增防呆：如果清掉 NaN 後沒有資料了，就提示錯誤並退出
+    if df_subset.empty:
+        st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
+        return
+
+    try:
+        high_90 = float(df_subset['High'].max())
+        low_90 = float(df_subset['Low'].min())
+        
+        # [修正] 避免高低點一樣導致除以 0 等預期外錯誤
+        if high_90 == low_90:
+            st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
+            return
+            
+    except Exception as e:
+        st.error(f"計算高低點時發生錯誤 ({ticker}, {interval})：{e}")
+        return
+
     diff = high_90 - low_90
 
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
