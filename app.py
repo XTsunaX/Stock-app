@@ -29,140 +29,6 @@ except ImportError:
     si = None
 
 # ==========================================
-# 費波計算核心函數 (新增部分)
-# ==========================================
-def get_taiwan_tick_size(price):
-    """符合台股點數跳動邏輯"""
-    if price < 10: return 0.01
-    elif price < 50: return 0.05
-    elif price < 100: return 0.1
-    elif price < 500: return 0.5
-    elif price < 1000: return 1
-    else: return 5
-
-def round_to_tick(price):
-    tick = get_taiwan_tick_size(price)
-    return round(price / tick) * tick
-
-def plot_fibonacci_chart(symbol, interval, lookback=90):
-    # 轉換 yfinance 的代號 (台股需加 .TW)
-    ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^")) else f"{symbol}.TW"
-
-    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
-    
-    # 改用 yf.Ticker() 避免多層級欄位導致的 KeyError
-    stock_data = yf.Ticker(ticker)
-    df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-
-    if 'High' not in df.columns or 'Low' not in df.columns:
-        st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料。")
-        return
-
-    # 取過去 90 根 K 棒
-    df_subset = df.tail(lookback).copy()
-    
-    # 移除空值防呆
-    df_subset = df_subset.dropna(subset=['High', 'Low'])
-    
-    if df_subset.empty:
-        st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
-        return
-
-    try:
-        high_90 = float(df_subset['High'].max())
-        low_90 = float(df_subset['Low'].min())
-        
-        if high_90 == low_90:
-            st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
-            return
-            
-    except Exception as e:
-        st.error(f"計算高低點時發生錯誤 ({ticker}, {interval})：{e}")
-        return
-
-    diff = high_90 - low_90
-    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
-    
-    fig = go.Figure()
-
-    # 將 x 軸轉為字串格式 (Category)，藉此消除無交易時段的空白
-    fmt = '%Y-%m-%d %H:%M:%S'
-    x_strings = df_subset.index.strftime(fmt).tolist()
-    
-    if interval in ["1d", "1wk", "1mo"]:
-        x_display = df_subset.index.strftime('%Y-%m-%d').tolist()
-    else:
-        x_display = df_subset.index.strftime('%m-%d %H:%M').tolist()
-
-    # K 線圖
-    fig.add_trace(go.Candlestick(
-        x=x_strings,
-        open=df_subset['Open'],
-        high=df_subset['High'],
-        low=df_subset['Low'],
-        close=df_subset['Close'],
-        name="K線"
-    ))
-
-    # 標記 90K 的最高與最低點
-    high_idx_str = df_subset['High'].idxmax().strftime(fmt)
-    low_idx_str = df_subset['Low'].idxmin().strftime(fmt)
-
-    fig.add_annotation(x=high_idx_str, y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
-    fig.add_annotation(x=low_idx_str, y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
-
-    # 費波納契線條
-    last_date_str = x_strings[-1]
-    first_date_str = x_strings[0]
-    
-    for r in ratios:
-        price = low_90 + r * diff
-        rounded_price = round_to_tick(price)
-        
-        fig.add_shape(type="line",
-            x0=first_date_str, y0=price, x1=last_date_str, y1=price,
-            line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid")
-        )
-        
-        fig.add_annotation(
-            x=last_date_str, y=price,
-            text=f"{r}({rounded_price:.2f})",
-            showarrow=False, xanchor="left", xshift=10,
-            font=dict(size=10, color="orange" if 0 <= r <= 1 else "gray")
-        )
-
-    # 限制 Y 軸視角範圍：鎖定在 -1 到 1 的費波區間 (隱藏太遠的線段)
-    y_min_view = low_90 - diff * 1.05  # -1 比例稍微往下
-    y_max_view = high_90 + diff * 0.05 # 1 比例稍微往上
-
-    if pd.isna(y_min_view) or pd.isna(y_max_view):
-        y_min_view, y_max_view = None, None
-
-    fig.update_layout(
-        title=f"{ticker} - {interval} 費波納契 90K 分析",
-        yaxis_title="點數",
-        yaxis=dict(
-            range=[y_min_view, y_max_view] if y_min_view and y_max_view else None,
-            autorange=False if y_min_view and y_max_view else True,
-            fixedrange=False # 允許使用者手動縮放/平移看到其他被隱藏的線條
-        ),
-        xaxis=dict(
-            type='category', # 使用類別型 X 軸來隱藏跳空的時段
-            tickmode='array',
-            tickvals=x_strings[::max(1, len(x_strings)//10)], # 均勻顯示標籤
-            ticktext=x_display[::max(1, len(x_display)//10)],
-            showgrid=False
-        ),
-        xaxis_rangeslider_visible=False,
-        height=700,
-        template="plotly_dark"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    last_update = df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-    st.caption(f"📊 數據最後更新時間: {last_update} (目前為 YF 數據，待替換為永豐即時 API)")
-
-# ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
@@ -190,7 +56,7 @@ st.markdown("""
         font-size: 2.5em;
         font-weight: 900;
         text-align: center;
-        color: #ff9800; /* 亮橘色 */
+        color: #ff9800;
         margin-bottom: 10px;
         line-height: 1.5;
         font-family: 'Arial', sans-serif;
@@ -209,40 +75,129 @@ st.markdown("""
         flex-direction: column;
         justify-content: space-between;
     }
-    .cal-open { 
-        background-color: #000000 !important; 
-        color: #ffffff !important; 
-    }
-    .cal-closed { 
-        background-color: #d32f2f !important; 
-        color: #ffffff !important; 
-        font-weight: bold;
-    }
-    .cal-week {
-        background-color: #f0f0f0;
-        color: #333;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.8em;
-    }
+    .cal-open { background-color: #000000 !important; color: #ffffff !important; }
+    .cal-closed { background-color: #d32f2f !important; color: #ffffff !important; font-weight: bold; }
+    .cal-week { background-color: #f0f0f0; color: #333; font-weight: bold; display: flex; align-items: center; justify-content: center; font-size: 0.8em; }
     .settle-m { color: #ffff00; font-weight: bold; font-size: 0.85em; margin-top: 2px; line-height: 1.2; } 
     .settle-w { color: #00e676; font-size: 0.8em; margin-top: 2px; } 
     .settle-f { color: #29b6f6; font-size: 0.8em; margin-top: 2px; } 
     .holiday-tag { font-size: 0.85em; margin-bottom: 2px; color: #ffeb3b; background-color: rgba(0,0,0,0.5); border-radius: 3px; padding: 1px;}
     .today-border { border: 3px solid #ffff00 !important; }
-    
-    /* 強制欄位內容置中 */
-    div[data-testid="column"] {
-        text-align: center;
-    }
+    div[data-testid="column"] { text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
-# 1. 標題
-st.title("⚡ 當沖戰略室 ⚡")
+# 初始化 Session State
+if 'fibo_search_input' not in st.session_state:
+    st.session_state.fibo_search_input = "^TWII"
+if 'custom_tag_1' not in st.session_state:
+    st.session_state.custom_tag_1 = "2330"
+if 'custom_tag_2' not in st.session_state:
+    st.session_state.custom_tag_2 = "2317"
+if 'custom_tag_3' not in st.session_state:
+    st.session_state.custom_tag_3 = "2454"
 
+# ==========================================
+# 費波計算核心函數
+# ==========================================
+def get_taiwan_tick_size(price):
+    if price < 10: return 0.01
+    elif price < 50: return 0.05
+    elif price < 100: return 0.1
+    elif price < 500: return 0.5
+    elif price < 1000: return 1
+    else: return 5
+
+def round_to_tick(price):
+    tick = get_taiwan_tick_size(price)
+    return round(price / tick) * tick
+
+def plot_fibonacci_chart(symbol, interval, lookback=90):
+    # 處理代號
+    if " " in symbol:
+        symbol = symbol.split(" ")[0]
+        
+    ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^") or "=" in symbol) else f"{symbol}.TW"
+    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    
+    stock_data = yf.Ticker(ticker)
+    df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+
+    # [修正] 如果 .TW 抓不到資料，自動嘗試 .TWO (上櫃)
+    if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+        ticker_two = ticker.replace(".TW", ".TWO")
+        stock_data = yf.Ticker(ticker_two)
+        df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+        if not df.empty:
+            ticker = ticker_two # 更新為正確的代號顯示
+
+    if 'High' not in df.columns or 'Low' not in df.columns:
+        st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
+        return
+
+    df_subset = df.tail(lookback).copy()
+    df_subset = df_subset.dropna(subset=['High', 'Low'])
+    
+    if df_subset.empty:
+        st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
+        return
+
+    try:
+        high_90 = float(df_subset['High'].max())
+        low_90 = float(df_subset['Low'].min())
+        if high_90 == low_90:
+            st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
+            return
+    except Exception as e:
+        st.error(f"計算高低點時發生錯誤：{e}")
+        return
+
+    diff = high_90 - low_90
+    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+    fig = go.Figure()
+
+    fmt = '%Y-%m-%d %H:%M:%S'
+    x_strings = df_subset.index.strftime(fmt).tolist()
+    if interval in ["1d", "1wk", "1mo"]: x_display = df_subset.index.strftime('%Y-%m-%d').tolist()
+    else: x_display = df_subset.index.strftime('%m-%d %H:%M').tolist()
+
+    fig.add_trace(go.Candlestick(
+        x=x_strings, open=df_subset['Open'], high=df_subset['High'],
+        low=df_subset['Low'], close=df_subset['Close'], name="K線"
+    ))
+
+    high_idx_str = df_subset['High'].idxmax().strftime(fmt)
+    low_idx_str = df_subset['Low'].idxmin().strftime(fmt)
+    fig.add_annotation(x=high_idx_str, y=high_90, text=f"最高:{round_to_tick(high_90)}", showarrow=True, arrowhead=1, yshift=10, font=dict(color="red"))
+    fig.add_annotation(x=low_idx_str, y=low_90, text=f"最低:{round_to_tick(low_90)}", showarrow=True, arrowhead=1, ay=40, font=dict(color="green"))
+
+    last_date_str = x_strings[-1]
+    first_date_str = x_strings[0]
+    
+    for r in ratios:
+        price = low_90 + r * diff
+        rounded_price = round_to_tick(price)
+        fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
+            line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid"))
+        fig.add_annotation(x=last_date_str, y=price, text=f"{r}({rounded_price:.2f})",
+            showarrow=False, xanchor="left", xshift=10, font=dict(size=10, color="orange" if 0 <= r <= 1 else "gray"))
+
+    y_min_view = low_90 - diff * 1.05
+    y_max_view = high_90 + diff * 0.05
+    if pd.isna(y_min_view) or pd.isna(y_max_view): y_min_view, y_max_view = None, None
+
+    fig.update_layout(
+        title=f"{ticker} - {interval} 費波納契 90K 分析", yaxis_title="點數",
+        yaxis=dict(range=[y_min_view, y_max_view] if y_min_view and y_max_view else None, autorange=False if y_min_view and y_max_view else True, fixedrange=False),
+        xaxis=dict(type='category', tickmode='array', tickvals=x_strings[::max(1, len(x_strings)//10)], ticktext=x_display[::max(1, len(x_display)//10)], showgrid=False),
+        xaxis_rangeslider_visible=False, height=700, template="plotly_dark"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF 數據。註: 完整期貨夜盤需待永豐API串接)")
+
+# ==========================================
+# (其餘戰略室/損益室核心函數保留與先前完全相同)
+# ==========================================
 CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
 URL_CACHE_FILE = "url_cache.json"
@@ -257,12 +212,7 @@ def load_config():
 
 def save_config(font_size, limit_rows, auto_update, delay_sec):
     try:
-        config = {
-            "font_size": font_size, 
-            "limit_rows": limit_rows,
-            "auto_update": auto_update,
-            "delay_sec": delay_sec
-        }
+        config = {"font_size": font_size, "limit_rows": limit_rows, "auto_update": auto_update, "delay_sec": delay_sec}
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
         return True
     except: return False
@@ -270,21 +220,14 @@ def save_config(font_size, limit_rows, auto_update, delay_sec):
 def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
     try:
         df_save = df.fillna("") 
-        data_to_save = {
-            "stock_data": df_save.to_dict(orient='records'),
-            "ignored_stocks": list(ignored_set),
-            "all_candidates": candidates,
-            "saved_notes": saved_notes
-        }
-        with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes}
+        with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except: pass
 
 def load_data_cache():
     if os.path.exists(DATA_CACHE_FILE):
         try:
-            with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f:
-                data = json.load(f)
+            with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f: data = json.load(f)
             df = pd.DataFrame(data.get('stock_data', []))
             ignored = set(data.get('ignored_stocks', []))
             candidates = data.get('all_candidates', [])
@@ -298,8 +241,7 @@ def load_url_history():
         try:
             with open(URL_CACHE_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
-                if "url" in data and isinstance(data["url"], str) and data["url"]:
-                    return [data["url"]]
+                if "url" in data and isinstance(data["url"], str) and data["url"]: return [data["url"]]
                 return data.get("urls", [])
         except: return []
     return []
@@ -313,28 +255,23 @@ def save_url_history(urls):
             if u_clean and u_clean not in seen:
                 unique_urls.append(u_clean)
                 seen.add(u_clean)
-        
-        with open(URL_CACHE_FILE, "w", encoding='utf-8') as f:
-            json.dump({"urls": unique_urls}, f)
+        with open(URL_CACHE_FILE, "w", encoding='utf-8') as f: json.dump({"urls": unique_urls}, f)
         return True
     except: return False
 
 def load_search_cache():
     if os.path.exists(SEARCH_CACHE_FILE):
         try:
-            with open(SEARCH_CACHE_FILE, "r", encoding='utf-8') as f:
-                data = json.load(f)
+            with open(SEARCH_CACHE_FILE, "r", encoding='utf-8') as f: data = json.load(f)
             return data.get("selected", [])
         except: return []
     return []
 
 def save_search_cache(selected_items):
     try:
-        with open(SEARCH_CACHE_FILE, "w", encoding='utf-8') as f:
-            json.dump({"selected": selected_items}, f, ensure_ascii=False)
+        with open(SEARCH_CACHE_FILE, "w", encoding='utf-8') as f: json.dump({"selected": selected_items}, f, ensure_ascii=False)
     except: pass
 
-# --- 初始化 Session State ---
 if 'stock_data' not in st.session_state:
     cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache()
     st.session_state.stock_data = cached_df
@@ -342,58 +279,26 @@ if 'stock_data' not in st.session_state:
     st.session_state.all_candidates = cached_candidates
     st.session_state.saved_notes = cached_notes
 
-if 'ignored_stocks' not in st.session_state:
-    st.session_state.ignored_stocks = set()
+if 'ignored_stocks' not in st.session_state: st.session_state.ignored_stocks = set()
+if 'all_candidates' not in st.session_state: st.session_state.all_candidates = []
+if 'calc_base_price' not in st.session_state: st.session_state.calc_base_price = 100.0
+if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = 100.0
+if 'url_history' not in st.session_state: st.session_state.url_history = load_url_history()
+if 'cloud_url_input' not in st.session_state: st.session_state.cloud_url_input = st.session_state.url_history[0] if st.session_state.url_history else ""
+if 'search_multiselect' not in st.session_state: st.session_state.search_multiselect = load_search_cache()
+if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
+if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 
-if 'all_candidates' not in st.session_state:
-    st.session_state.all_candidates = []
-
-if 'calc_base_price' not in st.session_state:
-    st.session_state.calc_base_price = 100.0
-
-if 'calc_view_price' not in st.session_state:
-    st.session_state.calc_view_price = 100.0
-
-if 'url_history' not in st.session_state:
-    st.session_state.url_history = load_url_history()
-
-if 'cloud_url_input' not in st.session_state:
-    st.session_state.cloud_url_input = st.session_state.url_history[0] if st.session_state.url_history else ""
-
-if 'search_multiselect' not in st.session_state:
-    st.session_state.search_multiselect = load_search_cache()
-
-if 'saved_notes' not in st.session_state:
-    st.session_state.saved_notes = {}
-
-if 'futures_list' not in st.session_state:
-    st.session_state.futures_list = set()
-
-# 行事曆日期狀態初始化
 tz_tw = pytz.timezone('Asia/Taipei')
 now_tw = datetime.now(tz_tw)
-if 'cal_year' not in st.session_state:
-    st.session_state.cal_year = now_tw.year
-if 'cal_month' not in st.session_state:
-    st.session_state.cal_month = now_tw.month
+if 'cal_year' not in st.session_state: st.session_state.cal_year = now_tw.year
+if 'cal_month' not in st.session_state: st.session_state.cal_month = now_tw.month
 
 saved_config = load_config()
-
-if 'font_size' not in st.session_state:
-    st.session_state.font_size = saved_config.get('font_size', 15)
-
-if 'limit_rows' not in st.session_state:
-    st.session_state.limit_rows = saved_config.get('limit_rows', 5)
-
-if 'auto_update_last_row' not in st.session_state:
-    st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
-
-if 'update_delay_sec' not in st.session_state:
-    st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
-
-# ==========================================
-# 1. 資料庫與網路功能
-# ==========================================
+if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 15)
+if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_config.get('limit_rows', 5)
+if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
+if 'update_delay_sec' not in st.session_state: st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
 
 @st.cache_data
 def load_local_stock_names():
@@ -425,38 +330,18 @@ def search_code_online(query):
     if query in name_map: return name_map[query]
     return None
 
-# --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    
-    current_font_size = st.slider(
-        "字體大小 (表格)", 
-        min_value=12, 
-        max_value=72, 
-        value=st.session_state.font_size,
-        key='font_size_slider'
-    )
+    current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider')
     st.session_state.font_size = current_font_size
-    
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
-    
-    # 近3日高低點選項
     show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值)")
-    
     st.markdown("---")
-    
-    current_limit_rows = st.number_input(
-        "顯示筆數 (檔案/雲端)", 
-        min_value=1, 
-        value=st.session_state.limit_rows,
-        key='limit_rows_input',
-    )
+    current_limit_rows = st.number_input("顯示筆數 (檔案/雲端)", min_value=1, value=st.session_state.limit_rows, key='limit_rows_input')
     st.session_state.limit_rows = current_limit_rows
     
     if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows, 
-                      st.session_state.auto_update_last_row, 
-                      st.session_state.update_delay_sec):
+        if save_config(current_font_size, current_limit_rows, st.session_state.auto_update_last_row, st.session_state.update_delay_sec):
             st.toast("設定已儲存！", icon="✅")
             
     st.markdown("### 資料管理")
@@ -465,14 +350,7 @@ with st.sidebar:
         ignored_list = sorted(list(st.session_state.ignored_stocks))
         options_map = {f"{c} {get_stock_name_online(c)}": c for c in ignored_list}
         options_display = list(options_map.keys())
-        
-        selected_ignored_display = st.multiselect(
-            "管理忽略股票",
-            options=options_display,
-            default=options_display,
-            label_visibility="collapsed",
-        )
-        
+        selected_ignored_display = st.multiselect("管理忽略股票", options=options_display, default=options_display, label_visibility="collapsed")
         current_selected_codes = set(options_map[opt] for opt in selected_ignored_display)
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             st.session_state.ignored_stocks = current_selected_codes
@@ -497,17 +375,15 @@ with st.sidebar:
             st.session_state.search_multiselect = []
             st.session_state.saved_notes = {} 
             save_search_cache([])
-            if os.path.exists(DATA_CACHE_FILE):
-                os.remove(DATA_CACHE_FILE)
+            if os.path.exists(DATA_CACHE_FILE): os.remove(DATA_CACHE_FILE)
             st.toast("資料已全部清空", icon="🗑️")
             st.rerun()
     
     st.caption("功能說明")
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
-    
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
-    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True, help="點擊前往 Goodinfo 網站下載 CSV")
+    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True)
     st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
     st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", use_container_width=True)
 
@@ -518,10 +394,8 @@ def fetch_futures_list():
         dfs = pd.read_html(url)
         if dfs:
             for df in dfs:
-                if '證券代號' in df.columns:
-                    return set(df['證券代號'].astype(str).str.strip().tolist())
-                if 'Stock Code' in df.columns:
-                    return set(df['Stock Code'].astype(str).str.strip().tolist())
+                if '證券代號' in df.columns: return set(df['證券代號'].astype(str).str.strip().tolist())
+                if 'Stock Code' in df.columns: return set(df['Stock Code'].astype(str).str.strip().tolist())
     except: pass
     return set()
 
@@ -531,14 +405,11 @@ def fetch_finmind_backup(code):
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={code}&start_date={start_date}"
         r = requests.get(url, timeout=5)
         data_json = r.json()
-        
         if data_json.get('msg') == 'success' and data_json.get('data'):
             df = pd.DataFrame(data_json['data'])
             df['Date'] = pd.to_datetime(df['date'])
             df = df.set_index('Date')
-            rename_map = {
-                'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'
-            }
+            rename_map = {'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'}
             df = df.rename(columns=rename_map)
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for c in cols:
@@ -546,14 +417,9 @@ def fetch_finmind_backup(code):
                     if c.lower() in df.columns: df[c] = df[c.lower()]
                     else: df[c] = 0.0 
                 df[c] = pd.to_numeric(df[c], errors='coerce')
-            
             return df[cols]
     except: pass
     return None
-
-# ==========================================
-# 2. 核心計算邏輯
-# ==========================================
 
 def get_tick_size(price):
     try: price = float(price)
@@ -636,12 +502,10 @@ def recalculate_row(row, points_map):
     code = row.get('代號')
     status = ""
     if pd.isna(custom_price) or str(custom_price).strip() == "": return status
-    
     try:
         price = float(custom_price)
         limit_up = row.get('當日漲停價')
         limit_down = row.get('當日跌停價')
-        
         l_up = float(limit_up) if limit_up and str(limit_up).replace('.','').isdigit() else None
         l_down = float(limit_down) if limit_down and str(limit_down).replace('.','').isdigit() else None
         
@@ -656,10 +520,8 @@ def recalculate_row(row, points_map):
             try: strat_values.append(float(fp))
             except: pass
             
-        if l_up is not None and abs(price - l_up) < 0.01: 
-            status = "🔴 漲停"
-        elif l_down is not None and abs(price - l_down) < 0.01: 
-            status = "🟢 跌停"
+        if l_up is not None and abs(price - l_up) < 0.01: status = "🔴 漲停"
+        elif l_down is not None and abs(price - l_down) < 0.01: status = "🟢 跌停"
         elif strat_values:
             max_val = max(strat_values)
             min_val = min(strat_values)
@@ -675,25 +537,20 @@ def recalculate_row(row, points_map):
 
 def generate_note_from_points(points, manual_note, show_3d):
     display_candidates = []
-    
     target_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
-    
     for p in points:
         t = p.get('tag', '')
-        if t in target_tags and not show_3d:
-            continue
+        if t in target_tags and not show_3d: continue
         if p['val'] <= 0: continue
         display_candidates.append(p)
         
     display_candidates.sort(key=lambda x: x['val'])
-    
     note_parts = []
     seen_vals = set() 
     
     for val, group in itertools.groupby(display_candidates, key=lambda x: round(x['val'], 2)):
         if val in seen_vals: continue
         seen_vals.add(val)
-        
         g_list = list(group)
         tags = [x['tag'] for x in g_list if x['tag']]
         
@@ -727,24 +584,17 @@ def generate_note_from_points(points, manual_note, show_3d):
         note_parts.append(item)
         
     auto_note = "-".join(note_parts)
-    
-    # 支援手動修改：若 manual_note 存在，直接顯示
     if manual_note:
-        if manual_note.startswith("[M]"):
-            return manual_note[3:], auto_note
-        if auto_note and manual_note.strip().startswith(auto_note.strip()):
-            return manual_note, auto_note
+        if manual_note.startswith("[M]"): return manual_note[3:], auto_note
+        if auto_note and manual_note.strip().startswith(auto_note.strip()): return manual_note, auto_note
         return f"{auto_note}{manual_note}", auto_note
-            
     return auto_note, auto_note
 
 def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
     code = str(code).strip()
-    
     hist = pd.DataFrame()
     source_used = "none"
     
-    # --- 1. 嘗試使用 twstock (fetch_31) ---
     try:
         stock = twstock.Stock(code)
         tw_data = stock.fetch_31()
@@ -756,23 +606,17 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             df_tw = df_tw.rename(columns=rename_map)
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
-            
             if not df_tw.empty:
                 hist = df_tw[cols]
                 source_used = "twstock"
-    except: 
-        pass
+    except: pass
 
-    # --- 2. 嘗試使用 yahoo_fin (使用者指定) ---
     if hist.empty and si is not None:
         try:
-            try:
-                df_yf = si.get_data(f"{code}.TW", start_date=(datetime.now() - timedelta(days=40)))
+            try: df_yf = si.get_data(f"{code}.TW", start_date=(datetime.now() - timedelta(days=40)))
             except:
-                try:
-                     df_yf = si.get_data(f"{code}.TWO", start_date=(datetime.now() - timedelta(days=40)))
-                except:
-                     df_yf = pd.DataFrame()
+                try: df_yf = si.get_data(f"{code}.TWO", start_date=(datetime.now() - timedelta(days=40)))
+                except: df_yf = pd.DataFrame()
             
             if not df_yf.empty:
                 rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
@@ -781,17 +625,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 if all(c in df_yf.columns for c in cols):
                     hist = df_yf[cols]
                     source_used = "yahoo_fin"
-        except:
-            pass
+        except: pass
 
-    # --- 3. 嘗試使用 FinMind (使用者指定) ---
     if hist.empty:
         df_fm = fetch_finmind_backup(code)
         if df_fm is not None and not df_fm.empty:
             hist = df_fm
             source_used = "finmind"
 
-    # --- 4. 嘗試使用 yfinance (最後備案) ---
     if hist.empty:
         try:
             ticker = yf.Ticker(f"{code}.TW")
@@ -815,66 +656,40 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             
             rt_time_str = rt_data['info']['time']
             rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
-            rt_date_parsed = pd.Timestamp(rt_dt.date())
-            
-            tz_tw = pytz.timezone('Asia/Taipei')
             today_date = pd.Timestamp(datetime.now(tz_tw).date())
 
             if hist.empty:
-                hist = pd.DataFrame([{
-                    'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
-                    'Close': rt_price, 'Volume': rt_vol
-                }], index=[today_date])
+                hist = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
             else:
-                if hist.index.tzinfo is not None:
-                    hist.index = hist.index.tz_localize(None)
-                
+                if hist.index.tzinfo is not None: hist.index = hist.index.tz_localize(None)
                 last_hist_date = hist.index[-1]
-                
                 if last_hist_date < today_date:
-                    is_weekday = datetime.now(tz_tw).weekday() < 5
-                    
-                    if is_weekday:
-                        new_row = pd.DataFrame([{
-                            'Open': rt_open, 'High': rt_high, 'Low': rt_low, 
-                            'Close': rt_price, 'Volume': rt_vol
-                        }], index=[today_date])
+                    if datetime.now(tz_tw).weekday() < 5:
+                        new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                         hist = pd.concat([hist, new_row])
                         hist.sort_index(inplace=True)
-                
                 elif last_hist_date == today_date:
                     hist.at[last_hist_date, 'Close'] = rt_price
                     hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
                     hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
                     hist.at[last_hist_date, 'Volume'] = rt_vol
-                    if hist.at[last_hist_date, 'Open'] == 0:
-                        hist.at[last_hist_date, 'Open'] = rt_open
-    except:
-        pass 
+                    if hist.at[last_hist_date, 'Open'] == 0: hist.at[last_hist_date, 'Open'] = rt_open
+    except: pass 
 
     if hist.empty: return None
-
-    if hist.index.tzinfo is not None:
-        hist.index = hist.index.tz_localize(None)
-
+    if hist.index.tzinfo is not None: hist.index = hist.index.tz_localize(None)
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
     hist_strat = hist.copy()
-    
     if hist_strat.empty: return None
 
     strategy_base_price = hist_strat.iloc[-1]['Close']
-    
-    if len(hist_strat) >= 2:
-        prev_of_base = hist_strat.iloc[-2]['Close']
-    else:
-        prev_of_base = strategy_base_price 
+    if len(hist_strat) >= 2: prev_of_base = hist_strat.iloc[-2]['Close']
+    else: prev_of_base = strategy_base_price 
 
-    if prev_of_base > 0:
-        pct_change = ((strategy_base_price - prev_of_base) / prev_of_base) * 100
-    else:
-        pct_change = 0.0
+    if prev_of_base > 0: pct_change = ((strategy_base_price - prev_of_base) / prev_of_base) * 100
+    else: pct_change = 0.0
 
     base_price_for_limit = strategy_base_price
     limit_up_show, limit_down_show = calculate_limits(base_price_for_limit)
@@ -885,33 +700,25 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         prev_close_T = hist_strat.iloc[-2]['Close']
         limit_up_T, limit_down_T = calculate_limits(prev_close_T)
 
-    target_raw = strategy_base_price * 1.03
-    stop_raw = strategy_base_price * 0.97
-    target_price = apply_sr_rules(target_raw, strategy_base_price)
-    stop_price = apply_sr_rules(stop_raw, strategy_base_price)
+    target_price = apply_sr_rules(strategy_base_price * 1.03, strategy_base_price)
+    stop_price = apply_sr_rules(strategy_base_price * 0.97, strategy_base_price)
     
     points = []
-    
-    recent_k = hist_strat.tail(3)
-    days_map = {0: "今", 1: "昨", 2: "前"}
-    recent_records = recent_k.to_dict('records')
+    recent_records = hist_strat.tail(3).to_dict('records')
     recent_records.reverse()
+    days_map = {0: "今", 1: "昨", 2: "前"}
     
     for idx, row in enumerate(recent_records):
         if idx in days_map:
             prefix = days_map[idx]
             h_val = apply_tick_rules(row['High'])
             l_val = apply_tick_rules(row['Low'])
-            
-            if h_val > 0 and limit_down_show <= h_val <= limit_up_show:
-                points.append({"val": h_val, "tag": f"{prefix}高"})
-            if l_val > 0 and limit_down_show <= l_val <= limit_up_show:
-                points.append({"val": l_val, "tag": f"{prefix}低"})
+            if h_val > 0 and limit_down_show <= h_val <= limit_up_show: points.append({"val": h_val, "tag": f"{prefix}高"})
+            if l_val > 0 and limit_down_show <= l_val <= limit_up_show: points.append({"val": l_val, "tag": f"{prefix}低"})
 
     if len(hist_strat) >= 5:
         last_5_closes = hist_strat['Close'].tail(5).values
-        sum_val = sum(Decimal(str(x)) for x in last_5_closes)
-        avg_val = sum_val / Decimal("5")
+        avg_val = sum(Decimal(str(x)) for x in last_5_closes) / Decimal("5")
         ma5_raw = float(avg_val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         ma5 = apply_sr_rules(ma5_raw, strategy_base_price)
         ma5_tag = "多" if ma5_raw < strategy_base_price else ("空" if ma5_raw > strategy_base_price else "平")
@@ -920,17 +727,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     if len(hist_strat) >= 2:
         last_candle = hist_strat.iloc[-1]
         p_open = apply_tick_rules(last_candle['Open'])
-        if limit_down_show <= p_open <= limit_up_show: 
-             points.append({"val": p_open, "tag": ""})
+        if limit_down_show <= p_open <= limit_up_show: points.append({"val": p_open, "tag": ""})
 
         p_high = apply_tick_rules(last_candle['High'])
         p_low = apply_tick_rules(last_candle['Low'])
         if limit_down_show <= p_high <= limit_up_show: points.append({"val": p_high, "tag": ""})
-        
         if limit_down_show <= p_low <= limit_up_show: 
-             tag_low = ""
-             if limit_down_T and abs(p_low - limit_down_T) < 0.01:
-                 tag_low = "跌停"
+             tag_low = "跌停" if limit_down_T and abs(p_low - limit_down_T) < 0.01 else ""
              points.append({"val": p_low, "tag": tag_low})
 
     if len(hist_strat) >= 3:
@@ -946,89 +749,55 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     if not hist_strat.empty:
         high_90_raw = hist_strat['High'].max()
         low_vals = hist_strat['Low'][hist_strat['Low'] > 0]
-        if not low_vals.empty:
-            low_90_raw = low_vals.min()
-        else:
-            low_90_raw = hist_strat['Low'].min()
+        low_90_raw = low_vals.min() if not low_vals.empty else hist_strat['Low'].min()
             
         high_90 = apply_tick_rules(high_90_raw)
         low_90 = apply_tick_rules(low_90_raw)
-        
         points.append({"val": high_90, "tag": "高"})
         points.append({"val": low_90, "tag": "低"})
         
         if len(hist_strat) >= 2:
              today_high = hist_strat.iloc[-1]['High']
              if limit_up_T and abs(today_high - limit_up_T) < 0.01:
-                 is_new_high = (abs(limit_up_T - high_90_raw) < 0.05)
-                 tag_label = "漲停高" if is_new_high else "漲停"
-                 if limit_down_show <= limit_up_T <= limit_up_show:
-                     points.append({"val": limit_up_T, "tag": tag_label})
+                 tag_label = "漲停高" if (abs(limit_up_T - high_90_raw) < 0.05) else "漲停"
+                 if limit_down_show <= limit_up_T <= limit_up_show: points.append({"val": limit_up_T, "tag": tag_label})
 
         if len(hist_strat) >= 2:
             high_T = hist_strat.iloc[-1]['High']
             low_T = hist_strat.iloc[-1]['Low']
             close_T = hist_strat.iloc[-1]['Close']
-            touched_limit_up = (limit_up_T and high_T >= limit_up_T - 0.01) 
-            touched_limit_down = (limit_down_T and low_T <= limit_down_T + 0.01)
-            
-            if touched_limit_up and (limit_up_T and close_T >= limit_up_T * 0.97):
-                show_plus_3 = True
-            else:
-                show_plus_3 = False
-            if touched_limit_down and (limit_down_T and close_T <= limit_down_T * 1.03):
-                show_minus_3 = True
-            else:
-                show_minus_3 = False
-        else:
-            show_plus_3 = False
-            show_minus_3 = False
+            if (limit_up_T and high_T >= limit_up_T - 0.01) and (limit_up_T and close_T >= limit_up_T * 0.97): show_plus_3 = True
+            if (limit_down_T and low_T <= limit_down_T + 0.01) and (limit_down_T and close_T <= limit_down_T * 1.03): show_minus_3 = True
 
     if show_plus_3: points.append({"val": target_price, "tag": ""})
     if show_minus_3: points.append({"val": stop_price, "tag": ""})
         
     full_calc_points = []
     threed_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
-    
     for p in points:
         v = float(f"{p['val']:.2f}")
-        is_force = p.get('force', False)
-        if is_force or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show):
-             full_calc_points.append(p) 
+        if p.get('force', False) or p.get('tag') in threed_tags or (limit_down_show <= v <= limit_up_show): full_calc_points.append(p) 
     
-    manual_note = ""
-    if saved_notes_dict:
-        manual_note = saved_notes_dict.get(code, "")
-    
+    manual_note = saved_notes_dict.get(code, "") if saved_notes_dict else ""
     strategy_note, auto_note = generate_note_from_points(full_calc_points, manual_note, show_3d=False)
     
-    if name_hint:
-        final_name = name_hint
-    elif name_map_dict and code in name_map_dict:
-        final_name = name_map_dict[code]
-    else:
-        final_name = code
+    if name_hint: final_name = name_hint
+    elif name_map_dict and code in name_map_dict: final_name = name_map_dict[code]
+    else: final_name = code
 
-    light = "⚪"
-    if "多" in strategy_note: light = "🔴"
-    elif "空" in strategy_note: light = "🟢"
+    light = "🔴" if "多" in strategy_note else ("🟢" if "空" in strategy_note else "⚪")
     final_name_display = f"{light} {final_name}"
-    
     has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
-        "代號": code, "名稱": final_name_display, "收盤價": round(strategy_base_price, 2),
-        "漲跌幅": pct_change, "期貨": has_futures, 
-        "當日漲停價": limit_up_show, "當日跌停價": limit_down_show,
-        "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
-        "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "",
-        "_auto_note": auto_note 
+        "代號": code, "名稱": final_name_display, "收盤價": round(strategy_base_price, 2), "漲跌幅": pct_change, "期貨": has_futures, 
+        "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
+        "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note 
     }
 
 # ==========================================
 # 主介面 (Tabs)
 # ==========================================
-
 tab1, tab2, tab_fibo, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📅 台股行事曆"])
 
 with tab1:
@@ -1046,30 +815,16 @@ with tab1:
                     if not uploaded_file.name.endswith('.csv'):
                         xl_file = pd.ExcelFile(uploaded_file)
                         sheet_options = xl_file.sheet_names
-                        default_idx = 0
-                        if "週轉率" in sheet_options: default_idx = sheet_options.index("週轉率")
+                        default_idx = sheet_options.index("週轉率") if "週轉率" in sheet_options else 0
                         selected_sheet = st.selectbox("選擇工作表", sheet_options, index=default_idx)
                 except: pass
 
         with src_tab2:
-            def on_history_change():
-                st.session_state.cloud_url_input = st.session_state.history_selected
-
+            def on_history_change(): st.session_state.cloud_url_input = st.session_state.history_selected
             history_opts = st.session_state.url_history if st.session_state.url_history else ["(無紀錄)"]
-            
             c_sel, c_del = st.columns([8, 1], gap="small")
-            
             with c_sel:
-                selected = st.selectbox(
-                    "📜 歷史紀錄 (選取自動填入)", 
-                    options=history_opts,
-                    key="history_selected",
-                    index=None,
-                    placeholder="請選擇...",
-                    on_change=on_history_change,
-                    label_visibility="collapsed"
-                )
-            
+                selected = st.selectbox("📜 歷史紀錄 (選取自動填入)", options=history_opts, key="history_selected", index=None, placeholder="請選擇...", on_change=on_history_change, label_visibility="collapsed")
             with c_del:
                 if st.button("🗑️", help="刪除選取的歷史紀錄"):
                     if st.session_state.history_selected and st.session_state.history_selected in st.session_state.url_history:
@@ -1077,38 +832,19 @@ with tab1:
                         save_url_history(st.session_state.url_history)
                         st.toast("已刪除。", icon="🗑️")
                         st.rerun()
-
-            st.text_input(
-                "輸入連結 (CSV/Excel/Google Sheet)", 
-                key="cloud_url_input",
-                placeholder="https://..."
-            )
+            st.text_input("輸入連結 (CSV/Excel/Google Sheet)", key="cloud_url_input", placeholder="https://...")
         
-        def update_search_cache():
-            save_search_cache(st.session_state.search_multiselect)
-
-        search_selection = st.multiselect(
-            "🔍 快速查詢 (中文/代號)", 
-            options=stock_options, 
-            key="search_multiselect", 
-            on_change=update_search_cache, 
-            placeholder="輸入 2330 或 台積電..."
-        )
+        def update_search_cache(): save_search_cache(st.session_state.search_multiselect)
+        search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, key="search_multiselect", on_change=update_search_cache, placeholder="輸入 2330 或 台積電...")
 
     c_run, c_space = st.columns([1.5, 5])
-    
-    with c_run:
-        btn_run = st.button("🚀 執行分析", use_container_width=True)
+    with c_run: btn_run = st.button("🚀 執行分析", use_container_width=True)
 
     if btn_run:
         save_search_cache(st.session_state.search_multiselect)
-        
-        if not st.session_state.futures_list:
-            st.session_state.futures_list = fetch_futures_list()
-        
+        if not st.session_state.futures_list: st.session_state.futures_list = fetch_futures_list()
         targets = []
         df_up = pd.DataFrame()
-        
         current_url = st.session_state.cloud_url_input.strip()
         if current_url:
             if current_url not in st.session_state.url_history:
@@ -1182,27 +918,14 @@ with tab1:
                     count += 1
 
         st.session_state.all_candidates = targets
-
-        results = []
         seen = set()
         status_text = st.empty()
         bar = st.progress(0)
         
         upload_limit = st.session_state.limit_rows
         upload_current = 0
-        total_fetched = 0
-        
-        total_for_bar = len(search_selection) if search_selection else 0
-        total_for_bar += min(len([t for t in targets if t[2]=='upload']), upload_limit)
-        if total_for_bar == 0: total_for_bar = 1
-        
         existing_data = {}
-        old_data_backup = {}
-        if not st.session_state.stock_data.empty:
-             old_data_backup = st.session_state.stock_data.set_index('代號').to_dict('index')
-
         st.session_state.stock_data = pd.DataFrame() 
-        fetch_cache = {}
         
         futures_copy = set(st.session_state.futures_list)
         notes_copy = dict(st.session_state.saved_notes)
@@ -1210,42 +933,28 @@ with tab1:
 
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
             time.sleep(random.uniform(0.5, 1.5))
-            try:
-                data = fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map)
-                return (t_code, t_source, t_extra, data)
-            except Exception:
-                return (t_code, t_source, t_extra, None)
+            try: return (t_code, t_source, t_extra, fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map))
+            except Exception: return (t_code, t_source, t_extra, None)
 
         tasks_to_run = []
         for i, (code, name, source, extra) in enumerate(targets):
             if source == 'upload' and upload_current >= upload_limit: continue
             if code in st.session_state.ignored_stocks: continue
             if (code, source) in seen: continue
-            
             tasks_to_run.append((code, name, source, extra))
-            
-            if source == 'upload': 
-                upload_current += 1
+            if source == 'upload': upload_current += 1
             seen.add((code, source))
 
         with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_task = {}
-            for t in tasks_to_run:
-                future = executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy)
-                future_to_task[future] = t
-            
+            future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy): t for t in tasks_to_run}
             completed_count = 0
-            total_tasks = len(tasks_to_run)
-            if total_tasks == 0: total_tasks = 1
+            total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
             
             for future in as_completed(future_to_task):
                 t_code, t_source, t_extra, data = future.result()
-                
                 completed_count += 1
-                progress_val = min(completed_count / total_tasks, 1.0)
-                bar.progress(progress_val)
+                bar.progress(min(completed_count / total_tasks, 1.0))
                 status_text.text(f"正在分析 ({completed_count}/{total_tasks}): {t_code} ...")
-                
                 if data:
                     data['_source'] = t_source
                     data['_order'] = t_extra
@@ -1261,7 +970,6 @@ with tab1:
 
     if not st.session_state.stock_data.empty:
         df_all = st.session_state.stock_data.copy()
-        
         if '_source' not in df_all.columns: df_all['_source'] = 'upload'
         df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價", "獲利目標": "+3%", "防守停損": "-3%"})
         df_all['代號'] = df_all['代號'].astype(str)
@@ -1272,37 +980,22 @@ with tab1:
              mask_warrant = (df_all['代號'].str.len() > 4) & df_all['代號'].str.isdigit()
              df_all = df_all[~(mask_etf | mask_warrant)]
         
-        if '_source_rank' in df_all.columns:
-            df_all = df_all.sort_values(by=['_source_rank', '_order'])
-        
+        if '_source_rank' in df_all.columns: df_all = df_all.sort_values(by=['_source_rank', '_order'])
         df_display = df_all.reset_index(drop=True)
         
         for i, row in df_display.iterrows():
             points = row.get('_points', [])
             manual = st.session_state.saved_notes.get(row['代號'], "")
-            
             new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
-            
             df_display.at[i, "戰略備註"] = new_full_note
             df_display.at[i, "_auto_note"] = new_auto_note
-            
-            light = "⚪"
-            if "多" in new_full_note: light = "🔴"
-            elif "空" in new_full_note: light = "🟢"
-            
-            raw_name = row['名稱'].split(' ', 1)[-1] 
-            df_display.at[i, "名稱"] = f"{light} {raw_name}"
+            light = "🔴" if "多" in new_full_note else ("🟢" if "空" in new_full_note else "⚪")
+            df_display.at[i, "名稱"] = f"{light} {row['名稱'].split(' ', 1)[-1]}"
 
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
         df_display["移除"] = False
-        
-        points_map = {}
-        if '_points' in df_display.columns:
-            points_map = df_display.set_index('代號')['_points'].to_dict()
-        
-        auto_notes_dict = {}
-        if '_auto_note' in df_display.columns:
-            auto_notes_dict = df_display.set_index('代號')['_auto_note'].to_dict()
+        points_map = df_display.set_index('代號')['_points'].to_dict() if '_points' in df_display.columns else {}
+        auto_notes_dict = df_display.set_index('代號')['_auto_note'].to_dict() if '_auto_note' in df_display.columns else {}
 
         input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "期貨"]
         for col in input_cols:
@@ -1320,12 +1013,9 @@ with tab1:
                 try:
                     p = float(df_display.at[i, "收盤價"])
                     chg = float(df_display.at[i, "漲跌幅"])
-                    color_icon = "⚪"
-                    if chg > 0: color_icon = "🔴"
-                    elif chg < 0: color_icon = "🟢"
+                    color_icon = "🔴" if chg > 0 else ("🟢" if chg < 0 else "⚪")
                     df_display.at[i, "收盤價"] = f"{color_icon} {fmt_price(p)}"
-                    chg_str = f"{chg:+.2f}%"
-                    df_display.at[i, "漲跌幅"] = f"{color_icon} {chg_str}"
+                    df_display.at[i, "漲跌幅"] = f"{color_icon} {chg:+.2f}%"
                 except:
                     df_display.at[i, "收盤價"] = fmt_price(df_display.at[i, "收盤價"])
                     df_display.at[i, "漲跌幅"] = f"{float(df_display.at[i, '漲跌幅']):.2f}%"
@@ -1351,29 +1041,20 @@ with tab1:
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px, disabled=False),
             },
-            hide_index=True,
-            use_container_width=False,
-            num_rows="fixed",
-            key="main_editor"
+            hide_index=True, use_container_width=False, num_rows="fixed", key="main_editor"
         )
         
         if not edited_df.empty:
             trigger_rerun = False
-            
             if "移除" in edited_df.columns:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
                     remove_codes = to_remove["代號"].unique()
-                    for c in remove_codes:
-                        st.session_state.ignored_stocks.add(str(c))
-                    
-                    st.session_state.stock_data = st.session_state.stock_data[
-                        ~st.session_state.stock_data["代號"].isin(remove_codes)
-                    ]
+                    for c in remove_codes: st.session_state.ignored_stocks.add(str(c))
+                    st.session_state.stock_data = st.session_state.stock_data[~st.session_state.stock_data["代號"].isin(remove_codes)]
                     
                     upload_count = len(st.session_state.stock_data[st.session_state.stock_data['_source'] == 'upload'])
-                    limit = st.session_state.limit_rows
-                    needed = limit - upload_count
+                    needed = st.session_state.limit_rows - upload_count
                     
                     if needed > 0 and st.session_state.all_candidates:
                         replenished_count = 0
@@ -1383,26 +1064,15 @@ with tab1:
                         code_map_copy, _ = load_local_stock_names()
                         
                         for cand in st.session_state.all_candidates:
-                             c_code = str(cand[0])
-                             c_name = cand[1]
-                             c_source = cand[2]
-                             c_extra = cand[3]
-                             if c_source != 'upload': continue
-                             if c_code in st.session_state.ignored_stocks: continue
-                             if c_code in existing_codes: continue
+                             c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
+                             if c_source != 'upload' or c_code in st.session_state.ignored_stocks or c_code in existing_codes: continue
                              
                              data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
                              if data:
-                                 data['_source'] = c_source
-                                 data['_order'] = c_extra
-                                 data['_source_rank'] = 1
-                                 st.session_state.stock_data = pd.concat([
-                                     st.session_state.stock_data, 
-                                     pd.DataFrame([data])
-                                 ], ignore_index=True)
+                                 data.update({'_source': c_source, '_order': c_extra, '_source_rank': 1})
+                                 st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
                                  existing_codes.add(c_code)
                                  replenished_count += 1
-                             
                              if replenished_count >= needed: break
                     
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
@@ -1420,72 +1090,47 @@ with tab1:
                                 new_price = update_map[last_visible_code]['自訂價(可修)']
                                 old_price = str(row['自訂價(可修)'])
                                 if old_price != str(new_price) and str(new_price).strip().lower() != 'nan':
-                                    if st.session_state.update_delay_sec > 0:
-                                        time.sleep(st.session_state.update_delay_sec)
+                                    if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
                                     
                                     for j, r in st.session_state.stock_data.iterrows():
                                         c_code = r['代號']
                                         if c_code in update_map:
-                                            np = update_map[c_code]['自訂價(可修)']
-                                            nn = update_map[c_code]['戰略備註']
+                                            np, nn = update_map[c_code]['自訂價(可修)'], update_map[c_code]['戰略備註']
                                             st.session_state.stock_data.at[j, '自訂價(可修)'] = np
                                             if str(r['戰略備註']) != str(nn):
-                                                base_auto = auto_notes_dict.get(c_code, "")
-                                                pure_manual = ""
-                                                b_auto = str(base_auto).strip()
+                                                b_auto = str(auto_notes_dict.get(c_code, "")).strip()
                                                 n_note = str(nn).strip()
-                                                
-                                                if b_auto and n_note.startswith(b_auto):
-                                                    pure_manual = n_note[len(b_auto):]
-                                                else:
-                                                    pure_manual = f"[M]{n_note}"
-                                                
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
-                                                st.session_state.saved_notes[c_code] = pure_manual
+                                                st.session_state.saved_notes[c_code] = n_note[len(b_auto):] if b_auto and n_note.startswith(b_auto) else f"[M]{n_note}"
                                         
-                                        new_status = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
-                                        st.session_state.stock_data.at[j, '狀態'] = new_status
+                                        st.session_state.stock_data.at[j, '狀態'] = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
                                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
 
-            if trigger_rerun:
-                st.rerun()
+            if trigger_rerun: st.rerun()
 
         df_curr = st.session_state.stock_data
         if not df_curr.empty:
-            if '_source' not in df_curr.columns: upload_count = len(df_curr)
-            else: upload_count = len(df_curr[df_curr['_source'] == 'upload'])
+            upload_count = len(df_curr) if '_source' not in df_curr.columns else len(df_curr[df_curr['_source'] == 'upload'])
             limit = st.session_state.limit_rows
             
             if upload_count < limit and st.session_state.all_candidates:
                 needed = limit - upload_count
                 replenished_count = 0
                 existing_codes = set(st.session_state.stock_data['代號'].astype(str))
-                
                 futures_copy = set(st.session_state.futures_list)
                 notes_copy = dict(st.session_state.saved_notes)
                 code_map_copy, _ = load_local_stock_names()
 
                 with st.spinner("正在載入更多資料..."):
                     for cand in st.session_state.all_candidates:
-                         c_code = str(cand[0])
-                         c_name = cand[1]
-                         c_source = cand[2]
-                         c_extra = cand[3]
-                         if c_source != 'upload': continue
-                         if c_code in st.session_state.ignored_stocks: continue
-                         if c_code in existing_codes: continue
-                         
+                         c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
+                         if c_source != 'upload' or c_code in st.session_state.ignored_stocks or c_code in existing_codes: continue
                          data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
                          if data:
-                             data['_source'] = c_source
-                             data['_order'] = c_extra
-                             data['_source_rank'] = 1
-                             st.session_state.stock_data = pd.concat([
-                                 st.session_state.stock_data, 
-                                 pd.DataFrame([data])
-                             ], ignore_index=True)
+                             data.update({'_source': c_source, '_order': c_extra, '_source_rank': 1})
+                             st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
                              existing_codes.add(c_code)
                              replenished_count += 1
                          if replenished_count >= needed: break
@@ -1496,69 +1141,40 @@ with tab1:
                     st.rerun()
 
         st.markdown("---")
-        
         col_btn, col_clear, _ = st.columns([2, 2, 4])
-        with col_btn:
-            btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
-        with col_clear:
-            btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+        with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
+        with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
         
         if btn_clear_notes:
             st.session_state.saved_notes = {}
             st.toast("手動備註已清除", icon="🧹")
             if not st.session_state.stock_data.empty:
                  for idx, row in st.session_state.stock_data.iterrows():
-                     points = row.get('_points', [])
-                     clean_note, _ = generate_note_from_points(points, "", show_3d_hilo)
-                     
+                     clean_note, _ = generate_note_from_points(row.get('_points', []), "", show_3d_hilo)
                      st.session_state.stock_data.at[idx, '戰略備註'] = clean_note
-                     if '_auto_note' in st.session_state.stock_data.columns:
-                        st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
-
+                     if '_auto_note' in st.session_state.stock_data.columns: st.session_state.stock_data.at[idx, '_auto_note'] = clean_note
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.rerun()
         
-        auto_update = st.checkbox("☑️ 啟用最後一列自動更新", 
-            value=st.session_state.auto_update_last_row,
-            key="toggle_auto_update")
+        auto_update = st.checkbox("☑️ 啟用最後一列自動更新", value=st.session_state.auto_update_last_row, key="toggle_auto_update")
         st.session_state.auto_update_last_row = auto_update
-        
         if auto_update:
             col_delay, _ = st.columns([2, 8])
-            with col_delay:
-                delay_val = st.number_input("⏳ 緩衝秒數", 
-                    min_value=0.0, max_value=5.0, step=0.1, 
-                    value=st.session_state.update_delay_sec)
-                st.session_state.update_delay_sec = delay_val
+            with col_delay: st.session_state.update_delay_sec = st.number_input("⏳ 緩衝秒數", min_value=0.0, max_value=5.0, step=0.1, value=st.session_state.update_delay_sec)
 
         if btn_update:
              update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
              for i, row in st.session_state.stock_data.iterrows():
                 code = row['代號']
                 if code in update_map:
-                    new_val = update_map[code]['自訂價(可修)']
                     new_note = update_map[code]['戰略備註']
-                    st.session_state.stock_data.at[i, '自訂價(可修)'] = new_val
-                    
+                    st.session_state.stock_data.at[i, '自訂價(可修)'] = update_map[code]['自訂價(可修)']
                     if str(row['戰略備註']) != str(new_note):
-                        base_auto = auto_notes_dict.get(code, "")
-                        pure_manual = ""
-                        b_auto = str(base_auto).strip()
+                        b_auto = str(auto_notes_dict.get(code, "")).strip()
                         n_note = str(new_note).strip()
-                        
-                        if b_auto and n_note.startswith(b_auto):
-                            pure_manual = n_note[len(b_auto):]
-                        else:
-                            pure_manual = f"[M]{n_note}"
-                             
-                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                        st.session_state.saved_notes[code] = pure_manual
-                    else:
-                        st.session_state.stock_data.at[i, '戰略備註'] = new_note
-                
-                new_status = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
-                st.session_state.stock_data.at[i, '狀態'] = new_status
-             
+                        st.session_state.saved_notes[code] = n_note[len(b_auto):] if b_auto and n_note.startswith(b_auto) else f"[M]{n_note}"
+                    st.session_state.stock_data.at[i, '戰略備註'] = new_note
+                st.session_state.stock_data.at[i, '狀態'] = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
@@ -1657,33 +1273,102 @@ with tab2:
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
-    # 讀取現有的股票清單
-    code_map_fibo, name_map_fibo = load_local_stock_names()
-    fibo_stock_options = [f"{c} {n}" for c, n in sorted(code_map_fibo.items())]
-    
-    # 加入預設大盤選項
-    fibo_options_with_idx = ["^TWII 加權指數"] + fibo_stock_options
-    
-    # 將原本的 text_input 改為與戰略室一樣的 selectbox 下拉選單
-    selected_fibo_stock = st.selectbox(
-        "🔍 搜尋股票 (中文/代號)",
-        options=fibo_options_with_idx,
-        index=0
-    )
-    
-    # 解析出代號 (從選單值分割出的第一個元素)
-    target_stock = selected_fibo_stock.split(' ')[0]
-    
-    # 迷你分頁設計
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1分", "5分", "15分", "60分", "日", "週", "月"])
+    # 建立兩個子分頁
+    tab_fibo_chart, tab_fibo_manual = st.tabs(["📊 圖表分析", "🧮 手動計算"])
 
-    with t1: plot_fibonacci_chart(target_stock, "1m")
-    with t2: plot_fibonacci_chart(target_stock, "5m")
-    with t3: plot_fibonacci_chart(target_stock, "15m")
-    with t4: plot_fibonacci_chart(target_stock, "60m")
-    with t5: plot_fibonacci_chart(target_stock, "1d")
-    with t6: plot_fibonacci_chart(target_stock, "1wk")
-    with t7: plot_fibonacci_chart(target_stock, "1mo")
+    with tab_fibo_chart:
+        # [新增] 設定自訂標籤 (使用 expander 收納)
+        with st.expander("⚙️ 設定快速標籤"):
+            c1, c2, c3 = st.columns(3)
+            tag1 = c1.text_input("自訂標籤 1", value=st.session_state.custom_tag_1)
+            tag2 = c2.text_input("自訂標籤 2", value=st.session_state.custom_tag_2)
+            tag3 = c3.text_input("自訂標籤 3", value=st.session_state.custom_tag_3)
+            st.session_state.custom_tag_1 = tag1
+            st.session_state.custom_tag_2 = tag2
+            st.session_state.custom_tag_3 = tag3
+            st.info("💡 註：此處修改後，下方的快速標籤按鈕會立即更新。期貨相關資料(TWF=F)受限於免費資料源，無法完整呈現夜盤，未來串接永豐API即可改善。")
+
+        # [新增] 快速查詢標籤區塊
+        st.write("📌 **快速查詢標籤** (點擊直接帶入查詢)")
+        tag_cols = st.columns(6)
+        if tag_cols[0].button("加權點數", use_container_width=True): st.session_state.fibo_search_input = "^TWII"
+        if tag_cols[1].button("小台指", use_container_width=True): st.session_state.fibo_search_input = "TWF=F"
+        if tag_cols[2].button("微型台指", use_container_width=True): st.session_state.fibo_search_input = "TWF=F"
+        if tag_cols[3].button(st.session_state.custom_tag_1, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_1
+        if tag_cols[4].button(st.session_state.custom_tag_2, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_2
+        if tag_cols[5].button(st.session_state.custom_tag_3, use_container_width=True): st.session_state.fibo_search_input = st.session_state.custom_tag_3
+
+        # 讀取股票選單 (結合預設輸入值)
+        code_map_fibo, name_map_fibo = load_local_stock_names()
+        fibo_stock_options = [f"{c} {n}" for c, n in sorted(code_map_fibo.items())]
+        
+        current_input = st.text_input(
+            "🔍 輸入查詢代號 (可使用上方快捷按鈕或手動輸入)",
+            value=st.session_state.fibo_search_input,
+            key="fibo_manual_input"
+        )
+        
+        # 確保狀態同步
+        if current_input != st.session_state.fibo_search_input:
+            st.session_state.fibo_search_input = current_input
+
+        target_stock = st.session_state.fibo_search_input.split(' ')[0]
+        
+        # 迷你分頁設計
+        t1, t2, t3, t4, t5, t6, t7 = st.tabs(["1分", "5分", "15分", "60分", "日", "週", "月"])
+
+        with t1: plot_fibonacci_chart(target_stock, "1m")
+        with t2: plot_fibonacci_chart(target_stock, "5m")
+        with t3: plot_fibonacci_chart(target_stock, "15m")
+        with t4: plot_fibonacci_chart(target_stock, "60m")
+        with t5: plot_fibonacci_chart(target_stock, "1d")
+        with t6: plot_fibonacci_chart(target_stock, "1wk")
+        with t7: plot_fibonacci_chart(target_stock, "1mo")
+
+    with tab_fibo_manual:
+        st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
+        col_h, col_l = st.columns(2)
+        with col_h:
+            fibo_high = st.number_input("輸入波段高點：", value=33310.0, step=1.0)
+        with col_l:
+            fibo_low = st.number_input("輸入波段低點：", value=33071.0, step=1.0)
+            
+        if fibo_high > 0 and fibo_low > 0 and fibo_high >= fibo_low:
+            diff = fibo_high - fibo_low
+            ratios_manual = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+            
+            fibo_data = []
+            for r in ratios_manual:
+                price = fibo_low + (r * diff)
+                # 使用與台股相同的跳動邏輯四捨五入
+                calc_price = round_to_tick(price)
+                
+                fibo_data.append({
+                    "比例": f"{r:g}",
+                    "計算點位": calc_price,
+                    "_raw_r": r  # 隱藏欄位，用於樣式判斷
+                })
+            
+            df_fibo = pd.DataFrame(fibo_data)
+            
+            def style_fibo_manual(row):
+                # 您指定的重要點位 (0 到 1 區間)
+                important_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+                # 這裡使用絕對值比對或是直接比對皆可，依您需求我們 highlight 這幾個點位
+                if row["_raw_r"] in important_ratios:
+                    return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
+                return [''] * len(row)
+                
+            table_height = (len(df_fibo) + 1) * 36
+            st.dataframe(
+                df_fibo.style.apply(style_fibo_manual, axis=1), 
+                use_container_width=True, 
+                hide_index=True,
+                height=table_height,
+                column_config={"_raw_r": None}
+            )
+        else:
+            st.warning("波段高點必須大於波段低點且大於0")
 
 with tab3:
     def change_month(delta):
@@ -1695,32 +1380,20 @@ with tab3:
             st.session_state.cal_month = 12
             st.session_state.cal_year -= 1
         
-        if 'sel_year_box' in st.session_state:
-            del st.session_state['sel_year_box']
-        if 'sel_month_box' in st.session_state:
-            del st.session_state['sel_month_box']
+        if 'sel_year_box' in st.session_state: del st.session_state['sel_year_box']
+        if 'sel_month_box' in st.session_state: del st.session_state['sel_month_box']
 
     col_sel_y, col_sel_m = st.columns(2)
     with col_sel_y:
         current_year_idx = range(2024, 2031).index(st.session_state.cal_year)
-        new_year = st.selectbox(
-            "年份", 
-            range(2024, 2031), 
-            index=current_year_idx,
-            key='sel_year_box'
-        )
+        new_year = st.selectbox("年份", range(2024, 2031), index=current_year_idx, key='sel_year_box')
         if new_year != st.session_state.cal_year:
             st.session_state.cal_year = new_year
             st.rerun()
 
     with col_sel_m:
         current_month_idx = st.session_state.cal_month - 1
-        new_month = st.selectbox(
-            "月份", 
-            range(1, 13), 
-            index=current_month_idx,
-            key='sel_month_box'
-        )
+        new_month = st.selectbox("月份", range(1, 13), index=current_month_idx, key='sel_month_box')
         if new_month != st.session_state.cal_month:
             st.session_state.cal_month = new_month
             st.rerun()
@@ -1729,40 +1402,26 @@ with tab3:
     sel_month = st.session_state.cal_month
 
     col_prev, col_header, col_next = st.columns([1, 8, 1])
-    
-    with col_prev:
-        st.button("◀️", on_click=change_month, args=(-1,), use_container_width=True)
-
-    with col_next:
-        st.button("▶️", on_click=change_month, args=(1,), use_container_width=True)
-
-    with col_header:
-        st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
+    with col_prev: st.button("◀️", on_click=change_month, args=(-1,), use_container_width=True)
+    with col_next: st.button("▶️", on_click=change_month, args=(1,), use_container_width=True)
+    with col_header: st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
     def get_holidays(year):
         h = {}
         if year == 2025:
              h.update({
-                 (1, 1): "元旦",
-                 (1, 27): "春節", (1, 28): "春節", (1, 29): "春節", (1, 30): "春節", (1, 31): "春節",
-                 (2, 3): "春節", (2, 28): "228紀念日",
-                 (4, 3): "兒童節", (4, 4): "清明節",
-                 (5, 1): "勞動節", (5, 30): "端午節",
-                 (10, 6): "中秋節", (10, 10): "國慶日"
+                 (1, 1): "元旦", (1, 27): "春節", (1, 28): "春節", (1, 29): "春節", (1, 30): "春節", (1, 31): "春節",
+                 (2, 3): "春節", (2, 28): "228紀念日", (4, 3): "兒童節", (4, 4): "清明節",
+                 (5, 1): "勞動節", (5, 30): "端午節", (10, 6): "中秋節", (10, 10): "國慶日"
              })
-             
         if year == 2026:
             h.update({
-                (1, 1): "元旦",
-                (2, 11): "封關日",
-                (2, 12): "市場無交易", (2, 13): "市場無交易",
+                (1, 1): "元旦", (2, 11): "封關日", (2, 12): "市場無交易", (2, 13): "市場無交易",
                 (2, 14): "春節", (2, 15): "春節", (2, 16): "春節", (2, 17): "春節",
                 (2, 18): "春節", (2, 19): "春節", (2, 20): "春節", (2, 21): "春節", (2, 22): "春節",
                 (2, 27): "和平紀念日(補)", (2, 28): "和平紀念日",
                 (4, 3): "兒童節(補)", (4, 4): "兒童節", (4, 5): "清明節", (4, 6): "清明節(補)",
-                (5, 1): "勞動節",
-                (6, 19): "端午節",
-                (9, 25): "中秋節", (9, 28): "教師節",
+                (5, 1): "勞動節", (6, 19): "端午節", (9, 25): "中秋節", (9, 28): "教師節",
                 (10, 9): "國慶日(補)", (10, 10): "國慶日", (10, 25): "光復節", (10, 26): "光復節(補)",
                 (12, 25): "行憲紀念日"
             })
@@ -1773,66 +1432,41 @@ with tab3:
     def is_market_closed_func(d_date):
         if d_date.weekday() >= 5: return True
         name = current_holidays.get((d_date.month, d_date.day), "")
-        if name and name != "封關日":
-             return True
+        if name and name != "封關日": return True
         return False
 
     real_settlements = {} 
-    
     def calculate_month_settlements(y, m):
         cal_obj = calendar.Calendar(firstweekday=6)
         days_in_month = cal_obj.itermonthdays(y, m)
         d_list = [d for d in days_in_month if d != 0]
         
-        w_count = 0
-        f_count = 0
-        month_raw_wed = []
-        month_raw_fri = []
+        w_count, f_count = 0, 0
+        month_raw_wed, month_raw_fri = [], []
         
         for d in d_list:
             curr = date(y, m, d)
-            if curr.weekday() == 2: # Wed
-                w_count += 1
-                month_raw_wed.append((curr, w_count))
-            if curr.weekday() == 4: # Fri
-                f_count += 1
-                month_raw_fri.append((curr, f_count))
+            if curr.weekday() == 2: w_count += 1; month_raw_wed.append((curr, w_count))
+            if curr.weekday() == 4: f_count += 1; month_raw_fri.append((curr, f_count))
                 
         monthly_raw = month_raw_wed[2][0] if len(month_raw_wed) >= 3 else None
-        
         real_monthly_date = None
         if monthly_raw:
             check = monthly_raw
-            while is_market_closed_func(check):
-                check += timedelta(days=1)
+            while is_market_closed_func(check): check += timedelta(days=1)
             real_monthly_date = check
         
         local_results = []
-        if monthly_raw:
-            local_results.append((monthly_raw, 'M', f"{m:02}月", real_monthly_date))
+        if monthly_raw: local_results.append((monthly_raw, 'M', f"{m:02}月", real_monthly_date))
 
         for dt, idx in month_raw_wed:
-            if dt != monthly_raw:
-                yy = str(y)[2:]
-                mm = f"{m:02}"
-                code = f"{yy}{mm}W{idx}"
-                local_results.append((dt, 'W', code, real_monthly_date))
-                
-        for dt, idx in month_raw_fri:
-            yy = str(y)[2:]
-            mm = f"{m:02}"
-            code = f"{yy}{mm}F{idx}"
-            local_results.append((dt, 'F', code, real_monthly_date))
-            
+            if dt != monthly_raw: local_results.append((dt, 'W', f"{str(y)[2:]}{m:02}W{idx}", real_monthly_date))
+        for dt, idx in month_raw_fri: local_results.append((dt, 'F', f"{str(y)[2:]}{m:02}F{idx}", real_monthly_date))
         return local_results
 
     current_month_data = calculate_month_settlements(sel_year, sel_month)
-    
-    if sel_month == 1:
-        prev_y, prev_m = sel_year - 1, 12
-    else:
-        prev_y, prev_m = sel_year, sel_month - 1
-        
+    if sel_month == 1: prev_y, prev_m = sel_year - 1, 12
+    else: prev_y, prev_m = sel_year, sel_month - 1
     prev_month_data = calculate_month_settlements(prev_y, prev_m)
     
     all_raw_data = prev_month_data + current_month_data
@@ -1844,30 +1478,24 @@ with tab3:
             if (check_date - raw_date).days > 30: break
         
         if check_date.year == sel_year and check_date.month == sel_month:
-            if s_type == 'F' and check_date == m_date:
-                continue
-            
-            if check_date not in real_settlements:
-                real_settlements[check_date] = []
+            if s_type == 'F' and check_date == m_date: continue
+            if check_date not in real_settlements: real_settlements[check_date] = []
             real_settlements[check_date].append((s_type, s_code))
 
     week_days = ["週", "日", "一", "二", "三", "四", "五", "六"]
     cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
-    for i, d in enumerate(week_days):
-        cols[i].markdown(f"<div style='text-align: center; font-weight: bold;'>{d}</div>", unsafe_allow_html=True)
+    for i, d in enumerate(week_days): cols[i].markdown(f"<div style='text-align: center; font-weight: bold;'>{d}</div>", unsafe_allow_html=True)
 
     cal_obj = calendar.Calendar(firstweekday=6)
     month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
 
     for week in month_days:
         week_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
-        
         first_valid_day = next((d for d in week if d != 0), None)
         if first_valid_day:
             iso_week = date(sel_year, sel_month, first_valid_day).isocalendar()[1]
             week_cols[0].markdown(f"<div class='cal-box cal-week'>{iso_week}</div>", unsafe_allow_html=True)
-        else:
-            week_cols[0].markdown("")
+        else: week_cols[0].markdown("")
 
         for i, day in enumerate(week):
             if day == 0:
@@ -1875,33 +1503,21 @@ with tab3:
                 continue
             
             curr_date = date(sel_year, sel_month, day)
-            is_weekend = (i == 0 or i == 6)
-            
             holiday_name = current_holidays.get((sel_month, day), "")
             is_closed = is_market_closed_func(curr_date)
-            
             bg_class = "cal-closed" if is_closed else "cal-open"
             border_style = "today-border" if curr_date == now_tw.date() else ""
             
-            content_html = []
-            content_html.append(f"<b>{day}</b>")
-            
-            if holiday_name and holiday_name != "封關日":
-                content_html.append(f"<div class='holiday-tag'>{holiday_name}</div>")
-            if holiday_name == "封關日":
-                 content_html.append(f"<div style='color:#ff9800; font-size:0.8em;'>{holiday_name}</div>")
+            content_html = [f"<b>{day}</b>"]
+            if holiday_name and holiday_name != "封關日": content_html.append(f"<div class='holiday-tag'>{holiday_name}</div>")
+            if holiday_name == "封關日": content_html.append(f"<div style='color:#ff9800; font-size:0.8em;'>{holiday_name}</div>")
             
             if curr_date in real_settlements:
                 infos = real_settlements[curr_date]
                 infos.sort(key=lambda x: 0 if x[0]=='M' else 1)
-                
                 for s_type, s_code in infos:
-                    if s_type == 'M':
-                        content_html.append(f"<div class='settle-m'>台指期{s_code}結算<br>月選結算</div>")
-                    elif s_type == 'W':
-                        content_html.append(f"<div class='settle-w'>週選(三) {s_code}</div>")
-                    elif s_type == 'F':
-                        content_html.append(f"<div class='settle-f'>週選(五) {s_code}</div>")
+                    if s_type == 'M': content_html.append(f"<div class='settle-m'>台指期{s_code}結算<br>月選結算</div>")
+                    elif s_type == 'W': content_html.append(f"<div class='settle-w'>週選(三) {s_code}</div>")
+                    elif s_type == 'F': content_html.append(f"<div class='settle-f'>週選(五) {s_code}</div>")
 
-            final_html = "".join(content_html)
-            week_cols[i+1].markdown(f"<div class='cal-box {bg_class} {border_style}'>{final_html}</div>", unsafe_allow_html=True)
+            week_cols[i+1].markdown(f"<div class='cal-box {bg_class} {border_style}'>{''.join(content_html)}</div>", unsafe_allow_html=True)
