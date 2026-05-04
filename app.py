@@ -759,7 +759,18 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # 取得真實即時收盤與漲跌幅 (供表格顯示用，不受 13:45 限制)
+    # [修正] 所有指標 13:45 前排除今日資料，套用昨日指標；13:45 後才更新成當日指標 (包含收盤價、漲跌幅)
+    tz_tw_calc = pytz.timezone('Asia/Taipei')
+    now_tw_calc = datetime.now(tz_tw_calc)
+    switch_time = dt_time(13, 45)
+    
+    if now_tw_calc.time() < switch_time:
+        if not hist.empty and hist.index[-1].date() == now_tw_calc.date():
+            if len(hist) > 1:
+                hist = hist.iloc[:-1]
+
+    if hist.empty: return None
+
     live_base_price = hist.iloc[-1]['Close']
     if len(hist) >= 2: live_prev_price = hist.iloc[-2]['Close']
     else: live_prev_price = live_base_price
@@ -767,18 +778,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     else: live_pct_change = 0.0
 
     hist_strat = hist.copy()
-    
-    # [修正] 13:45 前排除今日資料，套用昨日指標；13:45 後才更新成當日指標
-    tz_tw_calc = pytz.timezone('Asia/Taipei')
-    now_tw_calc = datetime.now(tz_tw_calc)
-    switch_time = dt_time(13, 45)
-    
-    if now_tw_calc.time() < switch_time:
-        if not hist_strat.empty and hist_strat.index[-1].date() == now_tw_calc.date():
-            if len(hist_strat) > 1:
-                hist_strat = hist_strat.iloc[:-1]
-
-    if hist_strat.empty: return None
 
     strategy_base_price = hist_strat.iloc[-1]['Close']
     if len(hist_strat) >= 2: prev_of_base = hist_strat.iloc[-2]['Close']
