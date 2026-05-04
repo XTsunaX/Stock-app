@@ -1324,10 +1324,9 @@ with tab2:
         return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修正] DataFrame 渲染方式：保留輔助欄位套用樣式，但在顯示時將其隱藏 (hide_columns)
-        table_height = (len(df_calc) + 1) * 35 
-        styled_df = df_calc.style.apply(style_calc_row, axis=1).hide(subset=['_profit', '_note_type', '_is_base'], axis=1)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=table_height)
+        # [修正] DataFrame 渲染方式：改用 drop 將隱藏欄位徹底丟棄，避免 style 和 column_config 衝突
+        styled_df = df_calc.drop(columns=['_profit', '_note_type', '_is_base']).style.apply(lambda r: style_calc_row(df_calc.loc[r.name]), axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=(len(df_calc) + 1) * 35)
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1462,18 +1461,14 @@ with tab_fibo:
                     
                     def style_fibo_manual(row):
                         important_ratios = [0.0, 0.382, 0.5, 0.618, 1.0]
-                        if row["_raw_r"] in important_ratios:
+                        if df_fibo.loc[row.name, "_raw_r"] in important_ratios:
                             return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # [修改] 套用隱藏輔助欄位機制
-                    st.dataframe(
-                        df_fibo.style.apply(style_fibo_manual, axis=1).hide(subset=['_raw_r'], axis=1), 
-                        use_container_width=True, 
-                        hide_index=True,
-                        height=table_height
-                    )
+                    # [修改] 使用 drop 移除隱藏欄位確保表格穩定顯示
+                    styled_fibo = df_fibo.drop(columns=['_raw_r']).style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
+                    st.dataframe(styled_fibo, use_container_width=True, hide_index=True, height=table_height)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
