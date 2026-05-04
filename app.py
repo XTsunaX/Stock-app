@@ -1550,16 +1550,21 @@ with tab_fibo:
                     
                     def style_fibo_manual(row):
                         important_ratios = [0.0, 0.382, 0.5, 0.618, 1.0]
-                        if df_fibo.loc[row.name, "_raw_r"] in important_ratios:
+                        if row["_raw_r"] in important_ratios:
                             return ['background-color: #ffffcc; color: black; font-weight: bold;'] * len(row)
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # 隱藏 Index 及輔助欄位相容寫法
-                    df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
-                    styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
+                    # 直接對原始 DataFrame 上色
+                    styled_fibo = df_fibo.style.apply(style_fibo_manual, axis=1)
                     
-                    st.dataframe(styled_fibo, use_container_width=True, height=table_height, hide_index=True)
+                    st.dataframe(
+                        styled_fibo, 
+                        use_container_width=True, 
+                        height=table_height, 
+                        hide_index=True,
+                        column_config={"_raw_r": None} # 使用 column_config 隱藏輔助運算用的欄位
+                    )
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
