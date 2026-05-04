@@ -50,7 +50,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=90):
     ticker = symbol if (symbol.endswith(".TW") or symbol.endswith(".TWO") or symbol.startswith("^")) else f"{symbol}.TW"
 
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
-    df = yf.download(ticker, interval=interval, period=period_map.get(interval, "max"), progress=False)
+    stock_data = yf.Ticker(ticker)
+    df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+
+    if 'High' not in df.columns or 'Low' not in df.columns:
+        st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料。")
+        return
 
     if df.empty or len(df) < lookback:
         st.error(f"無法獲取足夠的數據 ({ticker}, {interval})。")
