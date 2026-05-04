@@ -1249,6 +1249,7 @@ with tab2:
     with c5: tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1)
     direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
+    
     b1, b2, _ = st.columns([1, 1, 6])
     with b1:
         if st.button("🔽 向下", use_container_width=True):
@@ -1269,7 +1270,8 @@ with tab2:
     if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = base_p
     view_p = st.session_state.calc_view_price
     is_long = "多" in direction
-    fee_rate = 0.001425; tax_rate = 0.0015 
+    fee_rate = 0.001425
+    tax_rate = 0.0015 
     
     for i in ticks_range:
         p = move_tick(view_p, i)
@@ -1277,24 +1279,26 @@ with tab2:
         # [修復] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
+        # [修復] 使用 int() 取代 math.floor() 以避免浮點數精度造成的 1 元手續費誤差
         if is_long:
             buy_price = base_p; sell_price = p
-            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
-            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
-            tax = math.floor(sell_price * shares * tax_rate)
+            buy_fee = max(min_fee, int(buy_price * shares * fee_rate * (discount/10)))
+            sell_fee = max(min_fee, int(sell_price * shares * fee_rate * (discount/10)))
+            tax = int(sell_price * shares * tax_rate)
             cost = (buy_price * shares) + buy_fee
             income = (sell_price * shares) - sell_fee - tax
             profit = income - cost
             total_fee = buy_fee + sell_fee
         else: 
             sell_price = base_p; buy_price = p
-            sell_fee = max(min_fee, math.floor(sell_price * shares * fee_rate * (discount/10)))
-            buy_fee = max(min_fee, math.floor(buy_price * shares * fee_rate * (discount/10)))
-            tax = math.floor(sell_price * shares * tax_rate)
+            sell_fee = max(min_fee, int(sell_price * shares * fee_rate * (discount/10)))
+            buy_fee = max(min_fee, int(buy_price * shares * fee_rate * (discount/10)))
+            tax = int(sell_price * shares * tax_rate)
             income = (sell_price * shares) - sell_fee - tax
             cost = (buy_price * shares) + buy_fee
             profit = income - cost
             total_fee = buy_fee + sell_fee
+            
         roi = 0
         if (base_p * shares) != 0: roi = (profit / (base_p * shares)) * 100
         diff = p - base_p
@@ -1314,7 +1318,7 @@ with tab2:
     df_calc = pd.DataFrame(calc_data)
     
     if not df_calc.empty:
-        # [修復] 將要顯示的乾淨欄位獨立，不依賴 Streamlit column_config 的隱藏功能，解決表格崩潰消失
+        # 將要顯示的乾淨欄位獨立
         display_cols = ["成交價", "漲跌", "預估損益", "報酬率%", "手續費", "交易稅"]
         df_display = df_calc[display_cols].copy()
         
@@ -1333,8 +1337,11 @@ with tab2:
             return ['color: gray'] * len(row)
 
         table_height = (len(df_calc) + 1) * 35 
-        styled_df = df_display.style.apply(style_calc_row, axis=1)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=table_height)
+        
+        # [修復] 將隱藏 index 的邏輯移交給 pandas styler 處理，並移除 st.dataframe 內的 hide_index 參數以避免崩潰
+        styled_df = df_display.style.hide(axis="index").apply(style_calc_row, axis=1)
+        st.dataframe(styled_df, use_container_width=True, height=table_height)
+
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
