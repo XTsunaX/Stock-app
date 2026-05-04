@@ -57,14 +57,18 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     display_name = raw_input
 
     # 針對大盤與期貨的特例處理
-    if raw_input in ["^TWII", "加權指數"]:
+    if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
         ticker_code = "^TWII"
         display_name = "加權指數(^TWII)"
-    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指"]:
+    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指", "台指期貨(TWF=F)"]:
         ticker_code = "TWF=F"
         display_name = "台指期貨(TWF=F)"
     else:
-        if " " in raw_input:
+        if "(" in raw_input and raw_input.endswith(")"):
+            name_part, code_part = raw_input.rsplit("(", 1)
+            ticker_code = code_part[:-1]
+            display_name = raw_input
+        elif " " in raw_input:
             parts = raw_input.split(" ", 1)
             if parts[0].isdigit() or parts[0].endswith(".TW") or parts[0].endswith(".TWO"):
                 ticker_code = parts[0]
@@ -276,10 +280,26 @@ def load_config():
 
 def save_config(font_size, limit_rows, auto_update, delay_sec):
     try:
-        config = {"font_size": font_size, "limit_rows": limit_rows, "auto_update": auto_update, "delay_sec": delay_sec}
+        config = load_config()
+        config.update({"font_size": font_size, "limit_rows": limit_rows, "auto_update": auto_update, "delay_sec": delay_sec})
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
         return True
     except: return False
+
+def save_fibo_config():
+    config = load_config()
+    config['fibo_tags'] = [
+        st.session_state.get('custom_tag_1', "台積電(2330)"), 
+        st.session_state.get('custom_tag_2', "鴻海(2317)"), 
+        st.session_state.get('custom_tag_3', "聯發科(2454)"), 
+        st.session_state.get('custom_tag_4', "長榮(2603)"), 
+        st.session_state.get('custom_tag_5', "聯鈞(3450)")
+    ]
+    if 'ma_w' in st.session_state:
+        config['ma_width'] = st.session_state.ma_w
+    try:
+        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
+    except: pass
 
 def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
     try:
@@ -354,13 +374,19 @@ if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 
 # Fibo 標籤與狀態初始化
-if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = "^TWII 加權指數"
+saved_config = load_config()
+fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "長榮(2603)", "聯鈞(3450)"])
+
+if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = "加權指數(^TWII)"
 if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
-if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = "2330 台積電"
-if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = "2317 鴻海"
-if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = "2454 聯發科"
-if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = "2603 長榮"
-if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = "3450 聯鈞"
+
+if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = fibo_tags[0] if len(fibo_tags)>0 else "台積電(2330)"
+if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = fibo_tags[1] if len(fibo_tags)>1 else "鴻海(2317)"
+if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = fibo_tags[2] if len(fibo_tags)>2 else "聯發科(2454)"
+if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = fibo_tags[3] if len(fibo_tags)>3 else "長榮(2603)"
+if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_tags[4] if len(fibo_tags)>4 else "聯鈞(3450)"
+
+if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
 # 控制圖表預設時間週期 ("1d" 或 "5m")
 if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
@@ -371,7 +397,6 @@ now_tw = datetime.now(tz_tw)
 if 'cal_year' not in st.session_state: st.session_state.cal_year = now_tw.year
 if 'cal_month' not in st.session_state: st.session_state.cal_month = now_tw.month
 
-saved_config = load_config()
 if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 15)
 if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_config.get('limit_rows', 5)
 if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
@@ -1375,14 +1400,35 @@ with tab2:
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
+    def format_fibo_tag(key):
+        val = st.session_state[key].strip()
+        if not val: 
+            save_fibo_config()
+            return
+        if "(" in val and val.endswith(")"): 
+            save_fibo_config()
+            return
+        
+        code_map, name_map = load_local_stock_names()
+        if val.isdigit():
+            name = code_map.get(val, "")
+            if name: st.session_state[key] = f"{name}({val})"
+        else:
+            matched_code = None
+            matched_name = None
+            for name, code in name_map.items():
+                if val in name:
+                    matched_code = code
+                    matched_name = name
+                    break
+            if matched_code:
+                st.session_state[key] = f"{matched_name}({matched_code})"
+        save_fibo_config()
+    
     tab_fibo_chart, tab_fibo_manual = st.tabs(["📊 圖表分析", "🧮 手動計算"])
 
     with tab_fibo_chart:
         code_map_fibo, name_map_fibo = load_local_stock_names()
-
-        def get_display_label(code, default_name):
-            name = code_map_fibo.get(code, "")
-            return f"{name}({code})" if name else default_name
 
         def set_fibo_search(val):
             st.session_state.fibo_search_input = val
@@ -1397,30 +1443,29 @@ with tab_fibo:
             st.session_state.fibo_font_size = st.slider("圖表標籤字體大小", min_value=8, max_value=24, value=st.session_state.fibo_font_size)
             st.write("---")
             c1, c2, c3, c4, c5 = st.columns(5)
-            st.session_state.custom_tag_1 = c1.text_input("快速標籤 1", value=st.session_state.custom_tag_1)
-            st.session_state.custom_tag_2 = c2.text_input("快速標籤 2", value=st.session_state.custom_tag_2)
-            st.session_state.custom_tag_3 = c3.text_input("快速標籤 3", value=st.session_state.custom_tag_3)
-            st.session_state.custom_tag_4 = c4.text_input("快速標籤 4", value=st.session_state.custom_tag_4)
-            st.session_state.custom_tag_5 = c5.text_input("快速標籤 5", value=st.session_state.custom_tag_5)
+            c1.text_input("快速標籤 1", key="custom_tag_1", on_change=format_fibo_tag, args=("custom_tag_1",))
+            c2.text_input("快速標籤 2", key="custom_tag_2", on_change=format_fibo_tag, args=("custom_tag_2",))
+            c3.text_input("快速標籤 3", key="custom_tag_3", on_change=format_fibo_tag, args=("custom_tag_3",))
+            c4.text_input("快速標籤 4", key="custom_tag_4", on_change=format_fibo_tag, args=("custom_tag_4",))
+            c5.text_input("快速標籤 5", key="custom_tag_5", on_change=format_fibo_tag, args=("custom_tag_5",))
 
         st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
         btn_labels = [
-            ("加權指數(^TWII)", "^TWII"),
-            ("小型台指(TWF=F)", "TWF=F"),
-            ("微型台指(TWF=F)", "TWF=F")
+            ("加權指數(^TWII)", "加權指數(^TWII)"),
+            ("台指期貨(TWF=F)", "台指期貨(TWF=F)")
         ]
         for tag in [st.session_state.custom_tag_1, st.session_state.custom_tag_2, st.session_state.custom_tag_3, st.session_state.custom_tag_4, st.session_state.custom_tag_5]:
-            if tag.strip(): btn_labels.append((get_display_label(tag.strip(), tag.strip()), tag.strip()))
+            if tag.strip(): btn_labels.append((tag.strip(), tag.strip()))
         
         if btn_labels:
             tag_cols = st.columns(len(btn_labels))
             for i, (label, val) in enumerate(btn_labels):
                 tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), use_container_width=True, key=f"btn_fibo_{i}")
 
-        fibo_stock_options = [f"{n} {c}" for c, n in sorted(code_map_fibo.items())]
+        fibo_stock_options = [f"{n}({c})" for c, n in sorted(code_map_fibo.items())]
         current_val = st.session_state.fibo_search_input
         default_index = 0
-        search_list = ["加權指數 ^TWII", "台指期貨 TWF=F"] + fibo_stock_options
+        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)"] + fibo_stock_options
         
         for i, opt in enumerate(search_list):
             if current_val in opt:
@@ -1453,7 +1498,7 @@ with tab_fibo:
         s_ma20 = col_m3.checkbox("20MA (綠)", value=True)
         s_ma60 = col_m4.checkbox("60MA (黃)", value=True)
         s_vol = col_v.checkbox("📊 顯示成交量", value=True)
-        ma_w = col_w.slider("均線粗細", min_value=1.0, max_value=5.0, value=1.5, step=0.5, label_visibility="collapsed")
+        ma_w = col_w.slider("均線粗細", min_value=1.0, max_value=5.0, value=st.session_state.ma_w, step=0.5, key="ma_w", on_change=save_fibo_config, label_visibility="collapsed")
         
         ma_flags = {'5': s_ma5, '10': s_ma10, '20': s_ma20, '60': s_ma60}
 
@@ -1472,7 +1517,7 @@ with tab_fibo:
         selected_interval = list(interval_options.keys())[list(interval_options.values()).index(selected_interval_label)]
         st.session_state.fibo_interval = selected_interval 
         
-        plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=ma_w, show_vol=s_vol)
+        plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=st.session_state.ma_w, show_vol=s_vol)
 
     with tab_fibo_manual:
         st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
@@ -1514,12 +1559,7 @@ with tab_fibo:
                     df_fibo_disp = df_fibo[["比例", "計算點位"]].copy()
                     styled_fibo = df_fibo_disp.style.apply(lambda r: style_fibo_manual(df_fibo.loc[r.name]), axis=1)
                     
-                    try:
-                        styled_fibo = styled_fibo.hide(axis="index")
-                    except:
-                        pass
-                        
-                    st.dataframe(styled_fibo, use_container_width=True, height=table_height)
+                    st.dataframe(styled_fibo, use_container_width=True, height=table_height, hide_index=True)
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
