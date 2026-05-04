@@ -11,3 +11,6 @@ lxml
 twstock
 FinMind
 feedparser
+plotly
+numpy
+yahoo_fin
