@@ -17,8 +17,6 @@ import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
 import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
@@ -28,15 +26,6 @@ try:
     import yahoo_fin.stock_info as si
 except ImportError:
     si = None
-
-# ==========================================
-# 建立全域 YFinance Session 降低 RateLimit 發生率
-# ==========================================
-yf_session = requests.Session()
-yf_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-})
 
 # ==========================================
 # 費波計算核心函數
@@ -98,15 +87,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
-    # 加上 try-except 防止 YFRateLimitError 導致整個網頁崩潰
     try:
-        stock_data = yf.Ticker(ticker, session=yf_session)
+        # 移除 session=yf_session，讓 yfinance 自行處理
+        stock_data = yf.Ticker(ticker)
         df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
 
         # 自動處理上櫃代號
         if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
             ticker_two = ticker.replace(".TW", ".TWO")
-            stock_data = yf.Ticker(ticker_two, session=yf_session)
+            stock_data = yf.Ticker(ticker_two)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
             if not df.empty:
                 ticker = ticker_two 
@@ -116,14 +105,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
             ticker = "^TWII"
             display_name = "加權指數(^TWII) *替代台指"
-            stock_data = yf.Ticker(ticker, session=yf_session)
+            stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
             
     except Exception as e:
-        if "RateLimitError" in str(type(e)):
-            st.error("⚠️ Yahoo Finance 存取頻率受限 (YFRateLimitError)。這通常是因雲端伺服器共用 IP 導致，請稍後再試。")
-        else:
-            st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
+        st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
         return
 
     if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
@@ -706,10 +692,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 
     if hist.empty:
         try:
-            ticker_obj = yf.Ticker(f"{code}.TW", session=yf_session)
+            ticker_obj = yf.Ticker(f"{code}.TW")
             hist_yf = ticker_obj.history(period="3mo")
             if hist_yf.empty:
-                ticker_obj = yf.Ticker(f"{code}.TWO", session=yf_session)
+                ticker_obj = yf.Ticker(f"{code}.TWO")
                 hist_yf = ticker_obj.history(period="3mo")
             if not hist_yf.empty:
                 hist = hist_yf
@@ -1326,9 +1312,10 @@ with tab2:
         
     df_calc = pd.DataFrame(calc_data)
     def style_calc_row(row):
-        is_base = row['_is_base']
-        nt = row['_note_type']
-        prof = row['_profit']
+        is_base = row.get('_is_base', False)
+        nt = row.get('_note_type', '')
+        prof = row.get('_profit', 0)
+        
         if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
         if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
         if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
@@ -1337,19 +1324,10 @@ with tab2:
         return ['color: gray'] * len(row)
 
     if not df_calc.empty:
-        # [修復] 使用 column_config 隱藏欄位，避免 dataframe 整個消失
-        styled_df = df_calc.style.apply(style_calc_row, axis=1)
-        st.dataframe(
-            styled_df, 
-            use_container_width=True, 
-            hide_index=True, 
-            height=(len(df_calc) + 1) * 35,
-            column_config={
-                "_profit": None, 
-                "_note_type": None, 
-                "_is_base": None
-            }
-        )
+        # [修正] DataFrame 渲染方式：保留輔助欄位套用樣式，但在顯示時將其隱藏 (hide_columns)
+        table_height = (len(df_calc) + 1) * 35 
+        styled_df = df_calc.style.apply(style_calc_row, axis=1).hide(subset=['_profit', '_note_type', '_is_base'], axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=table_height)
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
@@ -1489,12 +1467,12 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
+                    # [修改] 套用隱藏輔助欄位機制
                     st.dataframe(
-                        df_fibo.style.apply(style_fibo_manual, axis=1), 
+                        df_fibo.style.apply(style_fibo_manual, axis=1).hide(subset=['_raw_r'], axis=1), 
                         use_container_width=True, 
                         hide_index=True,
-                        height=table_height,
-                        column_config={"_raw_r": None}
+                        height=table_height
                     )
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
