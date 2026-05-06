@@ -112,6 +112,39 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
             
+        # [新增] 1. 收盤後即更新最新數據 (針對非指數與日K線，補足 yfinance 延遲)
+        if not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval == "1d":
+            try:
+                raw_code = ticker.split('.')[0]
+                rt_data = twstock.realtime.get(raw_code)
+                if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
+                    rt_price = float(rt_data['realtime']['latest_trade_price'])
+                    rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
+                    rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
+                    rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
+                    rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+                    
+                    tz_tw = pytz.timezone('Asia/Taipei')
+                    today_date = pd.Timestamp(datetime.now(tz_tw).date())
+                    
+                    if df.index.tzinfo is not None:
+                        df.index = df.index.tz_localize(None)
+
+                    last_hist_date = pd.Timestamp(df.index[-1].date())
+                    
+                    if last_hist_date < today_date:
+                        if datetime.now(tz_tw).weekday() < 5:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                            df = pd.concat([df, new_row])
+                    elif last_hist_date == today_date:
+                        df.at[df.index[-1], 'Close'] = rt_price
+                        df.at[df.index[-1], 'High'] = max(df['High'].iloc[-1], rt_high)
+                        df.at[df.index[-1], 'Low'] = min(df['Low'].iloc[-1], rt_low)
+                        df.at[df.index[-1], 'Volume'] = max(df['Volume'].iloc[-1], rt_vol)
+                        if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
+            except Exception:
+                pass
+
     except Exception as e:
         st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
         return
@@ -215,8 +248,51 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     interval_name = interval_display_map.get(interval, interval)
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
+    # [新增] 2. 將左上的名稱更改，顏色紅漲綠跌白平盤
+    try:
+        is_index = ticker.startswith('^') or 'TWF' in ticker
+        last_date_obj = df_subset.index[-1]
+        
+        if interval in ["1d", "1wk", "1mo"]:
+            date_str = last_date_obj.strftime('%Y/%m/%d')
+        else:
+            date_str = last_date_obj.strftime('%Y/%m/%d %H:%M')
+
+        op = float(df_subset['Open'].iloc[-1])
+        hi = float(df_subset['High'].iloc[-1])
+        lo = float(df_subset['Low'].iloc[-1])
+        cl = float(df_subset['Close'].iloc[-1])
+        vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
+
+        if len(df_subset) > 1:
+            prev_cl = float(df_subset['Close'].iloc[-2])
+        else:
+            prev_cl = cl
+
+        chg = cl - prev_cl
+        pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
+
+        color = "red" if chg > 0 else ("#00e676" if chg < 0 else "white")
+        sign = "+" if chg > 0 else ""
+
+        if is_index:
+            if ticker == '^TWII':
+                vol_display = f"{vol/100000000:.2f} 億" if vol > 100000000 else (f"{vol:,.2f} 億" if vol > 0 else "0 億")
+            else:
+                vol_display = f"{vol:,.0f} 單位"
+            price_unit = "點"
+            type_label = "指數"
+        else:
+            vol_display = f"{vol/1000:,.0f} 張"
+            price_unit = "元"
+            type_label = "股票"
+
+        title_html = f"<span style='color:{color};'>{type_label}:{display_name}{ticker_suffix} -{interval_name} {date_str} 開 {op:.2f} 高 {hi:.2f} 低 {lo:.2f} 收 {cl:.2f} {price_unit} 量 {vol_display} {sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
+    except Exception:
+        title_html = f"{display_name}{ticker_suffix} - {interval_name}"
+
     layout_update = dict(
-        title=f"{display_name}{ticker_suffix} - {interval_name}",
+        title=dict(text=title_html, font=dict(size=16)),
         template="plotly_dark",
         height=800 if show_vol else 700,
         showlegend=True,
@@ -1414,15 +1490,20 @@ with tab_fibo:
             name = code_map.get(val, "")
             if name: st.session_state[key] = f"{name}({val})"
         else:
-            matched_code = None
-            matched_name = None
+            # [新增] 3. 優先帶出股票，而非權證
+            matched_stocks = []
             for name, code in name_map.items():
                 if val in name:
-                    matched_code = code
-                    matched_name = name
-                    break
-            if matched_code:
-                st.session_state[key] = f"{matched_name}({matched_code})"
+                    matched_stocks.append((name, code))
+            if matched_stocks:
+                def sort_key(item):
+                    c = item[1]
+                    if c.isdigit() and len(c) <= 4: return 0
+                    elif c.isdigit(): return 1
+                    return 2
+                matched_stocks.sort(key=sort_key)
+                best_match = matched_stocks[0]
+                st.session_state[key] = f"{best_match[0]}({best_match[1]})"
         save_fibo_config()
     
     tab_fibo_chart, tab_fibo_manual = st.tabs(["📊 圖表分析", "🧮 手動計算"])
