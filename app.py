@@ -38,10 +38,12 @@ except ImportError:
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # 解析合約
-        if code in ["^TWII", "加權指數", "TSE"]:
+        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
-        elif code in ["TWF=F", "台指期貨", "TXF"]:
+        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
             contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
+            contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -122,9 +124,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
         ticker_code = "^TWII"
         display_name = "加權指數(^TWII)"
-    elif raw_input in ["TWF=F", "台指期貨", "小型台指", "微型台指", "台指期貨(TWF=F)"]:
+    elif raw_input in ["TWF=F", "台指期貨", "台指", "小型台指", "台指期貨(TWF=F)"]:
         ticker_code = "TWF=F"
         display_name = "台指期貨(TWF=F)"
+    elif raw_input in ["TMF=F", "微型台指期貨", "微台", "微型台指", "微型台指期貨(TMF=F)"]:
+        ticker_code = "TMF=F"
+        display_name = "微型台指期貨(TMF=F)"
     else:
         if "(" in raw_input and raw_input.endswith(")"):
             name_part, code_part = raw_input.rsplit("(", 1)
@@ -184,92 +189,97 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if not df.empty:
                     ticker = ticker_two 
 
-            # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
-            if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
-                st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
+            # 期貨異常保護：若完全無資料，以加權指數代替顯示以防報錯
+            if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
+                st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
                 ticker = "^TWII"
                 display_name = "加權指數(^TWII) *替代台指"
                 stock_data = yf.Ticker(ticker)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
                 
-            # 若有登入永豐，針對長週期透過 snapshot 即時推播補足 yfinance 的延遲
-            if st.session_state.get('sj_logged_in', False) and not df.empty and not ticker.startswith('^') and ticker != "TWF=F":
-                try:
+        # 只要有登入永豐，一律透過 snapshots 即時快照更新圖表最後一筆資料 (確保大盤成交量與期貨夜盤報價是最新的)
+        if st.session_state.get('sj_logged_in', False) and not df.empty:
+            try:
+                contract_snap = None
+                if ticker.startswith("^TWII"):
+                    contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
+                elif ticker == "TWF=F":
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                elif ticker == "TMF=F":
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
-                    except: contract_snap = None
-                    
-                    if contract_snap:
-                        snap = st.session_state.sj_api.snapshots([contract_snap])
-                        if snap and len(snap) > 0:
-                            s = snap[0]
-                            rt_price = s.close
-                            rt_open = s.open
-                            rt_high = s.high
-                            rt_low = s.low
-                            rt_vol = s.volume
-                            
-                            tz_tw = pytz.timezone('Asia/Taipei')
-                            today_date = pd.Timestamp(datetime.now(tz_tw).date())
-                            if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
-                            last_hist_date = pd.Timestamp(df.index[-1].date())
-                            
-                            if last_hist_date < today_date and datetime.now(tz_tw).weekday() < 5:
-                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                                df = pd.concat([df, new_row])
-                            elif last_hist_date == today_date:
-                                df.at[df.index[-1], 'Close'] = rt_price
-                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
-                                if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
-                            used_sj = True 
-                except Exception: pass
+                    except: pass
                 
-            # 完全無永豐資源下的 twstock 盤後修補方案
-            if not used_sj and not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
-                try:
-                    tz_tw = pytz.timezone('Asia/Taipei')
-                    now_tw = datetime.now(tz_tw)
-                    today_date = pd.Timestamp(now_tw.date())
-                    is_post_market = now_tw.time() >= dt_time(15, 0)
-                    
-                    rt_price = None
-                    rt_open = None
-                    rt_high = None
-                    rt_low = None
-                    rt_vol = 0.0
-
-                    rt_data = twstock.realtime.get(raw_code)
-                    if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
-                        rt_price = float(rt_data['realtime']['latest_trade_price'])
-                        rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
-                        rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
-                        rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
-                        rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
-                    
-                    if is_post_market and (rt_price is None or rt_price == 0):
-                        stock = twstock.Stock(raw_code)
-                        if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
-                            rt_price = float(stock.price[-1])
-                            rt_open = float(stock.open[-1])
-                            rt_high = float(stock.high[-1])
-                            rt_low = float(stock.low[-1])
-                            rt_vol = float(stock.capacity[-1])
-
-                    if rt_price is not None:
-                        if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
-                        last_hist_date = pd.Timestamp(df.index[-1].date())
+                if contract_snap:
+                    snap = st.session_state.sj_api.snapshots([contract_snap])
+                    if snap and len(snap) > 0:
+                        s = snap[0]
+                        rt_price = s.close
+                        rt_open = s.open
+                        rt_high = s.high
+                        rt_low = s.low
+                        rt_vol = s.volume
                         
-                        if last_hist_date < today_date and now_tw.weekday() < 5:
-                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                            df = pd.concat([df, new_row])
-                        elif last_hist_date == today_date:
-                            df.at[df.index[-1], 'Close'] = rt_price
-                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                            df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
-                            if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
-                except Exception: pass
+                        if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
+                        
+                        df.at[df.index[-1], 'Close'] = rt_price
+                        df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                        df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                        
+                        # 成交量快照通常是當日累積，針對長週期 K 線直接覆蓋
+                        if interval in ["1d", "1wk", "1mo"]:
+                            df.at[df.index[-1], 'Volume'] = rt_vol
+                            
+                        used_sj = True
+            except Exception as e:
+                pass
+                
+        # 完全無永豐資源下的 twstock 盤後修補方案 (避免 YF 收盤後延遲)
+        if not used_sj and not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and ticker != "TMF=F" and interval in ["1d", "1wk", "1mo"]:
+            try:
+                tz_tw = pytz.timezone('Asia/Taipei')
+                now_tw = datetime.now(tz_tw)
+                today_date = pd.Timestamp(now_tw.date())
+                is_post_market = now_tw.time() >= dt_time(15, 0)
+                
+                rt_price = None
+                rt_open = None
+                rt_high = None
+                rt_low = None
+                rt_vol = 0.0
+
+                rt_data = twstock.realtime.get(raw_code)
+                if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
+                    rt_price = float(rt_data['realtime']['latest_trade_price'])
+                    rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
+                    rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
+                    rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
+                    rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+                
+                if is_post_market and (rt_price is None or rt_price == 0):
+                    stock = twstock.Stock(raw_code)
+                    if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
+                        rt_price = float(stock.price[-1])
+                        rt_open = float(stock.open[-1])
+                        rt_high = float(stock.high[-1])
+                        rt_low = float(stock.low[-1])
+                        rt_vol = float(stock.capacity[-1])
+
+                if rt_price is not None:
+                    if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
+                    last_hist_date = pd.Timestamp(df.index[-1].date())
+                    
+                    if last_hist_date < today_date and now_tw.weekday() < 5:
+                        new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                        df = pd.concat([df, new_row])
+                    elif last_hist_date == today_date:
+                        df.at[df.index[-1], 'Close'] = rt_price
+                        df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                        df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                        df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                        if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
+            except Exception: pass
 
     except Exception as e:
         st.error(f"⚠️ 獲取數據失敗: {e}")
@@ -375,7 +385,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
     try:
-        is_index = ticker.startswith('^') or 'TWF' in ticker
+        is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
         last_date_obj = df_subset.index[-1]
         
         if interval in ["1d", "1wk", "1mo"]:
@@ -410,7 +420,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     vol_unit = " 億"
             else:
                 vol_num = f"{vol:,.0f}"
-                vol_unit = " 單位"
+                vol_unit = " 單位(口)"
             price_unit = " 點"
         else:
             vol_num = f"{vol/1000:,.0f}"
@@ -1708,7 +1718,7 @@ with tab_fibo:
         def set_fibo_search(val):
             st.session_state.fibo_search_input = val
             st.session_state.fibo_trigger_search = True
-            if "^TWII" in val or "TWF=F" in val or "加權" in val or "台指" in val:
+            if "^TWII" in val or "TWF=F" in val or "TMF=F" in val or "加權" in val or "台指" in val:
                 st.session_state.fibo_interval = "5m"
             else:
                 st.session_state.fibo_interval = "1d"
@@ -1727,7 +1737,8 @@ with tab_fibo:
         st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
         btn_labels = [
             ("加權指數(^TWII)", "加權指數(^TWII)"),
-            ("台指期貨(TWF=F)", "台指期貨(TWF=F)")
+            ("台指期貨(TWF=F)", "台指期貨(TWF=F)"),
+            ("微型台指期貨(TMF=F)", "微型台指期貨(TMF=F)")
         ]
         for tag in [st.session_state.custom_tag_1, st.session_state.custom_tag_2, st.session_state.custom_tag_3, st.session_state.custom_tag_4, st.session_state.custom_tag_5]:
             if tag.strip(): btn_labels.append((tag.strip(), tag.strip()))
@@ -1735,12 +1746,13 @@ with tab_fibo:
         if btn_labels:
             tag_cols = st.columns(len(btn_labels))
             for i, (label, val) in enumerate(btn_labels):
-                tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), use_container_width=True, key=f"btn_fibo_{i}")
+                if i < len(tag_cols):
+                    tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), use_container_width=True, key=f"btn_fibo_{i}")
 
         fibo_stock_options = [f"{n}({c})" for c, n in sorted(code_map_fibo.items())]
         current_val = st.session_state.fibo_search_input
         default_index = 0
-        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)"] + fibo_stock_options
+        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)", "微型台指期貨(TMF=F)"] + fibo_stock_options
         
         for i, opt in enumerate(search_list):
             if current_val in opt:
@@ -1750,7 +1762,7 @@ with tab_fibo:
         def selectbox_changed():
             val = st.session_state.fibo_selectbox
             st.session_state.fibo_search_input = val
-            if "^TWII" in val or "TWF=F" in val or "加權" in val or "台指" in val:
+            if "^TWII" in val or "TWF=F" in val or "TMF=F" in val or "加權" in val or "台指" in val:
                 st.session_state.fibo_interval = "5m"
             else:
                 st.session_state.fibo_interval = "1d"
