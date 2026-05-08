@@ -20,6 +20,7 @@ import random
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import streamlit.components.v1 as components
 
 # [新增] 引入 yahoo_fin 與 shioaji
 try:
@@ -1241,7 +1242,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # ==========================================
 # 主介面 (Tabs)
 # ==========================================
-tab1, tab2, tab_fibo, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📅 台股行事曆"])
+tab1, tab2, tab_fibo, tab_db, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📚 戰略資料庫", "📅 台股行事曆"])
 
 with tab1:
     col_search, col_file = st.columns([2, 1])
@@ -1897,6 +1898,127 @@ with tab_fibo:
                     st.warning("波段高點必須大於波段低點且大於0")
             else:
                 st.info("請在上方輸入高低點數值開始計算。")
+
+with tab_db:
+    sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
+    
+    with sub_tab1:
+        st.markdown("#### 📊 三大法人買賣超")
+        
+        # 選擇日期
+        db_date = st.date_input("選擇日期", value=datetime.now(tz_tw).date(), key="db_date")
+        date_str = db_date.strftime("%Y%m%d")
+        
+        st.markdown(f"**更新時間參考**: 總計約每日 15:00 更新，個股明細約每日 17:00 更新。資料來源: 台灣證券交易所/富邦。")
+        
+        if st.button("獲取三大法人買賣超總計"):
+            url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+            try:
+                r = requests.get(url, timeout=5)
+                data = r.json()
+                if data['stat'] == 'OK':
+                    df_inst = pd.DataFrame(data['data'], columns=data['fields'])
+                    
+                    def color_numeric(val):
+                        try:
+                            v = float(str(val).replace(',', ''))
+                            if v > 0: return 'color: #ff4b4b;'
+                            elif v < 0: return 'color: #00e676;'
+                        except: pass
+                        return ''
+                    
+                    st.dataframe(df_inst.style.applymap(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
+            except Exception as e:
+                st.error(f"獲取失敗: {e}")
+                
+        st.markdown("---")
+        st.markdown("#### 📈 法人買賣超個股 (以下顯示為最新交易日資料)")
+        
+        inst_tabs = st.tabs(["外資買賣超", "投信買賣超", "自營商買賣超"])
+        
+        def get_fubon_inst(url):
+            try:
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                r = requests.get(url, headers=headers, timeout=5)
+                r.encoding = 'big5'
+                dfs = pd.read_html(r.text)
+                if dfs:
+                    df = max(dfs, key=len)
+                    df = df.dropna(thresh=3)
+                    return df
+            except:
+                pass
+            return pd.DataFrame()
+        
+        with inst_tabs[0]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**外資買超**")
+                df_f_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_DD.djhtm")
+                if not df_f_buy.empty: st.dataframe(df_f_buy, hide_index=True)
+            with c2:
+                st.write("**外資賣超**")
+                df_f_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_D.djhtm")
+                if not df_f_sell.empty: st.dataframe(df_f_sell, hide_index=True)
+                
+        with inst_tabs[1]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**投信買超**")
+                df_i_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm")
+                if not df_i_buy.empty: st.dataframe(df_i_buy, hide_index=True)
+            with c2:
+                st.write("**投信賣超**")
+                df_i_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm")
+                if not df_i_sell.empty: st.dataframe(df_i_sell, hide_index=True)
+                
+        with inst_tabs[2]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**自營商買超**")
+                df_d_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_DD.djhtm")
+                if not df_d_buy.empty: st.dataframe(df_d_buy, hide_index=True)
+            with c2:
+                st.write("**自營商賣超**")
+                df_d_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_D.djhtm")
+                if not df_d_sell.empty: st.dataframe(df_d_sell, hide_index=True)
+
+    with sub_tab2:
+        st.markdown("#### 📜 台指期籌碼快訊")
+        st.markdown("資料來源: 永豐期貨")
+        try:
+            url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            r = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            
+            links = []
+            for a in soup.find_all('a', href=True):
+                if 'article.do' in a['href'] or 'download.do' in a['href'] or 'id=' in a['href']:
+                    title = a.text.strip()
+                    if '籌碼快訊' in title or '期貨' in title or len(title) > 5:
+                        href = a['href']
+                        if not href.startswith('http'):
+                            href = "https://www.spf.com.tw/sinopacSPF/research/" + href
+                        if (title, href) not in links:
+                            links.append((title, href))
+            
+            if links:
+                for t, h in links[:10]:
+                    st.markdown(f"- [{t}]({h})")
+            else:
+                components.iframe(url, height=600, scrolling=True)
+        except Exception as e:
+            st.error(f"無法載入資料: {e}")
+            st.link_button("點此前往永豐期貨網頁", "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51")
+
+    with sub_tab3:
+        st.markdown("#### 🚨 處置股預測與公告")
+        st.markdown("資料來源: [cmfaren.github.io/dispositionforecast](https://cmfaren.github.io/dispositionforecast/)")
+        components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
+
 
 with tab3:
     def change_month(delta):
