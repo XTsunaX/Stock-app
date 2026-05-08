@@ -16,4 +16,3 @@ numpy
 yahoo_fin
 shioaji
 urllib3
-base64
