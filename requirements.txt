@@ -17,3 +17,4 @@ yahoo_fin
 shioaji
 urllib3
 PyMuPDF
+pdf2image
