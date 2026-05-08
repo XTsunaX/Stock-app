@@ -157,27 +157,29 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
     
     try:
         df = pd.DataFrame()
         raw_code = ticker_code.split('.')[0]
-        used_sj = False
+        sj_kbars_used = False
+        sj_snap_used = False
+        twstock_used = False
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
             # 依據 interval 設定合理的 lookback_days 避免 API Timeout
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": int(lookback * 1.5)}
-            req_days = days_needed.get(interval, None)
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
             
-            # 若請求天數在合理範圍內 (<180天)，直接取永豐分鐘線運算
-            if req_days is not None and req_days <= 180:
+            if interval in days_needed:
+                req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
                 if not sj_df.empty:
                     df = sj_df
-                    used_sj = True
+                    sj_kbars_used = True
 
         # 若永豐未登入、沒抓到、或請求區間過大 (如日、週、月K)，退回使用 yfinance 並用永豐即時更新最新一根K棒
-        if not used_sj:
+        if not sj_kbars_used:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
 
@@ -194,8 +196,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
                 ticker = "^TWII"
                 display_name = "加權指數(^TWII) *替代台指"
+                is_index = True
                 stock_data = yf.Ticker(ticker)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                
+            # [修正 2] 將 YF 的個股成交量 (股) 統一轉換為 (張)
+            if not df.empty and not is_index and 'Volume' in df.columns:
+                df['Volume'] = df['Volume'] / 1000
                 
         # 只要有登入永豐，一律透過 snapshots 即時快照更新圖表最後一筆資料 (確保大盤成交量與期貨夜盤報價是最新的)
         if st.session_state.get('sj_logged_in', False) and not df.empty:
@@ -219,7 +226,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_open = s.open
                         rt_high = s.high
                         rt_low = s.low
-                        rt_vol = s.volume
+                        rt_vol = s.volume # 永豐 API snapshot volume 預設即為張數
                         
                         if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         
@@ -227,16 +234,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
                         df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
                         
-                        # 成交量快照通常是當日累積，針對長週期 K 線直接覆蓋
+                        # 成交量快照為當日累積，針對長週期 K 線直接覆蓋最新量能
                         if interval in ["1d", "1wk", "1mo"]:
                             df.at[df.index[-1], 'Volume'] = rt_vol
                             
-                        used_sj = True
+                        sj_snap_used = True
             except Exception as e:
                 pass
                 
         # 完全無永豐資源下的 twstock 盤後修補方案 (避免 YF 收盤後延遲)
-        if not used_sj and not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and ticker != "TMF=F" and interval in ["1d", "1wk", "1mo"]:
+        if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
                 now_tw = datetime.now(tz_tw)
@@ -264,7 +271,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_open = float(stock.open[-1])
                         rt_high = float(stock.high[-1])
                         rt_low = float(stock.low[-1])
-                        rt_vol = float(stock.capacity[-1])
+                        rt_vol = float(stock.capacity[-1]) / 1000 # stock.capacity 是股數，轉為張
 
                 if rt_price is not None:
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
@@ -279,6 +286,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
                         df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                         if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
+                    twstock_used = True
             except Exception: pass
 
     except Exception as e:
@@ -385,7 +393,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
     try:
-        is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
         last_date_obj = df_subset.index[-1]
         
         if interval in ["1d", "1wk", "1mo"]:
@@ -423,7 +430,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 vol_unit = " 單位(口)"
             price_unit = " 點"
         else:
-            vol_num = f"{vol/1000:,.0f}"
+            vol_num = f"{vol:,.0f}" # [修正 2] 前方邏輯已將個股統一除以 1000，此處直接顯示張數
             vol_unit = " 張"
             price_unit = " 元"
 
@@ -463,8 +470,20 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     fig.update_layout(**layout_update)
     st.plotly_chart(fig, use_container_width=True)
-    data_source_text = "永豐 Shioaji 即時數據" if used_sj else "YF 數據"
-    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} ({data_source_text})")
+    
+    # [修正 3] 更新時間為抓取當下的即時時間
+    fetch_time_str = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')
+    
+    if sj_kbars_used:
+        data_source_text = "永豐 Shioaji API (即時K線)"
+    elif sj_snap_used:
+        data_source_text = "YF歷史 + 永豐即時快照"
+    elif twstock_used:
+        data_source_text = "YF歷史 + Twstock即時"
+    else:
+        data_source_text = "YF 歷史數據"
+        
+    st.caption(f"📊 數據最後更新時間: {fetch_time_str} ({data_source_text})")
 
 
 # ==========================================
@@ -642,6 +661,16 @@ if 'sj_key' not in st.session_state: st.session_state.sj_key = saved_config.get(
 if 'sj_secret' not in st.session_state: st.session_state.sj_secret = saved_config.get('sj_secret', '')
 if 'remember_sj' not in st.session_state: st.session_state.remember_sj = saved_config.get('remember_sj', False)
 
+# [修正 1] 自動登入永豐 API 邏輯
+if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('sj_logged_in', False):
+    try:
+        if 'sj_api' not in st.session_state:
+            st.session_state.sj_api = sj.Shioaji(simulation=False)
+        st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
+        st.session_state.sj_logged_in = True
+    except:
+        pass
+
 @st.cache_data
 def load_local_stock_names():
     code_map = {}
@@ -677,33 +706,41 @@ with st.sidebar:
     if sj is None:
         st.error("⚠️ 未偵測到 shioaji 套件\n\n請先在終端機執行：\n`pip install shioaji`")
     else:
-        sj_api_key = st.text_input("API Key", type="password", value=st.session_state.sj_key, key="input_sj_key")
-        sj_secret = st.text_input("Secret Key", type="password", value=st.session_state.sj_secret, key="input_sj_secret")
-        remember_sj = st.checkbox("記住 API 資訊", value=st.session_state.remember_sj, key="input_remember_sj")
-        
-        if st.button("登入 Shioaji"):
-            try:
-                if 'sj_api' not in st.session_state:
-                    st.session_state.sj_api = sj.Shioaji(simulation=False)
-                st.session_state.sj_api.login(sj_api_key, sj_secret)
-                st.session_state.sj_logged_in = True
-                
-                # 登入成功後處理記憶功能
-                st.session_state.sj_key = sj_api_key
-                st.session_state.sj_secret = sj_secret
-                st.session_state.remember_sj = remember_sj
-                save_config(
-                    st.session_state.font_size, 
-                    st.session_state.limit_rows, 
-                    st.session_state.auto_update_last_row, 
-                    st.session_state.update_delay_sec, 
-                    sj_api_key, 
-                    sj_secret, 
-                    remember_sj
-                )
-                st.success("✅ 永豐 API 登入成功！")
-            except Exception as e:
-                st.error(f"❌ 登入失敗: {e}")
+        if st.session_state.get('sj_logged_in', False):
+            st.success("✅ 永豐 API 已登入")
+            if st.button("登出", key="btn_logout_sj"):
+                st.session_state.sj_logged_in = False
+                try: st.session_state.sj_api.logout()
+                except: pass
+                st.rerun()
+        else:
+            sj_api_key = st.text_input("API Key", type="password", value=st.session_state.sj_key, key="input_sj_key")
+            sj_secret = st.text_input("Secret Key", type="password", value=st.session_state.sj_secret, key="input_sj_secret")
+            remember_sj = st.checkbox("記住 API 資訊", value=st.session_state.remember_sj, key="input_remember_sj")
+            
+            if st.button("登入 Shioaji"):
+                try:
+                    if 'sj_api' not in st.session_state:
+                        st.session_state.sj_api = sj.Shioaji(simulation=False)
+                    st.session_state.sj_api.login(sj_api_key, sj_secret)
+                    st.session_state.sj_logged_in = True
+                    
+                    st.session_state.sj_key = sj_api_key
+                    st.session_state.sj_secret = sj_secret
+                    st.session_state.remember_sj = remember_sj
+                    save_config(
+                        st.session_state.font_size, 
+                        st.session_state.limit_rows, 
+                        st.session_state.auto_update_last_row, 
+                        st.session_state.update_delay_sec, 
+                        sj_api_key, 
+                        sj_secret, 
+                        remember_sj
+                    )
+                    st.success("✅ 永豐 API 登入成功！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 登入失敗: {e}")
     st.markdown("---")
 
     st.header("⚙️ 設定")
