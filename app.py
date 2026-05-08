@@ -22,6 +22,7 @@ from plotly.subplots import make_subplots
 import numpy as np
 import streamlit.components.v1 as components
 import urllib3
+import base64
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -718,6 +719,22 @@ with st.sidebar:
     else:
         if st.session_state.get('sj_logged_in', False):
             st.success("✅ 永豐 API 已登入")
+            
+            # [新增] 嘗試獲取今日剩餘額度 (API流量與帳戶餘額)
+            try:
+                usage = st.session_state.sj_api.usage()
+                rem_mb = usage.remaining_bytes / (1024 * 1024)
+                st.caption(f"📊 API 今日剩餘流量: {rem_mb:.2f} MB")
+            except:
+                pass
+            
+            try:
+                acc_bal = st.session_state.sj_api.account_balance()
+                if acc_bal and hasattr(acc_bal, 'acc_balance'):
+                    st.caption(f"💰 交割帳戶餘額: {acc_bal.acc_balance:,.0f} 元")
+            except:
+                pass
+
             if st.button("登出", key="btn_logout_sj"):
                 st.session_state.sj_logged_in = False
                 try: st.session_state.sj_api.logout()
@@ -1913,85 +1930,155 @@ with tab_db:
         db_date = st.date_input("選擇日期", value=datetime.now(tz_tw).date(), key="db_date")
         date_str = db_date.strftime("%Y%m%d")
         
-        st.markdown(f"**說明**: Shioaji API 核心主要提供即時報價與下單，並不包含完整的「三大法人買賣超總計」等外圍端點。已在此為您**加入瀏覽器偽裝來完美解決原始連線阻擋問題 (Expecting value...)**，並依需求僅顯示前 20 名。")
+        st.markdown(f"**說明**: 證交所資料遇阻擋時將自動切換為 FinMind 備援，個股排行限制顯示前 20 名並繪製為圖表。")
         
         if st.button("獲取三大法人買賣超總計"):
-            url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+            df_inst = pd.DataFrame()
             try:
-                # [修正] 加入 User-Agent 防止被證交所阻擋而回傳 HTML，徹底解決 Expecting value 解析錯誤
+                url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 r = requests.get(url, headers=headers, timeout=5, verify=False)
                 data = r.json()
                 if data['stat'] == 'OK':
                     df_inst = pd.DataFrame(data['data'], columns=data['fields'])
-                    
-                    def color_numeric(val):
-                        try:
-                            v = float(str(val).replace(',', ''))
-                            if v > 0: return 'color: #ff4b4b;'
-                            elif v < 0: return 'color: #00e676;'
-                        except: pass
-                        return ''
-                    
-                    st.dataframe(df_inst.style.map(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
-                else:
-                    st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
-            except Exception as e:
-                st.error(f"獲取失敗: {e}")
+            except:
+                pass
+                
+            # 若上述 TWSE 獲取失敗或被阻擋，觸發 FinMind 備援
+            if df_inst.empty:
+                st.info("💡 偵測到主要來源阻擋，切換至 FinMind 備援資料...")
+                fm_date = db_date.strftime("%Y-%m-%d")
+                try:
+                    fm_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTotalInstitutionalInvestors&start_date={fm_date}&end_date={fm_date}"
+                    r_fm = requests.get(fm_url, timeout=5, verify=False)
+                    data_fm = r_fm.json()
+                    if data_fm.get('msg') == 'success' and data_fm.get('data'):
+                        df = pd.DataFrame(data_fm['data'])
+                        df_inst = pd.DataFrame({
+                            "單位名稱": df['name'].replace({
+                                'Foreign_Investor': '外資及陸資',
+                                'Investment_Trust': '投信',
+                                'Dealer': '自營商'
+                            }),
+                            "買進金額": df['buy'],
+                            "賣出金額": df['sell'],
+                            "買賣差額": df['diff']
+                        })
+                except Exception as e:
+                    st.error(f"備援資料獲取失敗: {e}")
+
+            if not df_inst.empty:
+                def color_numeric(val):
+                    try:
+                        v = float(str(val).replace(',', ''))
+                        if v > 0: return 'color: #ff4b4b;'
+                        elif v < 0: return 'color: #00e676;'
+                    except: pass
+                    return ''
+                st.dataframe(df_inst.style.map(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
+                
+                # 買賣差額視覺化
+                try:
+                    chart_df = df_inst.copy()
+                    chart_df['買賣差額數值'] = chart_df['買賣差額'].astype(str).str.replace(',', '').astype(float)
+                    fig = go.Figure(data=[
+                        go.Bar(name='買賣差額', x=chart_df['單位名稱'], y=chart_df['買賣差額數值'], 
+                               marker_color=['#ff4b4b' if val > 0 else '#00e676' for val in chart_df['買賣差額數值']])
+                    ])
+                    fig.update_layout(title="三大法人買賣差額視覺化", template="plotly_dark", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                except:
+                    pass
+            else:
+                st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人買賣超個股 (前 20 名)")
         
         inst_tabs = st.tabs(["外資買賣超", "投信買賣超", "自營商買賣超"])
         
-        def get_fubon_inst(url):
+        def get_inst_top20(url, inst_type, is_buy):
+            # 1. 嘗試由 Fubon 獲取
             try:
-                # [修正] 增加 User-Agent 增強穩定性
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                 r = requests.get(url, headers=headers, timeout=5, verify=False)
                 r.encoding = 'big5'
                 dfs = pd.read_html(r.text)
                 if dfs:
                     df = max(dfs, key=len)
-                    df = df.dropna(thresh=3)
-                    # [修正] 僅返回前 20 名
-                    return df.head(20)
-            except:
+                    df = df.dropna(thresh=3).head(20)
+                    if not df.empty:
+                        return df
+            except: 
+                pass
+            
+            # 2. 備援 FinMind 獲取
+            fm_date = db_date.strftime("%Y-%m-%d")
+            fm_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&start_date={fm_date}&end_date={fm_date}"
+            try:
+                r = requests.get(fm_url, timeout=10, verify=False)
+                data = r.json()
+                if data.get('msg') == 'success' and data.get('data'):
+                    df = pd.DataFrame(data['data'])
+                    df_inst = df[df['name'] == inst_type]
+                    if not df_inst.empty:
+                        df_agg = df_inst.groupby('stock_id', as_index=False)['diff'].sum()
+                        if is_buy:
+                            df_sorted = df_agg[df_agg['diff'] > 0].sort_values(by='diff', ascending=False)
+                        else:
+                            df_sorted = df_agg[df_agg['diff'] < 0].sort_values(by='diff', ascending=True)
+                        df_top20 = df_sorted.head(20).copy()
+                        code_map, _ = load_local_stock_names()
+                        df_top20['股票名稱'] = df_top20['stock_id'].map(code_map).fillna('')
+                        df_top20 = df_top20.rename(columns={'stock_id': '代號', 'diff': '買賣超'})
+                        return df_top20[['代號', '股票名稱', '買賣超']]
+            except: 
                 pass
             return pd.DataFrame()
+
+        def render_inst_table(df, title, is_buy):
+            if not df.empty:
+                st.write(f"**{title}**")
+                st.dataframe(df, hide_index=True)
+                try:
+                    num_col = df.columns[-1]
+                    name_col = df.columns[1] if '名稱' in df.columns[1] else df.columns[0]
+                    chart_y = df[num_col].astype(str).str.replace(',', '').astype(float)
+                    color = '#ff4b4b' if is_buy else '#00e676'
+                    fig = go.Figure(data=[go.Bar(x=df[name_col], y=chart_y, marker_color=color)])
+                    fig.update_layout(template="plotly_dark", height=300, margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                except:
+                    pass
+            else:
+                st.write(f"**{title}** (無資料)")
         
         with inst_tabs[0]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**外資買超**")
-                df_f_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_DD.djhtm")
-                if not df_f_buy.empty: st.dataframe(df_f_buy, hide_index=True)
+                df_f_buy = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_DD.djhtm", "Foreign_Investor", True)
+                render_inst_table(df_f_buy, "外資買超", True)
             with c2:
-                st.write("**外資賣超**")
-                df_f_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_D.djhtm")
-                if not df_f_sell.empty: st.dataframe(df_f_sell, hide_index=True)
+                df_f_sell = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_D.djhtm", "Foreign_Investor", False)
+                render_inst_table(df_f_sell, "外資賣超", False)
                 
         with inst_tabs[1]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**投信買超**")
-                df_i_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm")
-                if not df_i_buy.empty: st.dataframe(df_i_buy, hide_index=True)
+                df_i_buy = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm", "Investment_Trust", True)
+                render_inst_table(df_i_buy, "投信買超", True)
             with c2:
-                st.write("**投信賣超**")
-                df_i_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm")
-                if not df_i_sell.empty: st.dataframe(df_i_sell, hide_index=True)
+                df_i_sell = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm", "Investment_Trust", False)
+                render_inst_table(df_i_sell, "投信賣超", False)
                 
         with inst_tabs[2]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**自營商買超**")
-                df_d_buy = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_DD.djhtm")
-                if not df_d_buy.empty: st.dataframe(df_d_buy, hide_index=True)
+                df_d_buy = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_DD.djhtm", "Dealer", True)
+                render_inst_table(df_d_buy, "自營商買超", True)
             with c2:
-                st.write("**自營商賣超**")
-                df_d_sell = get_fubon_inst("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_D.djhtm")
-                if not df_d_sell.empty: st.dataframe(df_d_sell, hide_index=True)
+                df_d_sell = get_inst_top20("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_D.djhtm", "Dealer", False)
+                render_inst_table(df_d_sell, "自營商賣超", False)
 
     with sub_tab2:
         st.markdown("#### 📜 台指期籌碼快訊 (最新 PDF)")
@@ -2005,7 +2092,6 @@ with tab_db:
             pdf_url = None
             pdf_title = ""
             
-            # [修正] 自動搜尋最新籌碼快訊並進行內頁穿透抓取 PDF
             for a in soup.find_all('a', href=True):
                 title = a.text.strip()
                 if '籌碼快訊' in title or '期貨' in title:
@@ -2013,7 +2099,6 @@ with tab_db:
                     if not href.startswith('http'):
                         href = "https://www.spf.com.tw/sinopacSPF/research/" + href
                     
-                    # 進入內頁抓取真實的 PDF 連結
                     try:
                         r_inner = requests.get(href, headers=headers, timeout=5, verify=False)
                         soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
@@ -2032,7 +2117,17 @@ with tab_db:
             
             if pdf_url:
                 st.success(f"✅ 成功載入: {pdf_title}")
-                components.iframe(pdf_url, height=800, scrolling=True)
+                try:
+                    # [修正] 直接請求下載 PDF 的 bytes，再利用 Base64 編碼渲染，完美迴避 `X-Frame-Options` 阻擋機制的拒絕連線
+                    r_pdf = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
+                    if r_pdf.status_code == 200:
+                        b64_pdf = base64.b64encode(r_pdf.content).decode('utf-8')
+                        embed_html = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+                        st.markdown(embed_html, unsafe_allow_html=True)
+                    else:
+                        st.error("無法下載 PDF 檔案。")
+                except Exception as e:
+                    st.error(f"PDF 載入失敗: {e}")
             else:
                 st.warning("⚠️ 找不到當日 PDF 檔案，改以顯示原始網頁：")
                 components.iframe(url, height=600, scrolling=True)
