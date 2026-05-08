@@ -461,10 +461,18 @@ def load_config():
         except: return {}
     return {}
 
-def save_config(font_size, limit_rows, auto_update, delay_sec):
+def save_config(font_size, limit_rows, auto_update, delay_sec, sj_key="", sj_secret="", remember_sj=False):
     try:
         config = load_config()
-        config.update({"font_size": font_size, "limit_rows": limit_rows, "auto_update": auto_update, "delay_sec": delay_sec})
+        config.update({
+            "font_size": font_size, 
+            "limit_rows": limit_rows, 
+            "auto_update": auto_update, 
+            "delay_sec": delay_sec,
+            "sj_key": sj_key if remember_sj else "",
+            "sj_secret": sj_secret if remember_sj else "",
+            "remember_sj": remember_sj
+        })
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
         return True
     except: return False
@@ -585,6 +593,11 @@ if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_con
 if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
 if 'update_delay_sec' not in st.session_state: st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
 
+# API 記憶功能初始化
+if 'sj_key' not in st.session_state: st.session_state.sj_key = saved_config.get('sj_key', '')
+if 'sj_secret' not in st.session_state: st.session_state.sj_secret = saved_config.get('sj_secret', '')
+if 'remember_sj' not in st.session_state: st.session_state.remember_sj = saved_config.get('remember_sj', False)
+
 @st.cache_data
 def load_local_stock_names():
     code_map = {}
@@ -616,20 +629,38 @@ def search_code_online(query):
     return None
 
 with st.sidebar:
-    if sj:
-        st.header("🔑 永豐證券 API 登入")
-        sj_api_key = st.text_input("API Key", type="password", key="sj_key")
-        sj_secret = st.text_input("Secret Key", type="password", key="sj_secret")
+    st.header("🔑 永豐證券 API 登入")
+    if sj is None:
+        st.error("⚠️ 未偵測到 shioaji 套件\n\n請先在終端機執行：\n`pip install shioaji`")
+    else:
+        sj_api_key = st.text_input("API Key", type="password", value=st.session_state.sj_key, key="input_sj_key")
+        sj_secret = st.text_input("Secret Key", type="password", value=st.session_state.sj_secret, key="input_sj_secret")
+        remember_sj = st.checkbox("記住 API 資訊", value=st.session_state.remember_sj, key="input_remember_sj")
+        
         if st.button("登入 Shioaji"):
             try:
                 if 'sj_api' not in st.session_state:
                     st.session_state.sj_api = sj.Shioaji(simulation=False)
                 st.session_state.sj_api.login(sj_api_key, sj_secret)
                 st.session_state.sj_logged_in = True
+                
+                # 登入成功後處理記憶功能
+                st.session_state.sj_key = sj_api_key
+                st.session_state.sj_secret = sj_secret
+                st.session_state.remember_sj = remember_sj
+                save_config(
+                    st.session_state.font_size, 
+                    st.session_state.limit_rows, 
+                    st.session_state.auto_update_last_row, 
+                    st.session_state.update_delay_sec, 
+                    sj_api_key, 
+                    sj_secret, 
+                    remember_sj
+                )
                 st.success("✅ 永豐 API 登入成功！")
             except Exception as e:
                 st.error(f"❌ 登入失敗: {e}")
-        st.markdown("---")
+    st.markdown("---")
 
     st.header("⚙️ 設定")
     current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider')
@@ -641,7 +672,7 @@ with st.sidebar:
     st.session_state.limit_rows = current_limit_rows
     
     if st.button("💾 儲存設定"):
-        if save_config(current_font_size, current_limit_rows, st.session_state.auto_update_last_row, st.session_state.update_delay_sec):
+        if save_config(current_font_size, current_limit_rows, st.session_state.auto_update_last_row, st.session_state.update_delay_sec, st.session_state.sj_key, st.session_state.sj_secret, st.session_state.remember_sj):
             st.toast("設定已儲存！", icon="✅")
             
     st.markdown("### 資料管理")
