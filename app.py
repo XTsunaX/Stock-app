@@ -25,6 +25,12 @@ import urllib3
 import base64
 from PyPDF2 import PdfReader
 
+# 處理 PDF 圖片渲染的套件
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -60,10 +66,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
             
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        tz_tw = pytz.timezone('Asia/Taipei')
+        end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
+        start_date = (datetime.now(tz_tw) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         
-        # 獲取分鐘 K 線資料
+        # 獲取分鐘/日 K 線資料
         kbars = api.kbars(contract, start=start_date, end=end_date)
         if not kbars or not kbars.get('ts'):
             return pd.DataFrame()
@@ -500,6 +507,149 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
 
 # ==========================================
+# [新增] 爬蟲獨立並加入快取，避免分頁切換卡頓
+# ==========================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_spf_list():
+    base_url = "https://www.spf.com.tw"
+    list_url = f"{base_url}/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    try:
+        response = requests.get(list_url, headers=headers, verify=False, timeout=5)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        reports = []
+        
+        items = soup.select('div.list_news ul li')
+        if not items:
+            # 備用抓法
+            for a in soup.find_all('a', href=True):
+                title = a.text.strip()
+                if '籌碼快訊' in title or '期貨' in title:
+                    href = a['href']
+                    if not href.startswith('http'):
+                        href = base_url + "/sinopacSPF/research/" + href
+                    reports.append({"日期": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d"), "標題": title, "連結": href})
+        else:
+            for item in items:
+                link_tag = item.find('a')
+                date_tag = item.find('span', class_='date')
+                if link_tag and date_tag:
+                    title = link_tag.get_text().strip()
+                    date_str = date_tag.get_text().strip().replace("/", "-")
+                    if "籌碼快訊" in title or "期貨" in title:
+                        link = link_tag['href']
+                        if not link.startswith('http'):
+                            link = base_url + link
+                        reports.append({
+                            "日期": date_str,
+                            "標題": title,
+                            "連結": link
+                        })
+        return pd.DataFrame(reports)
+    except Exception as e:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def resolve_pdf_link(article_url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        r = requests.get(article_url, headers=headers, verify=False, timeout=5)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for tag in soup.find_all(['a', 'iframe']):
+            link = tag.get('href') or tag.get('src')
+            if link and link.lower().endswith('.pdf'):
+                pdf_url = link
+                if pdf_url.startswith('http://'):
+                    pdf_url = pdf_url.replace('http://', 'https://')
+                elif not pdf_url.startswith('https://'):
+                    pdf_url = "https://www.spf.com.tw" + (pdf_url if pdf_url.startswith('/') else '/' + pdf_url)
+                return pdf_url
+    except:
+        pass
+    
+    if article_url.startswith('http://'):
+        article_url = article_url.replace('http://', 'https://')
+    return article_url
+
+def display_pdf(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, verify=False, timeout=10)
+        base64_pdf = base64.b64encode(response.content).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+    except:
+        st.error("無法下載或顯示 PDF。")
+
+def extract_pdf_info(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, verify=False, timeout=10)
+        with io.BytesIO(response.content) as f:
+            reader = PdfReader(f)
+            first_page_text = reader.pages[0].extract_text()
+            return first_page_text[:500]
+    except Exception as e:
+        return f"無法解析 PDF 內容: {e}"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_twse_openapi_institutional():
+    # 使用 OpenAPI，大幅降低被 TWSE 阻擋的機率
+    url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
+    try:
+        r = requests.get(url, timeout=5, verify=False)
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            df = pd.DataFrame(data)
+            df = df.rename(columns={"Type": "單位名稱", "Buy": "買進金額", "Sell": "賣出金額", "Difference": "買賣差額"})
+            for col in ['買進金額', '賣出金額', '買賣差額']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            return df[['單位名稱', '買進金額', '賣出金額', '買賣差額']]
+    except:
+        pass
+    return pd.DataFrame()
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_fubon_inst_table_all(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        r = requests.get(url, headers=headers, timeout=5, verify=False)
+        r.encoding = 'big5'
+        dfs = pd.read_html(io.StringIO(r.text))
+        if dfs:
+            df = max(dfs, key=len)
+            df = df.dropna(thresh=3) # 不限制前20名
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(-1)
+            return df
+    except:
+        pass
+    return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_stocker_data(direction):
+    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
+    try:
+        r = requests.get(url, timeout=3, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                df = pd.DataFrame(data).head(20)
+                if 'code' in df.columns:
+                    df = df.rename(columns={
+                        'code': '代號',
+                        'name': '名稱',
+                        'change': '持股變化(%)',
+                        'three_inst_ratio': '三大法人持股(%)'
+                    })
+                    return df[['代號', '名稱', '持股變化(%)', '三大法人持股(%)']]
+    except:
+        pass
+    return pd.DataFrame()
+
+# ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
@@ -721,7 +871,6 @@ with st.sidebar:
         if st.session_state.get('sj_logged_in', False):
             st.success("✅ 永豐 API 已登入")
             
-            # 移除帳戶餘額，僅保留 API 今日剩餘流量
             try:
                 usage = st.session_state.sj_api.usage()
                 rem_mb = usage.remaining_bytes / (1024 * 1024)
@@ -831,6 +980,28 @@ def fetch_futures_list():
                 if 'Stock Code' in df.columns: return set(df['Stock Code'].astype(str).str.strip().tolist())
     except: pass
     return set()
+
+def fetch_finmind_backup(code):
+    try:
+        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={code}&start_date={start_date}"
+        r = requests.get(url, timeout=5, verify=False)
+        data_json = r.json()
+        if data_json.get('msg') == 'success' and data_json.get('data'):
+            df = pd.DataFrame(data_json['data'])
+            df['Date'] = pd.to_datetime(df['date'])
+            df = df.set_index('Date')
+            rename_map = {'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'}
+            df = df.rename(columns=rename_map)
+            cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            for c in cols:
+                if c not in df.columns:
+                    if c.lower() in df.columns: df[c] = df[c.lower()]
+                    else: df[c] = 0.0 
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+            return df[cols]
+    except: pass
+    return None
 
 def get_tick_size(price):
     try: price = float(price)
@@ -1225,148 +1396,6 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note 
     }
-
-# ==========================================
-# [新增] 將網路爬蟲加入快取，避免切換分頁時卡死
-# ==========================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_spf_list():
-    base_url = "https://www.spf.com.tw"
-    list_url = f"{base_url}/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    try:
-        response = requests.get(list_url, headers=headers, verify=False, timeout=5)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        reports = []
-        
-        items = soup.select('div.list_news ul li')
-        if not items:
-            # 備用抓法
-            for a in soup.find_all('a', href=True):
-                title = a.text.strip()
-                if '籌碼快訊' in title or '期貨' in title:
-                    href = a['href']
-                    if not href.startswith('http'):
-                        href = base_url + "/sinopacSPF/research/" + href
-                    reports.append({"日期": datetime.now().strftime("%Y-%m-%d"), "標題": title, "連結": href})
-        else:
-            for item in items:
-                link_tag = item.find('a')
-                date_tag = item.find('span', class_='date')
-                if link_tag and date_tag:
-                    title = link_tag.get_text().strip()
-                    date_str = date_tag.get_text().strip().replace("/", "-")
-                    if "籌碼快訊" in title or "期貨" in title:
-                        link = link_tag['href']
-                        if not link.startswith('http'):
-                            link = base_url + link
-                        reports.append({
-                            "日期": date_str,
-                            "標題": title,
-                            "連結": link
-                        })
-        return pd.DataFrame(reports)
-    except Exception as e:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def resolve_pdf_link(article_url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    try:
-        r = requests.get(article_url, headers=headers, verify=False, timeout=5)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for tag in soup.find_all(['a', 'iframe']):
-            link = tag.get('href') or tag.get('src')
-            if link and link.lower().endswith('.pdf'):
-                if not link.startswith('http'):
-                    link = "https://www.spf.com.tw" + link
-                return link
-    except:
-        pass
-    return article_url
-
-def display_pdf(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, verify=False, timeout=10)
-        base64_pdf = base64.b64encode(response.content).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
-    except:
-        st.error("無法下載或顯示 PDF。")
-
-def extract_pdf_info(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, verify=False, timeout=10)
-        with io.BytesIO(response.content) as f:
-            reader = PdfReader(f)
-            first_page_text = reader.pages[0].extract_text()
-            return first_page_text[:500]
-    except Exception as e:
-        return f"無法解析 PDF 內容: {e}"
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_twse_institutional(date_str):
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Accept': 'application/json, text/javascript, */*; q=0.01'
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=5, verify=False)
-        data = r.json()
-        if data.get('stat') == 'OK':
-            df = pd.DataFrame(data['data'], columns=data['fields'])
-            for col in ['買進金額', '賣出金額', '買賣差額']:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            return df
-    except:
-        pass
-    return pd.DataFrame()
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_fubon_inst_table(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        r = requests.get(url, headers=headers, timeout=5, verify=False)
-        r.encoding = 'big5'
-        dfs = pd.read_html(io.StringIO(r.text))
-        if dfs:
-            df = max(dfs, key=len)
-            df = df.dropna(thresh=3).head(20)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(-1)
-            return df
-    except:
-        pass
-    return pd.DataFrame()
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_tw_stocker_data(direction):
-    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
-    try:
-        r = requests.get(url, timeout=3, verify=False)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                df = pd.DataFrame(data).head(20)
-                if 'code' in df.columns:
-                    df = df.rename(columns={
-                        'code': '代號',
-                        'name': '名稱',
-                        'change': '持股變化(%)',
-                        'three_inst_ratio': '三大法人持股(%)'
-                    })
-                    return df[['代號', '名稱', '持股變化(%)', '三大法人持股(%)']]
-    except:
-        pass
-    return pd.DataFrame()
-
 
 # ==========================================
 # 主介面 (Tabs)
@@ -2032,14 +2061,10 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-        st.markdown("#### 📊 三大法人買賣超")
+        st.markdown("#### 📊 三大法人買賣超總計")
         
-        # 選擇日期
-        db_date = st.date_input("選擇日期", value=datetime.now(tz_tw).date(), key="db_date")
-        date_str = db_date.strftime("%Y%m%d")
-        
-        if st.button("獲取三大法人買賣超總計"):
-            df_inst = fetch_twse_institutional(date_str)
+        if st.button("獲取今日/最新買賣超總計"):
+            df_inst = fetch_twse_openapi_institutional()
             if not df_inst.empty:
                 # 處理顏色格式 (紅色正數、綠色負數)
                 def format_color(val):
@@ -2057,44 +2082,50 @@ with tab_db:
                 
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             else:
-                st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
+                st.warning("目前無三大法人買賣超資料 (可能尚未更新或遭遇連線問題)。")
                 
         st.markdown("---")
-        st.markdown("#### 📈 法人當日買賣超個股 (Top 20)")
+        st.markdown("#### 📈 法人當日買賣超個股")
         
+        def render_fubon_table(df, title):
+            if not df.empty:
+                st.write(f"##### {title}")
+                st.dataframe(
+                    df, 
+                    hide_index=True, 
+                    use_container_width=True,
+                    height=600 # 限制高度，加上內部滾動條以增加美觀
+                )
+            else:
+                st.write(f"##### {title} (無資料)")
+
         inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
         with inst_tabs[0]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**外資買超**")
-                df_f_buy = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_DD.djhtm")
-                if not df_f_buy.empty: st.dataframe(df_f_buy, hide_index=True)
+                df_f_buy = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_DD.djhtm")
+                render_fubon_table(df_f_buy, "外資買超")
             with c2:
-                st.write("**外資賣超**")
-                df_f_sell = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_D.djhtm")
-                if not df_f_sell.empty: st.dataframe(df_f_sell, hide_index=True)
+                df_f_sell = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZG_D.djhtm")
+                render_fubon_table(df_f_sell, "外資賣超")
                 
         with inst_tabs[1]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**投信買超**")
-                df_i_buy = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm")
-                if not df_i_buy.empty: st.dataframe(df_i_buy, hide_index=True)
+                df_i_buy = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm")
+                render_fubon_table(df_i_buy, "投信買超")
             with c2:
-                st.write("**投信賣超**")
-                df_i_sell = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm")
-                if not df_i_sell.empty: st.dataframe(df_i_sell, hide_index=True)
+                df_i_sell = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm")
+                render_fubon_table(df_i_sell, "投信賣超")
                 
         with inst_tabs[2]:
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**自營商買超**")
-                df_d_buy = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_DD.djhtm")
-                if not df_d_buy.empty: st.dataframe(df_d_buy, hide_index=True)
+                df_d_buy = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_DD.djhtm")
+                render_fubon_table(df_d_buy, "自營商買超")
             with c2:
-                st.write("**自營商賣超**")
-                df_d_sell = get_fubon_inst_table("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_D.djhtm")
-                if not df_d_sell.empty: st.dataframe(df_d_sell, hide_index=True)
+                df_d_sell = get_fubon_inst_table_all("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGL_D.djhtm")
+                render_fubon_table(df_d_sell, "自營商賣超")
 
         st.markdown("---")
         st.markdown("#### 📊 三大法人近期持股變化 (Top 20)")
@@ -2120,7 +2151,7 @@ with tab_db:
     with sub_tab2:
         st.markdown("#### 📜 台指期籌碼快訊 (查詢與預覽)")
         
-        # 整合您提供的爬蟲核心邏輯
+        # 整合爬蟲核心邏輯 (背景快取機制確保秒開不延遲)
         df_spf = fetch_spf_list()
 
         if not df_spf.empty:
@@ -2131,7 +2162,7 @@ with tab_db:
                 try:
                     latest_date = datetime.strptime(df_spf['日期'].iloc[0], "%Y-%m-%d")
                 except:
-                    latest_date = datetime.now()
+                    latest_date = datetime.now(pytz.timezone('Asia/Taipei'))
                     
                 selected_date = st.date_input("查詢日期", value=latest_date)
                 search_str = selected_date.strftime("%Y-%m-%d")
@@ -2145,7 +2176,6 @@ with tab_db:
                     st.markdown(f"[🔗 下載原始檔]({target['連結']})")
                     
                     with st.expander("📝 快速文字預覽 (第一頁)"):
-                        # 解析實際 PDF 連結
                         real_pdf_url = resolve_pdf_link(target['連結'])
                         st.write(extract_pdf_info(real_pdf_url))
                 else:
@@ -2166,6 +2196,7 @@ with tab_db:
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
         st.markdown("資料來源: [cmfaren.github.io/dispositionforecast](https://cmfaren.github.io/dispositionforecast/)")
+        # 背景快取保證 iframe 切換不會卡頓
         components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
 
 
