@@ -726,7 +726,7 @@ with st.sidebar:
         if st.session_state.get('sj_logged_in', False):
             st.success("✅ 永豐 API 已登入")
             
-            # [修正] 移除帳戶餘額，僅保留 API 今日剩餘流量
+            # 移除帳戶餘額，僅保留 API 今日剩餘流量
             try:
                 usage = st.session_state.sj_api.usage()
                 rem_mb = usage.remaining_bytes / (1024 * 1024)
@@ -1258,6 +1258,57 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note 
     }
+
+# ==========================================
+# [新增] 獨立出 PDF 爬蟲並加入快取，避免切換分頁時卡死
+# ==========================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_spf_pdf_url_cached():
+    try:
+        url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        r = requests.get(url, headers=headers, timeout=5, verify=False)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # 僅提取最新的第一份符合條件的報告，避免無止盡請求
+        for a in soup.find_all('a', href=True):
+            title = a.text.strip()
+            if '籌碼快訊' in title or '期貨' in title:
+                href = a['href']
+                if not href.startswith('http'):
+                    href = "https://www.spf.com.tw/sinopacSPF/research/" + href
+                
+                r_inner = requests.get(href, headers=headers, timeout=5, verify=False)
+                soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
+                for tag in soup_inner.find_all(['a', 'iframe']):
+                    link = tag.get('href') or tag.get('src')
+                    if link and link.lower().endswith('.pdf'):
+                        pdf_url = link
+                        if not pdf_url.startswith('http'):
+                            pdf_url = "https://www.spf.com.tw" + pdf_url
+                        return pdf_url, title
+        return None, ""
+    except:
+        return None, ""
+
+# ==========================================
+# [新增] 獨立 TWSE 三大法人總計並加入快取
+# ==========================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_twse_institutional(date_str):
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=5, verify=False)
+        data = r.json()
+        if data['stat'] == 'OK':
+            return pd.DataFrame(data['data'], columns=data['fields'])
+    except:
+        pass
+    return pd.DataFrame()
 
 # ==========================================
 # 主介面 (Tabs)
@@ -1930,31 +1981,43 @@ with tab_db:
         date_str = db_date.strftime("%Y%m%d")
         
         if st.button("獲取三大法人買賣超總計"):
-            try:
-                url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                r = requests.get(url, headers=headers, timeout=5, verify=False)
-                data = r.json()
-                if data['stat'] == 'OK':
-                    df_inst = pd.DataFrame(data['data'], columns=data['fields'])
-                    
-                    def color_numeric(val):
-                        try:
-                            v = float(str(val).replace(',', ''))
-                            if v > 0: return 'color: #ff4b4b;'
-                            elif v < 0: return 'color: #00e676;'
-                        except: pass
-                        return ''
-                    
-                    st.dataframe(df_inst.style.map(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
-                else:
-                    st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
-            except Exception as e:
-                st.error(f"獲取失敗: {e}")
+            df_inst = fetch_twse_institutional(date_str)
+            if not df_inst.empty:
+                # 處理欄位轉為浮點數以利於樣式判斷
+                for col in ['買進金額', '賣出金額', '買賣差額']:
+                    if col in df_inst.columns:
+                        df_inst[col] = df_inst[col].str.replace(',', '').astype(float)
                 
-        # [修正] 將原本三個頁籤替換為透過 tw-institutional-stocker API 獲取近 20 日法人買賣超前 20 名
+                def format_color(val):
+                    try:
+                        v = float(val)
+                        if v > 0: return 'color: #ff4b4b;'
+                        elif v < 0: return 'color: #00e676;'
+                    except:
+                        pass
+                    return ''
+
+                styled_df = df_inst.style.map(format_color, subset=['買賣差額']).format(
+                    {"買進金額": "{:,.0f}", "賣出金額": "{:,.0f}", "買賣差額": "{:,.0f}"}, na_rep=""
+                )
+                
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
+                
         st.markdown("---")
-        st.markdown("#### 📈 三大法人近期持股變化 (Top 20)")
+        st.markdown("#### 📈 法人當日買賣超個股 (直接嵌入富邦資訊)")
+        
+        inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
+        with inst_tabs[0]:
+            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm", height=800, scrolling=True)
+        with inst_tabs[1]:
+            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm", height=800, scrolling=True)
+        with inst_tabs[2]:
+            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm", height=800, scrolling=True)
+
+        st.markdown("---")
+        st.markdown("#### 📊 三大法人近期持股變化 (Top 20)")
         st.markdown("資料來源: [tw-institutional-stocker](https://github.com/voidful/tw-institutional-stocker)")
         
         def get_tw_stocker_data(direction):
@@ -1996,71 +2059,71 @@ with tab_db:
                 st.write("目前無資料")
 
     with sub_tab2:
-        st.markdown("#### 📜 台指期籌碼快訊 (最新 PDF)")
-        st.markdown("資料來源: 永豐期貨")
-        try:
-            url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            r = requests.get(url, headers=headers, timeout=5, verify=False)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            
-            pdf_url = None
-            pdf_title = ""
-            
-            for a in soup.find_all('a', href=True):
-                title = a.text.strip()
-                if '籌碼快訊' in title or '期貨' in title:
-                    href = a['href']
-                    if not href.startswith('http'):
-                        href = "https://www.spf.com.tw/sinopacSPF/research/" + href
-                    
-                    try:
-                        r_inner = requests.get(href, headers=headers, timeout=5, verify=False)
-                        soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
-                        for tag in soup_inner.find_all(['a', 'iframe']):
-                            link = tag.get('href') or tag.get('src')
-                            if link and link.lower().endswith('.pdf'):
-                                pdf_url = link
-                                pdf_title = title
-                                if not pdf_url.startswith('http'):
-                                    pdf_url = "https://www.spf.com.tw" + pdf_url
-                                break
-                        if pdf_url:
-                            break
-                    except:
-                        continue
-            
-            if pdf_url:
-                st.success(f"✅ 成功載入: {pdf_title}")
-                try:
-                    # [修正] 透過 PyMuPDF 擷取 PDF 轉換為多張圖檔，100% 繞過 iframe 被 Chrome 阻擋的問題
-                    r_pdf = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
-                    if r_pdf.status_code == 200:
-                        if fitz is not None:
-                            doc = fitz.open(stream=r_pdf.content, filetype="pdf")
-                            for page_num, page in enumerate(doc):
-                                # 解析度可調整 dpi 參數
-                                pix = page.get_pixmap(dpi=150)
-                                img_data = pix.tobytes("png")
-                                st.image(img_data, use_container_width=True)
-                        else:
-                            st.warning("⚠️ 系統缺少 PyMuPDF 套件無法直接顯示畫面，改以提供檔案下載。")
-                            st.download_button(label="📥 點擊下載 PDF", data=r_pdf.content, file_name="籌碼快訊.pdf", mime="application/pdf")
+        st.markdown("#### 📜 台指期籌碼快訊")
+        db_date_spf = st.date_input("選擇日期 (若無永豐最新報告，將顯示此日期的備援資料)", value=datetime.now(tz_tw).date(), key="db_date_spf")
+        
+        # 1. 嘗試由背景快取抓取最新 PDF
+        pdf_url, pdf_title = get_spf_pdf_url_cached()
+        
+        if pdf_url:
+            st.success(f"✅ 成功載入永豐期貨最新報告: {pdf_title}")
+            try:
+                # 透過 PyMuPDF 轉換為圖片，100% 繞過 iframe 被 Chrome 封鎖的 X-Frame-Options 限制
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                r_pdf = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
+                if r_pdf.status_code == 200:
+                    if fitz is not None:
+                        doc = fitz.open(stream=r_pdf.content, filetype="pdf")
+                        for page_num, page in enumerate(doc):
+                            pix = page.get_pixmap(dpi=150)
+                            img_data = pix.tobytes("png")
+                            st.image(img_data, use_container_width=True)
                     else:
-                        st.error("無法下載 PDF 檔案。")
-                except Exception as e:
-                    st.error(f"PDF 渲染失敗: {e}")
-            else:
-                st.warning("⚠️ 找不到當日 PDF 檔案，改以顯示原始網頁：")
-                components.iframe(url, height=600, scrolling=True)
-                
+                        st.warning("⚠️ 系統缺少 PyMuPDF 套件無法直接顯示畫面，改以提供檔案下載。")
+                        st.download_button(label="📥 點擊下載 PDF", data=r_pdf.content, file_name="籌碼快訊.pdf", mime="application/pdf")
+                else:
+                    st.error("無法下載 PDF 檔案。")
+            except Exception as e:
+                st.error(f"PDF 渲染失敗: {e}")
+        
+        # 2. 備援的台指期表格
+        st.markdown("#### 📊 備援：台指期三大法人籌碼 (FinMind API)")
+        fm_date = db_date_spf.strftime("%Y-%m-%d")
+        fm_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TXF&start_date={fm_date}&end_date={fm_date}"
+        try:
+            r_fm = requests.get(fm_url, timeout=5, verify=False)
+            data_fm = r_fm.json()
+            if data_fm.get('msg') == 'success' and data_fm.get('data'):
+                df_fm = pd.DataFrame(data_fm['data'])
+                if not df_fm.empty:
+                    inst_map = {'Foreign_Investor': '外資', 'Investment_Trust': '投信', 'Dealer': '自營商'}
+                    df_display = pd.DataFrame({
+                        "單位": df_fm['institutional_investors'].map(inst_map).fillna(df_fm['institutional_investors']),
+                        "多方口數": df_fm['long_open_interest'],
+                        "空方口數": df_fm['short_open_interest'],
+                        "多空淨額": df_fm['long_open_interest'] - df_fm['short_open_interest']
+                    })
+                    
+                    def color_net_fm(val):
+                        try:
+                            if float(val) > 0: return 'color: #ff4b4b; font-weight: bold;'
+                            elif float(val) < 0: return 'color: #00e676; font-weight: bold;'
+                        except: pass
+                        return ''
+                    
+                    styled_fm = df_display.style.map(color_net_fm, subset=['多空淨額']).format(
+                        {"多方口數": "{:,.0f}", "空方口數": "{:,.0f}", "多空淨額": "{:,.0f}"}
+                    )
+                    st.dataframe(styled_fm, hide_index=True, use_container_width=True)
+                else:
+                    st.info(f"{fm_date} 尚無資料，請確認是否為假日或尚未更新。")
         except Exception as e:
-            st.error(f"無法載入資料: {e}")
-            st.link_button("點此前往永豐期貨網頁", "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51")
+            st.error(f"備援資料獲取失敗: {e}")
 
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
         st.markdown("資料來源: [cmfaren.github.io/dispositionforecast](https://cmfaren.github.io/dispositionforecast/)")
+        # 因為前面的爬蟲已經快取，這裡的 iframe 會馬上顯示
         components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
 
 
