@@ -112,7 +112,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
             
-        # [修改] 1. 收盤後即更新最新數據 (確保 13:45 盤後資料是最新的)
+        # 1. 收盤後即更新最新數據 (確保 13:45 盤後資料是最新的)
         if not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
             try:
                 raw_code = ticker.split('.')[0]
@@ -270,7 +270,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     interval_name = interval_display_map.get(interval, interval)
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
-    # [修改] 2. 將左上的名稱更改，顏色紅漲綠跌白平盤，只針對開 高 低 收後面的數字
+    # [修改] 2. 將左上的名稱更改，顏色紅漲綠跌白平盤 (分離數值與單位)
     try:
         is_index = ticker.startswith('^') or 'TWF' in ticker
         last_date_obj = df_subset.index[-1]
@@ -299,13 +299,20 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         if is_index:
             if ticker == '^TWII':
-                vol_display = f"{vol/100000000:.2f} 億" if vol > 100000000 else (f"{vol:,.2f} 億" if vol > 0 else "0 億")
+                if vol == 0 or pd.isna(vol):
+                    vol_num = "無資料(YF缺漏)"
+                    vol_unit = ""
+                else:
+                    vol_num = f"{vol/100000000:.2f}" if vol > 100000000 else f"{vol:,.2f}"
+                    vol_unit = " 億"
             else:
-                vol_display = f"{vol:,.0f} 單位"
+                vol_num = f"{vol:,.0f}"
+                vol_unit = " 單位"
             price_unit = " 點"
         else:
-            vol_display = f"{vol/1000:,.0f} 張"
-            price_unit = "元"
+            vol_num = f"{vol/1000:,.0f}"
+            vol_unit = " 張"
+            price_unit = " 元"
 
         # 替換為指定的指數名稱
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
@@ -316,7 +323,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             f"高 <span style='color:{color};'>{hi:.2f}</span> "
             f"低 <span style='color:{color};'>{lo:.2f}</span> "
             f"收 <span style='color:{color};'>{cl:.2f}</span>{price_unit} "
-            f"量 <span style='color:{color};'>{vol_display}</span> "
+            f"量 <span style='color:{color};'>{vol_num}</span>{vol_unit} "
             f"<span style='color:{color};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
     except Exception:
@@ -883,7 +890,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                     hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
                     hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
                     hist.at[last_hist_date, 'Volume'] = rt_vol
-                    if hist.at[last_hist_date, 'Open'] == 0: hist.at[last_last_date, 'Open'] = rt_open
+                    if hist.at[last_hist_date, 'Open'] == 0: hist.at[last_hist_date, 'Open'] = rt_open
     except: pass 
 
     if hist.empty: return None
