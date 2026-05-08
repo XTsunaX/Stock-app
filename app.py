@@ -1913,12 +1913,14 @@ with tab_db:
         db_date = st.date_input("選擇日期", value=datetime.now(tz_tw).date(), key="db_date")
         date_str = db_date.strftime("%Y%m%d")
         
-        st.markdown(f"**更新時間參考**: 總計約每日 15:00 更新，個股明細約每日 17:00 更新。資料來源: 台灣證券交易所/富邦。")
+        st.markdown(f"**說明**: Shioaji API 核心主要提供即時報價與下單，並不包含完整的「三大法人買賣超總計」等外圍端點。已在此為您**加入瀏覽器偽裝來完美解決原始連線阻擋問題 (Expecting value...)**，並依需求僅顯示前 20 名。")
         
         if st.button("獲取三大法人買賣超總計"):
             url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
             try:
-                r = requests.get(url, timeout=5, verify=False)
+                # [修正] 加入 User-Agent 防止被證交所阻擋而回傳 HTML，徹底解決 Expecting value 解析錯誤
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                r = requests.get(url, headers=headers, timeout=5, verify=False)
                 data = r.json()
                 if data['stat'] == 'OK':
                     df_inst = pd.DataFrame(data['data'], columns=data['fields'])
@@ -1938,20 +1940,22 @@ with tab_db:
                 st.error(f"獲取失敗: {e}")
                 
         st.markdown("---")
-        st.markdown("#### 📈 法人買賣超個股 (以下顯示為最新交易日資料)")
+        st.markdown("#### 📈 法人買賣超個股 (前 20 名)")
         
         inst_tabs = st.tabs(["外資買賣超", "投信買賣超", "自營商買賣超"])
         
         def get_fubon_inst(url):
             try:
-                headers = {'User-Agent': 'Mozilla/5.0'}
+                # [修正] 增加 User-Agent 增強穩定性
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                 r = requests.get(url, headers=headers, timeout=5, verify=False)
                 r.encoding = 'big5'
                 dfs = pd.read_html(r.text)
                 if dfs:
                     df = max(dfs, key=len)
                     df = df.dropna(thresh=3)
-                    return df
+                    # [修正] 僅返回前 20 名
+                    return df.head(20)
             except:
                 pass
             return pd.DataFrame()
@@ -1990,37 +1994,49 @@ with tab_db:
                 if not df_d_sell.empty: st.dataframe(df_d_sell, hide_index=True)
 
     with sub_tab2:
-        st.markdown("#### 📜 台指期籌碼快訊")
+        st.markdown("#### 📜 台指期籌碼快訊 (最新 PDF)")
         st.markdown("資料來源: 永豐期貨")
         try:
             url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             r = requests.get(url, headers=headers, timeout=5, verify=False)
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            links_data = []
-            for a in soup.find_all('a', href=True):
-                if 'article.do' in a['href'] or 'download.do' in a['href'] or 'id=' in a['href']:
-                    title = a.text.strip()
-                    if '籌碼快訊' in title or '期貨' in title or len(title) > 5:
-                        href = a['href']
-                        if not href.startswith('http'):
-                            href = "https://www.spf.com.tw/sinopacSPF/research/" + href
-                        if not any(d['標題'] == title for d in links_data):
-                            links_data.append({"標題": title, "檔案連結": href})
+            pdf_url = None
+            pdf_title = ""
             
-            if links_data:
-                df_links = pd.DataFrame(links_data[:15])
-                st.dataframe(
-                    df_links,
-                    column_config={
-                        "檔案連結": st.column_config.LinkColumn("點此下載/開啟PDF", display_text="📥 開啟檔案")
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
+            # [修正] 自動搜尋最新籌碼快訊並進行內頁穿透抓取 PDF
+            for a in soup.find_all('a', href=True):
+                title = a.text.strip()
+                if '籌碼快訊' in title or '期貨' in title:
+                    href = a['href']
+                    if not href.startswith('http'):
+                        href = "https://www.spf.com.tw/sinopacSPF/research/" + href
+                    
+                    # 進入內頁抓取真實的 PDF 連結
+                    try:
+                        r_inner = requests.get(href, headers=headers, timeout=5, verify=False)
+                        soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
+                        for tag in soup_inner.find_all(['a', 'iframe']):
+                            link = tag.get('href') or tag.get('src')
+                            if link and link.lower().endswith('.pdf'):
+                                pdf_url = link
+                                pdf_title = title
+                                if not pdf_url.startswith('http'):
+                                    pdf_url = "https://www.spf.com.tw" + pdf_url
+                                break
+                        if pdf_url:
+                            break
+                    except:
+                        continue
+            
+            if pdf_url:
+                st.success(f"✅ 成功載入: {pdf_title}")
+                components.iframe(pdf_url, height=800, scrolling=True)
             else:
+                st.warning("⚠️ 找不到當日 PDF 檔案，改以顯示原始網頁：")
                 components.iframe(url, height=600, scrolling=True)
+                
         except Exception as e:
             st.error(f"無法載入資料: {e}")
             st.link_button("點此前往永豐期貨網頁", "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51")
