@@ -21,6 +21,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 import streamlit.components.v1 as components
+import urllib3
+
+# 關閉 SSL 驗證警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # [新增] 引入 yahoo_fin 與 shioaji
 try:
@@ -821,7 +825,7 @@ def fetch_finmind_backup(code):
     try:
         start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={code}&start_date={start_date}"
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=5, verify=False)
         data_json = r.json()
         if data_json.get('msg') == 'success' and data_json.get('data'):
             df = pd.DataFrame(data_json['data'])
@@ -1914,7 +1918,7 @@ with tab_db:
         if st.button("獲取三大法人買賣超總計"):
             url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
             try:
-                r = requests.get(url, timeout=5)
+                r = requests.get(url, timeout=5, verify=False)
                 data = r.json()
                 if data['stat'] == 'OK':
                     df_inst = pd.DataFrame(data['data'], columns=data['fields'])
@@ -1927,7 +1931,7 @@ with tab_db:
                         except: pass
                         return ''
                     
-                    st.dataframe(df_inst.style.applymap(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
+                    st.dataframe(df_inst.style.map(color_numeric, subset=df_inst.columns[1:]), use_container_width=True, hide_index=True)
                 else:
                     st.warning("該日無三大法人買賣超資料 (可能尚未更新或為假日)。")
             except Exception as e:
@@ -1941,7 +1945,7 @@ with tab_db:
         def get_fubon_inst(url):
             try:
                 headers = {'User-Agent': 'Mozilla/5.0'}
-                r = requests.get(url, headers=headers, timeout=5)
+                r = requests.get(url, headers=headers, timeout=5, verify=False)
                 r.encoding = 'big5'
                 dfs = pd.read_html(r.text)
                 if dfs:
@@ -1991,10 +1995,10 @@ with tab_db:
         try:
             url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
             headers = {'User-Agent': 'Mozilla/5.0'}
-            r = requests.get(url, headers=headers, timeout=5)
+            r = requests.get(url, headers=headers, timeout=5, verify=False)
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            links = []
+            links_data = []
             for a in soup.find_all('a', href=True):
                 if 'article.do' in a['href'] or 'download.do' in a['href'] or 'id=' in a['href']:
                     title = a.text.strip()
@@ -2002,12 +2006,19 @@ with tab_db:
                         href = a['href']
                         if not href.startswith('http'):
                             href = "https://www.spf.com.tw/sinopacSPF/research/" + href
-                        if (title, href) not in links:
-                            links.append((title, href))
+                        if not any(d['標題'] == title for d in links_data):
+                            links_data.append({"標題": title, "檔案連結": href})
             
-            if links:
-                for t, h in links[:10]:
-                    st.markdown(f"- [{t}]({h})")
+            if links_data:
+                df_links = pd.DataFrame(links_data[:15])
+                st.dataframe(
+                    df_links,
+                    column_config={
+                        "檔案連結": st.column_config.LinkColumn("點此下載/開啟PDF", display_text="📥 開啟檔案")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
             else:
                 components.iframe(url, height=600, scrolling=True)
         except Exception as e:
