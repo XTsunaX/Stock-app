@@ -15,3 +15,4 @@ plotly
 numpy
 yahoo_fin
 shioaji
+urllib3
