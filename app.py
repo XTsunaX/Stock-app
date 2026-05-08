@@ -21,11 +21,69 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 
-# [新增] 引入 yahoo_fin
+# [新增] 引入 yahoo_fin 與 shioaji
 try:
     import yahoo_fin.stock_info as si
 except ImportError:
     si = None
+
+try:
+    import shioaji as sj
+except ImportError:
+    sj = None
+
+# ==========================================
+# 永豐 API (Shioaji) 擷取核心
+# ==========================================
+def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
+    try:
+        # 解析合約
+        if code in ["^TWII", "加權指數", "TSE"]:
+            contract = api.Contracts.Indices.TSE.TSE01
+        elif code in ["TWF=F", "台指期貨", "TXF"]:
+            contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+        else:
+            contract = api.Contracts.Stocks.get(code)
+            if not contract:
+                # 嘗試查找上櫃
+                for c in api.Contracts.Stocks.OTC:
+                    if c.code == code:
+                        contract = c
+                        break
+        
+        if not contract:
+            return pd.DataFrame()
+            
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        
+        # 獲取分鐘 K 線資料
+        kbars = api.kbars(contract, start=start_date, end=end_date)
+        if not kbars or not kbars.get('ts'):
+            return pd.DataFrame()
+            
+        df = pd.DataFrame({**kbars})
+        df['ts'] = pd.to_datetime(df['ts'])
+        df.set_index('ts', inplace=True)
+        
+        # 依照要求的頻率重新取樣 (Resample)
+        if interval == '1m':
+            pass # 預設即為 1 分鐘
+        elif interval == '1d':
+            df = df.resample('D').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        elif interval == '1wk':
+            df = df.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        elif interval == '1mo':
+            df = df.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        else:
+            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
+            if interval in resample_map:
+                df = df.resample(resample_map[interval]).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+                
+        return df
+    except Exception as e:
+        print(f"Shioaji fetch error for {code}: {e}")
+        return pd.DataFrame()
 
 # ==========================================
 # 費波計算核心函數
@@ -92,83 +150,95 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     
     try:
-        # 移除 session 參數，讓 yfinance 自行處理連線避免 RateLimitError
-        stock_data = yf.Ticker(ticker)
-        df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+        df = pd.DataFrame()
+        raw_code = ticker_code.split('.')[0]
+        used_sj = False
+        
+        # 優先使用永豐 API 獲取盤中/盤後即時 K 線
+        if st.session_state.get('sj_logged_in', False):
+            lookback_days_map = {"1m": 7, "5m": 30, "15m": 60, "60m": 730, "1d": 1000, "1wk": 2000, "1mo": 3000}
+            sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=lookback_days_map.get(interval, 60))
+            if not sj_df.empty:
+                df = sj_df
+                used_sj = True
 
-        # 自動處理上櫃代號
-        if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
-            ticker_two = ticker.replace(".TW", ".TWO")
-            stock_data = yf.Ticker(ticker_two)
-            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-            if not df.empty:
-                ticker = ticker_two 
-
-        # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
-        if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
-            st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
-            ticker = "^TWII"
-            display_name = "加權指數(^TWII) *替代台指"
+        # 若永豐未登入或沒抓到，退回使用 yfinance 作為備援
+        if not used_sj:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-            
-        # 1. 收盤後即更新最新數據 (確保 13:45 盤後資料是最新的)
-        if not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
-            try:
-                raw_code = ticker.split('.')[0]
-                tz_tw = pytz.timezone('Asia/Taipei')
-                now_tw = datetime.now(tz_tw)
-                today_date = pd.Timestamp(now_tw.date())
-                
-                # 判斷是否過 13:45
-                is_post_market = now_tw.time() >= dt_time(13, 45)
-                
-                rt_price = None
-                rt_open = None
-                rt_high = None
-                rt_low = None
-                rt_vol = 0.0
 
-                # 優先用 twstock.realtime 抓取
-                rt_data = twstock.realtime.get(raw_code)
-                if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
-                    rt_price = float(rt_data['realtime']['latest_trade_price'])
-                    rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
-                    rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
-                    rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
-                    rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+            # 自動處理上櫃代號
+            if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+                ticker_two = ticker.replace(".TW", ".TWO")
+                stock_data = yf.Ticker(ticker_two)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if not df.empty:
+                    ticker = ticker_two 
+
+            # TWF=F (台指期) 異常保護：若完全無資料，以加權指數代替顯示以防報錯
+            if (df.empty or 'High' not in df.columns) and ticker == "TWF=F":
+                st.warning("⚠️ Yahoo Finance 目前缺少台指期貨即時資料，已自動替換為加權指數(^TWII)作參考。")
+                ticker = "^TWII"
+                display_name = "加權指數(^TWII) *替代台指"
+                stock_data = yf.Ticker(ticker)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
                 
-                # 若盤後抓不到 realtime，改用 twstock.Stock 歷史收盤資料補足
-                if is_post_market and (rt_price is None or rt_price == 0):
-                    stock = twstock.Stock(raw_code)
-                    if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
-                        rt_price = float(stock.price[-1])
-                        rt_open = float(stock.open[-1])
-                        rt_high = float(stock.high[-1])
-                        rt_low = float(stock.low[-1])
-                        rt_vol = float(stock.capacity[-1])
-
-                if rt_price is not None:
-                    if df.index.tzinfo is not None:
-                        df.index = df.index.tz_localize(None)
-
-                    last_hist_date = pd.Timestamp(df.index[-1].date())
+            # 收盤後即更新最新數據 (確保 13:45 盤後資料是最新的) -> 僅當未使用永豐時才需要
+            if not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
+                try:
+                    tz_tw = pytz.timezone('Asia/Taipei')
+                    now_tw = datetime.now(tz_tw)
+                    today_date = pd.Timestamp(now_tw.date())
                     
-                    if last_hist_date < today_date:
-                        if now_tw.weekday() < 5:
-                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                            df = pd.concat([df, new_row])
-                    elif last_hist_date == today_date:
-                        df.at[df.index[-1], 'Close'] = rt_price
-                        df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                        df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                        df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
-                        if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
-            except Exception:
-                pass
+                    # 判斷是否過 13:45
+                    is_post_market = now_tw.time() >= dt_time(13, 45)
+                    
+                    rt_price = None
+                    rt_open = None
+                    rt_high = None
+                    rt_low = None
+                    rt_vol = 0.0
+
+                    # 優先用 twstock.realtime 抓取
+                    rt_data = twstock.realtime.get(raw_code)
+                    if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
+                        rt_price = float(rt_data['realtime']['latest_trade_price'])
+                        rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
+                        rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
+                        rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
+                        rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+                    
+                    # 若盤後抓不到 realtime，改用 twstock.Stock 歷史收盤資料補足
+                    if is_post_market and (rt_price is None or rt_price == 0):
+                        stock = twstock.Stock(raw_code)
+                        if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
+                            rt_price = float(stock.price[-1])
+                            rt_open = float(stock.open[-1])
+                            rt_high = float(stock.high[-1])
+                            rt_low = float(stock.low[-1])
+                            rt_vol = float(stock.capacity[-1])
+
+                    if rt_price is not None:
+                        if df.index.tzinfo is not None:
+                            df.index = df.index.tz_localize(None)
+
+                        last_hist_date = pd.Timestamp(df.index[-1].date())
+                        
+                        if last_hist_date < today_date:
+                            if now_tw.weekday() < 5:
+                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                                df = pd.concat([df, new_row])
+                        elif last_hist_date == today_date:
+                            df.at[df.index[-1], 'Close'] = rt_price
+                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                            df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                            if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
+                except Exception:
+                    pass
 
     except Exception as e:
-        st.error(f"⚠️ 從 Yahoo 獲取數據失敗: {e}")
+        st.error(f"⚠️ 獲取數據失敗: {e}")
         return
 
     if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
@@ -270,7 +340,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     interval_name = interval_display_map.get(interval, interval)
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
-    # [修改] 2. 將左上的名稱更改，顏色紅漲綠跌白平盤 (分離數值與單位)
     try:
         is_index = ticker.startswith('^') or 'TWF' in ticker
         last_date_obj = df_subset.index[-1]
@@ -300,7 +369,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         if is_index:
             if ticker == '^TWII':
                 if vol == 0 or pd.isna(vol):
-                    vol_num = "無資料(YF缺漏)"
+                    vol_num = "無資料(缺漏)"
                     vol_unit = ""
                 else:
                     vol_num = f"{vol/100000000:.2f}" if vol > 100000000 else f"{vol:,.2f}"
@@ -314,7 +383,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             vol_unit = " 張"
             price_unit = " 元"
 
-        # 替換為指定的指數名稱
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
         title_html = (
@@ -351,7 +419,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     fig.update_layout(**layout_update)
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} (YF 數據。)")
+    data_source_text = "永豐 Shioaji API 即時數據" if used_sj else "YF 數據"
+    st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} ({data_source_text})")
 
 
 # ==========================================
@@ -547,6 +616,21 @@ def search_code_online(query):
     return None
 
 with st.sidebar:
+    if sj:
+        st.header("🔑 永豐證券 API 登入")
+        sj_api_key = st.text_input("API Key", type="password", key="sj_key")
+        sj_secret = st.text_input("Secret Key", type="password", key="sj_secret")
+        if st.button("登入 Shioaji"):
+            try:
+                if 'sj_api' not in st.session_state:
+                    st.session_state.sj_api = sj.Shioaji(simulation=False)
+                st.session_state.sj_api.login(sj_api_key, sj_secret)
+                st.session_state.sj_logged_in = True
+                st.success("✅ 永豐 API 登入成功！")
+            except Exception as e:
+                st.error(f"❌ 登入失敗: {e}")
+        st.markdown("---")
+
     st.header("⚙️ 設定")
     current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider')
     st.session_state.font_size = current_font_size
@@ -811,21 +895,30 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist = pd.DataFrame()
     source_used = "none"
     
-    try:
-        stock = twstock.Stock(code)
-        tw_data = stock.fetch_31()
-        if tw_data and len(tw_data) > 0:
-            df_tw = pd.DataFrame(tw_data)
-            df_tw['Date'] = pd.to_datetime(df_tw['date'])
-            df_tw = df_tw.set_index('Date')
-            rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
-            df_tw = df_tw.rename(columns=rename_map)
-            cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
-            if not df_tw.empty:
-                hist = df_tw[cols]
-                source_used = "twstock"
-    except: pass
+    # 優先使用永豐 API 擷取昨日/歷史日 K 線資料
+    if st.session_state.get('sj_logged_in', False):
+        sj_df = fetch_shioaji_data(st.session_state.sj_api, code, interval='1d', lookback_days=40)
+        if not sj_df.empty:
+            hist = sj_df
+            source_used = "shioaji"
+
+    # 若永豐未登入或沒抓到，退回使用 twstock 擷取
+    if hist.empty:
+        try:
+            stock = twstock.Stock(code)
+            tw_data = stock.fetch_31()
+            if tw_data and len(tw_data) > 0:
+                df_tw = pd.DataFrame(tw_data)
+                df_tw['Date'] = pd.to_datetime(df_tw['date'])
+                df_tw = df_tw.set_index('Date')
+                rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
+                df_tw = df_tw.rename(columns=rename_map)
+                cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
+                if not df_tw.empty:
+                    hist = df_tw[cols]
+                    source_used = "twstock"
+        except: pass
 
     if hist.empty and si is not None:
         try:
@@ -862,43 +955,45 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         except Exception: 
             pass
 
-    try:
-        rt_data = twstock.realtime.get(code)
-        if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
-            rt_price = float(rt_data['realtime']['latest_trade_price'])
-            rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
-            rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
-            rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
-            rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
-            
-            rt_time_str = rt_data['info']['time']
-            rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
-            today_date = pd.Timestamp(datetime.now(tz_tw).date())
+    # 僅當未使用永豐 API，且需獲取即時資訊時，才透過 twstock.realtime 補足今日最新
+    if source_used != "shioaji":
+        try:
+            rt_data = twstock.realtime.get(code)
+            if rt_data['success'] and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
+                rt_price = float(rt_data['realtime']['latest_trade_price'])
+                rt_open = float(rt_data['realtime']['open']) if rt_data['realtime']['open'] != '-' else rt_price
+                rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
+                rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
+                rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
+                
+                rt_time_str = rt_data['info']['time']
+                rt_dt = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S")
+                today_date = pd.Timestamp(datetime.now(tz_tw).date())
 
-            if hist.empty:
-                hist = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-            else:
-                if hist.index.tzinfo is not None: hist.index = hist.index.tz_localize(None)
-                last_hist_date = hist.index[-1]
-                if last_hist_date < today_date:
-                    if datetime.now(tz_tw).weekday() < 5:
-                        new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                        hist = pd.concat([hist, new_row])
-                        hist.sort_index(inplace=True)
-                elif last_hist_date == today_date:
-                    hist.at[last_hist_date, 'Close'] = rt_price
-                    hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
-                    hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
-                    hist.at[last_hist_date, 'Volume'] = rt_vol
-                    if hist.at[last_hist_date, 'Open'] == 0: hist.at[last_hist_date, 'Open'] = rt_open
-    except: pass 
+                if hist.empty:
+                    hist = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                else:
+                    if hist.index.tzinfo is not None: hist.index = hist.index.tz_localize(None)
+                    last_hist_date = hist.index[-1]
+                    if last_hist_date < today_date:
+                        if datetime.now(tz_tw).weekday() < 5:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                            hist = pd.concat([hist, new_row])
+                            hist.sort_index(inplace=True)
+                    elif last_hist_date == today_date:
+                        hist.at[last_hist_date, 'Close'] = rt_price
+                        hist.at[last_hist_date, 'High'] = max(hist.at[last_hist_date, 'High'], rt_high)
+                        hist.at[last_hist_date, 'Low'] = min(hist.at[last_hist_date, 'Low'], rt_low)
+                        hist.at[last_hist_date, 'Volume'] = rt_vol
+                        if hist.at[last_hist_date, 'Open'] == 0: hist.at[last_hist_date, 'Open'] = rt_open
+        except: pass 
 
     if hist.empty: return None
     if hist.index.tzinfo is not None: hist.index = hist.index.tz_localize(None)
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # [修正] 所有指標 13:45 前排除今日資料，套用昨日指標；13:45 後才更新成當日指標 (包含收盤價、漲跌幅)
+    # 包含收盤價、漲跌幅，13:45 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
     tz_tw_calc = pytz.timezone('Asia/Taipei')
     now_tw_calc = datetime.now(tz_tw_calc)
     switch_time = dt_time(13, 45)
@@ -1448,7 +1543,6 @@ with tab2:
     for i in ticks_range:
         p = move_tick(view_p, i)
         
-        # [修復] 加入小寬容值，解決浮點數精度導致漲跌停點位被直接跳過的計算異常
         if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
@@ -1476,7 +1570,6 @@ with tab2:
         if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
         
         note_type = ""
-        # 這裡也加入容差值確保標籤正確
         if abs(p - limit_up) < 0.001: note_type = "up"
         elif abs(p - limit_down) < 0.001: note_type = "down"
         is_base = (abs(p - base_p) < 0.001)
@@ -1488,7 +1581,6 @@ with tab2:
         
     df_calc = pd.DataFrame(calc_data)
     
-    # [修復] 使用原始正常運作的方式，只保留必要的 column_config
     def style_calc_row(row):
         is_base = row['_is_base']
         nt = row['_note_type']
@@ -1528,7 +1620,6 @@ with tab_fibo:
             name = code_map.get(val, "")
             if name: st.session_state[key] = f"{name}({val})"
         else:
-            # [新增] 3. 優先帶出股票，而非權證
             matched_stocks = []
             for name, code in name_map.items():
                 if val in name:
@@ -1674,7 +1765,6 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    # 直接對原始 DataFrame 上色
                     styled_fibo = df_fibo.style.apply(style_fibo_manual, axis=1)
                     
                     st.dataframe(
@@ -1682,7 +1772,7 @@ with tab_fibo:
                         use_container_width=True, 
                         height=table_height, 
                         hide_index=True,
-                        column_config={"_raw_r": None} # 使用 column_config 隱藏輔助運算用的欄位
+                        column_config={"_raw_r": None}
                     )
                 else:
                     st.warning("波段高點必須大於波段低點且大於0")
