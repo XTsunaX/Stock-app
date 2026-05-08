@@ -43,13 +43,10 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         elif code in ["TWF=F", "台指期貨", "TXF"]:
             contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
         else:
-            contract = api.Contracts.Stocks.get(code)
-            if not contract:
-                # 嘗試查找上櫃
-                for c in api.Contracts.Stocks.OTC:
-                    if c.code == code:
-                        contract = c
-                        break
+            try:
+                contract = api.Contracts.Stocks[code]
+            except:
+                contract = None
         
         if not contract:
             return pd.DataFrame()
@@ -66,19 +63,26 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         df['ts'] = pd.to_datetime(df['ts'])
         df.set_index('ts', inplace=True)
         
+        # 處理欄位大小寫，相容不同版本的 shioaji
+        rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
+        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+        
+        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
+        
         # 依照要求的頻率重新取樣 (Resample)
         if interval == '1m':
             pass # 預設即為 1 分鐘
         elif interval == '1d':
-            df = df.resample('D').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+            df = df.resample('D').agg(agg_dict).dropna()
         elif interval == '1wk':
-            df = df.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+            df = df.resample('W').agg(agg_dict).dropna()
         elif interval == '1mo':
-            df = df.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+            df = df.resample('M').agg(agg_dict).dropna()
         else:
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
-                df = df.resample(resample_map[interval]).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+                df = df.resample(resample_map[interval]).agg(agg_dict).dropna()
                 
         return df
     except Exception as e:
@@ -154,15 +158,20 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         raw_code = ticker_code.split('.')[0]
         used_sj = False
         
-        # 優先使用永豐 API 獲取盤中/盤後即時 K 線
+        # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            lookback_days_map = {"1m": 7, "5m": 30, "15m": 60, "60m": 730, "1d": 1000, "1wk": 2000, "1mo": 3000}
-            sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=lookback_days_map.get(interval, 60))
-            if not sj_df.empty:
-                df = sj_df
-                used_sj = True
+            # 依據 interval 設定合理的 lookback_days 避免 API Timeout
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": int(lookback * 1.5)}
+            req_days = days_needed.get(interval, None)
+            
+            # 若請求天數在合理範圍內 (<180天)，直接取永豐分鐘線運算
+            if req_days is not None and req_days <= 180:
+                sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
+                if not sj_df.empty:
+                    df = sj_df
+                    used_sj = True
 
-        # 若永豐未登入或沒抓到，退回使用 yfinance 作為備援
+        # 若永豐未登入、沒抓到、或請求區間過大 (如日、週、月K)，退回使用 yfinance 並用永豐即時更新最新一根K棒
         if not used_sj:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
@@ -183,15 +192,46 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 stock_data = yf.Ticker(ticker)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
                 
-            # 收盤後即更新最新數據 (確保 13:45 盤後資料是最新的) -> 僅當未使用永豐時才需要
-            if not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
+            # 若有登入永豐，針對長週期透過 snapshot 即時推播補足 yfinance 的延遲
+            if st.session_state.get('sj_logged_in', False) and not df.empty and not ticker.startswith('^') and ticker != "TWF=F":
+                try:
+                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except: contract_snap = None
+                    
+                    if contract_snap:
+                        snap = st.session_state.sj_api.snapshots([contract_snap])
+                        if snap and len(snap) > 0:
+                            s = snap[0]
+                            rt_price = s.close
+                            rt_open = s.open
+                            rt_high = s.high
+                            rt_low = s.low
+                            rt_vol = s.volume
+                            
+                            tz_tw = pytz.timezone('Asia/Taipei')
+                            today_date = pd.Timestamp(datetime.now(tz_tw).date())
+                            if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
+                            last_hist_date = pd.Timestamp(df.index[-1].date())
+                            
+                            if last_hist_date < today_date and datetime.now(tz_tw).weekday() < 5:
+                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                                df = pd.concat([df, new_row])
+                            elif last_hist_date == today_date:
+                                df.at[df.index[-1], 'Close'] = rt_price
+                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                                if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
+                            used_sj = True 
+                except Exception: pass
+                
+            # 完全無永豐資源下的 twstock 盤後修補方案
+            if not used_sj and not df.empty and not ticker.startswith('^') and ticker != "TWF=F" and interval in ["1d", "1wk", "1mo"]:
                 try:
                     tz_tw = pytz.timezone('Asia/Taipei')
                     now_tw = datetime.now(tz_tw)
                     today_date = pd.Timestamp(now_tw.date())
-                    
-                    # 判斷是否過 13:45
-                    is_post_market = now_tw.time() >= dt_time(13, 45)
+                    is_post_market = now_tw.time() >= dt_time(15, 0)
                     
                     rt_price = None
                     rt_open = None
@@ -199,7 +239,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     rt_low = None
                     rt_vol = 0.0
 
-                    # 優先用 twstock.realtime 抓取
                     rt_data = twstock.realtime.get(raw_code)
                     if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
                         rt_price = float(rt_data['realtime']['latest_trade_price'])
@@ -208,7 +247,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
                         rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
                     
-                    # 若盤後抓不到 realtime，改用 twstock.Stock 歷史收盤資料補足
                     if is_post_market and (rt_price is None or rt_price == 0):
                         stock = twstock.Stock(raw_code)
                         if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
@@ -219,23 +257,19 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             rt_vol = float(stock.capacity[-1])
 
                     if rt_price is not None:
-                        if df.index.tzinfo is not None:
-                            df.index = df.index.tz_localize(None)
-
+                        if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         last_hist_date = pd.Timestamp(df.index[-1].date())
                         
-                        if last_hist_date < today_date:
-                            if now_tw.weekday() < 5:
-                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                                df = pd.concat([df, new_row])
+                        if last_hist_date < today_date and now_tw.weekday() < 5:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                            df = pd.concat([df, new_row])
                         elif last_hist_date == today_date:
                             df.at[df.index[-1], 'Close'] = rt_price
                             df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
                             df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
                             df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             if df['Open'].iloc[-1] == 0: df.at[df.index[-1], 'Open'] = rt_open
-                except Exception:
-                    pass
+                except Exception: pass
 
     except Exception as e:
         st.error(f"⚠️ 獲取數據失敗: {e}")
@@ -251,7 +285,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
     if ma_flags['60']: df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 裁切近期 60 根 K 棒
+    # 裁切近期 K 棒
     df_subset = df.tail(lookback).copy()
     df_subset = df_subset.dropna(subset=['High', 'Low'])
     
@@ -419,7 +453,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     fig.update_layout(**layout_update)
     st.plotly_chart(fig, use_container_width=True)
-    data_source_text = "永豐 Shioaji API 即時數據" if used_sj else "YF 數據"
+    data_source_text = "永豐 Shioaji 即時數據" if used_sj else "YF 數據"
     st.caption(f"📊 數據最後更新時間: {df_subset.index[-1].strftime('%Y-%m-%d %H:%M:%S')} ({data_source_text})")
 
 
@@ -1024,10 +1058,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # 包含收盤價、漲跌幅，13:45 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
+    # 包含收盤價、漲跌幅，15:00 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
     tz_tw_calc = pytz.timezone('Asia/Taipei')
     now_tw_calc = datetime.now(tz_tw_calc)
-    switch_time = dt_time(13, 45)
+    switch_time = dt_time(15, 0)
     
     if now_tw_calc.time() < switch_time:
         if not hist.empty and hist.index[-1].date() == now_tw_calc.date():
