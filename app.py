@@ -200,7 +200,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 stock_data = yf.Ticker(ticker)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
                 
-            # [修正 2] 將 YF 的個股成交量 (股) 統一轉換為 (張)
+            # 將 YF 的個股成交量 (股) 統一轉換為 (張)
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
                 
@@ -226,7 +226,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_open = s.open
                         rt_high = s.high
                         rt_low = s.low
-                        rt_vol = s.volume # 永豐 API snapshot volume 預設即為張數
+                        
+                        # [修正] 永豐 API snapshot 的 volume 是「單筆量」，total_volume 才是「累積總量(張)」
+                        rt_vol = s.total_volume 
                         
                         if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         
@@ -334,10 +336,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     else:
         fig = go.Figure()
 
+    # [修正] K棒實體顏色套用台股專用色 (紅漲綠跌)
     kline_trace = go.Candlestick(
         x=x_strings, open=df_subset['Open'], high=df_subset['High'],
-        low=df_subset['Low'], close=df_subset['Close'], name="K線"
+        low=df_subset['Low'], close=df_subset['Close'], name="K線",
+        increasing=dict(line=dict(color='#ff4b4b'), fillcolor='#ff4b4b'),
+        decreasing=dict(line=dict(color='#00e676'), fillcolor='#00e676')
     )
+    
     if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
     else: fig.add_trace(kline_trace)
 
@@ -356,7 +362,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     # 繪製成交量
     if show_vol and 'Volume' in df_subset.columns:
-        colors = ['red' if close >= open else 'green' for close, open in zip(df_subset['Close'], df_subset['Open'])]
+        # [修正] 成交量柱體顏色同步台股標準
+        colors = ['#ff4b4b' if close >= open else '#00e676' for close, open in zip(df_subset['Close'], df_subset['Open'])]
         vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
         fig.add_trace(vol_trace, row=2, col=1)
 
@@ -430,7 +437,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 vol_unit = " 單位(口)"
             price_unit = " 點"
         else:
-            vol_num = f"{vol:,.0f}" # [修正 2] 前方邏輯已將個股統一除以 1000，此處直接顯示張數
+            vol_num = f"{vol:,.0f}"
             vol_unit = " 張"
             price_unit = " 元"
 
@@ -471,7 +478,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     fig.update_layout(**layout_update)
     st.plotly_chart(fig, use_container_width=True)
     
-    # [修正 3] 更新時間為抓取當下的即時時間
     fetch_time_str = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')
     
     if sj_kbars_used:
@@ -661,7 +667,6 @@ if 'sj_key' not in st.session_state: st.session_state.sj_key = saved_config.get(
 if 'sj_secret' not in st.session_state: st.session_state.sj_secret = saved_config.get('sj_secret', '')
 if 'remember_sj' not in st.session_state: st.session_state.remember_sj = saved_config.get('remember_sj', False)
 
-# [修正 1] 自動登入永豐 API 邏輯
 if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('sj_logged_in', False):
     try:
         if 'sj_api' not in st.session_state:
