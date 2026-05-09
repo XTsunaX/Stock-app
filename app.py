@@ -24,13 +24,6 @@ import streamlit.components.v1 as components
 import urllib3
 import base64
 import pdfplumber
-from PIL import Image
-
-# 處理 PDF 圖片渲染的套件
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    fitz = None
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -515,115 +508,62 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         
     st.caption(f"📊 數據最後更新時間: {fetch_time_str} ({data_source_text})")
 
-# ==========================================
-# 獨立 API 爬取模塊
-# ==========================================
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_trading_data(date_str):
-    """從證交所 API 抓取三大法人所有個股買賣超資料"""
-    url = f"https://www.twse.com.tw/exchangeReport/T86?response=csv&date={date_str}&selectType=ALL"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=10, verify=False)
-        if response.status_code == 200 and len(response.text) > 100:
-            df = pd.read_csv(io.StringIO(response.text), skiprows=1)
-            # 移除所有千分位逗號並轉為數值
-            for col in df.columns:
-                if df[col].dtype == object and df[col].str.contains(',').any():
-                    try:
-                        df[col] = df[col].str.replace(',', '').astype(float)
-                    except:
-                        pass
-            return df
-        return None
-    except Exception as e:
-        return None
 
-def color_negative_positive(val):
-    """定義表格文字顏色：正數紅、負數綠"""
-    if isinstance(val, (int, float)):
-        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
-        return f'color: {color}; font-weight: bold;'
-    return ''
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_all_reports():
-    """獲取完整的報告清單，並解析出日期"""
+# ==========================================
+# [新增] 將網路爬蟲加入快取，避免切換分頁時卡死
+# ==========================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_report_list():
+    """爬取永豐期貨盤後快訊列表"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
-    base_url = "https://spf.com.tw"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+    base_url = "https://www.spf.com.tw"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     try:
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        items = soup.select('ul.list_pdf li') or soup.find_all('a', href=re.compile(r'\.pdf'))
+        reports = []
+        # 尋找包含 PDF 連結的區塊 (根據永豐網頁結構調整)
+        items = soup.select('div.list_news ul li') or soup.find_all('a', href=re.compile(r'\.pdf'))
         
-        # 若上方找不到，嘗試直接從網頁的 div 中找
-        if not items:
-            items = soup.select('div.list_news ul li')
-            
-        all_data = []
-        
-        for item in items:
-            text = item.get_text(strip=True)
-            href = item['href'] if item.name == 'a' else item.find('a')['href']
-            link = f"{base_url}{href}" if href.startswith('/') else href
-            if not link.startswith('http'):
-                 link = f"{base_url}/sinopacSPF/research/{href}"
-            
-            # 從標題或內容中提取日期 (例如: 2024/05/08)
-            date_match = re.search(r"(\d{4}/\d{2}/\d{2})", text)
-            if not date_match:
+        if soup.select('div.list_news ul li'):
+            for item in soup.select('div.list_news ul li'):
+                link_tag = item.find('a')
                 date_tag = item.find('span', class_='date')
-                if date_tag:
-                    date_match = re.search(r"(\d{4}/\d{2}/\d{2})", date_tag.text)
-            
-            if date_match and ("台指期" in text or "籌碼快訊" in text):
-                report_date = datetime.strptime(date_match.group(1), "%Y/%m/%d").date()
-                all_data.append({"date": report_date, "title": text, "url": link})
-        
-        return all_data
-    except Exception as e:
-        return []
-
-def pdf_to_image(pdf_url):
-    """將 PDF 第一頁轉為圖片"""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        # 先嘗試穿透內頁獲取真實 PDF
-        if not pdf_url.lower().endswith('.pdf'):
-            r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
-            soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
-            for tag in soup_inner.find_all(['a', 'iframe']):
-                link = tag.get('href') or tag.get('src')
-                if link and link.lower().endswith('.pdf'):
-                    pdf_url = link
-                    if not pdf_url.startswith('http'):
-                        pdf_url = "https://www.spf.com.tw" + pdf_url
-                    break
+                
+                if link_tag and date_tag:
+                    title = link_tag.get_text().strip()
+                    date_str = date_tag.get_text().strip().replace("/", "-")
+                    href = link_tag['href']
+                    pdf_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/sinopacSPF/research/{href}"
                     
-        response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
-        pdf_bytes = response.content
-        
-        if fitz is not None:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page = doc.load_page(0)  
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  
-            img_data = pix.tobytes("png")
-            return Image.open(io.BytesIO(img_data))
+                    if "台指期籌碼快訊" in title or "期貨" in title:
+                        reports.append({
+                            "日期": date_str,
+                            "title": title,
+                            "url": pdf_url
+                        })
         else:
-            return None
+            # 備用抓取方法
+            for item in items:
+                title = item.get_text(strip=True)
+                href = item['href'] if item.name == 'a' else item.find('a')['href']
+                pdf_url = f"{base_url}{href}" if href.startswith('/') else href
+                if "台指期" in title:
+                    reports.append({"日期": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d"), "title": title, "url": pdf_url})
+        return reports
     except Exception as e:
-        return None
+        st.error(f"獲取列表失敗: {e}")
+        return []
 
 def parse_pdf_data(pdf_url):
     """下載並解析 PDF 內容"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
+        # 如果是相對網頁而非直接PDF，嘗試穿透
         if not pdf_url.lower().endswith('.pdf'):
             r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
             soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
@@ -641,15 +581,47 @@ def parse_pdf_data(pdf_url):
             for page in pdf.pages:
                 text += page.extract_text()
             
+            # 關鍵數據擷取範例：散戶小台多空比
             ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
             ratio = ratio_match.group(1) if ratio_match else "N/A"
             
             return {
                 "ratio": ratio,
-                "content": text[:500] + "..." 
+                "content": text[:500] + "..." # 僅回傳部分內容預覽
             }
     except Exception as e:
         return {"ratio": "解析錯誤", "content": str(e)}
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_major_institutional_data(date_str):
+    """從證交所 API 抓取三大法人買賣金額統計"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=5, verify=False)
+        data = response.json()
+        
+        if data.get("stat") != "OK":
+            return None
+        
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].str.replace(',', '').astype(float)
+            
+        return df
+    except Exception as e:
+        st.error(f"獲取資料失敗: {e}")
+        return None
+
+def color_negative_positive(val):
+    """定義表格文字顏色：正數紅、負數綠"""
+    if isinstance(val, (int, float)):
+        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'black'
+        return f'color: {color}; font-weight: bold;'
+    return ''
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_tw_stocker_data(direction):
@@ -895,6 +867,13 @@ with st.sidebar:
         if st.session_state.get('sj_logged_in', False):
             st.success("✅ 永豐 API 已登入")
             
+            try:
+                usage = st.session_state.sj_api.usage()
+                rem_mb = usage.remaining_bytes / (1024 * 1024)
+                st.caption(f"📊 API 今日剩餘流量: {rem_mb:.2f} MB")
+            except:
+                pass
+
             if st.button("登出", key="btn_logout_sj"):
                 st.session_state.sj_logged_in = False
                 try: st.session_state.sj_api.logout()
@@ -2052,61 +2031,144 @@ with tab_fibo:
             else:
                 st.info("請在上方輸入高低點數值開始計算。")
 
+# ==========================================
+# 獨立 API 爬取模塊
+# ==========================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_major_institutional_data(date_str):
+    """從證交所 API 抓取三大法人買賣金額統計"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=5, verify=False)
+        data = response.json()
+        
+        if data.get("stat") != "OK":
+            return None
+        
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            
+        return df
+    except Exception as e:
+        st.error(f"獲取資料失敗: {e}")
+        return None
+
+def color_negative_positive(val):
+    """定義表格文字顏色：正數紅、負數綠"""
+    if isinstance(val, (int, float)):
+        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
+        return f'color: {color}; font-weight: bold;'
+    return ''
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_report_list():
+    """爬取永豐期貨盤後快訊列表"""
+    url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
+    base_url = "https://www.spf.com.tw"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10, verify=False)
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        reports = []
+        items = soup.select('div.list_news ul li') or soup.find_all('a', href=re.compile(r'\.pdf'))
+        
+        if soup.select('div.list_news ul li'):
+            for item in soup.select('div.list_news ul li'):
+                link_tag = item.find('a')
+                date_tag = item.find('span', class_='date')
+                
+                if link_tag and date_tag:
+                    title = link_tag.get_text(strip=True)
+                    date_str = date_tag.get_text(strip=True).replace("/", "-")
+                    href = link_tag['href']
+                    pdf_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/sinopacSPF/research/{href}"
+                    
+                    if "台指期籌碼快訊" in title or "期貨" in title:
+                        reports.append({
+                            "日期": date_str,
+                            "title": title,
+                            "url": pdf_url
+                        })
+        else:
+            for item in items:
+                title = item.get_text(strip=True)
+                href = item['href'] if item.name == 'a' else item.find('a')['href']
+                pdf_url = f"{base_url}{href}" if href.startswith('/') else href
+                if "台指期" in title:
+                    reports.append({"日期": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d"), "title": title, "url": pdf_url})
+        return reports
+    except Exception as e:
+        return []
+
+def parse_pdf_data(pdf_url):
+    """下載並解析 PDF 內容"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        if not pdf_url.lower().endswith('.pdf'):
+            r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
+            soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
+            for tag in soup_inner.find_all(['a', 'iframe']):
+                link = tag.get('href') or tag.get('src')
+                if link and link.lower().endswith('.pdf'):
+                    pdf_url = link
+                    if not pdf_url.startswith('http'):
+                        pdf_url = "https://www.spf.com.tw" + pdf_url
+                    break
+
+        response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text()
+            
+            ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
+            ratio = ratio_match.group(1) if ratio_match else "N/A"
+            
+            return {
+                "ratio": ratio,
+                "content": text[:500] + "..."
+            }
+    except Exception as e:
+        return {"ratio": "解析錯誤", "content": str(e)}
+
 with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-        st.markdown("#### 📊 台股三大法人每日買賣超統計 (T86)")
+        st.markdown("#### 📊 台股三大法人每日買賣超統計")
         
-        selected_date = st.date_input("選擇日期", datetime.now(pytz.timezone('Asia/Taipei')), key="t86_date")
-        date_query = selected_date.strftime("%Y%m%d")
+        selected_date = st.date_input("選擇日期", datetime.today())
+        date_str = selected_date.strftime("%Y%m%d")
         
-        if st.button("獲取當日法人買賣超排行"):
-            with st.spinner("資料讀取中..."):
-                url = f"https://www.twse.com.tw/exchangeReport/T86?response=csv&date={date_query}&selectType=ALL"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-                }
-                try:
-                    response = requests.get(url, headers=headers, timeout=10, verify=False)
-                    if response.status_code == 200 and len(response.text) > 100:
-                        df_inst = pd.read_csv(io.StringIO(response.text), skiprows=1)
-                        
-                        # 清理欄位與格式轉換
-                        for col in df_inst.columns:
-                            if df_inst[col].dtype == object and df_inst[col].str.contains(',').any():
-                                try:
-                                    df_inst[col] = df_inst[col].str.replace(',', '').astype(float)
-                                except:
-                                    pass
-                        
-                        st.success(f"📅 已取得 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-                        
-                        # 套用樣式設定 (正數紅，負數綠)
-                        def style_net_buy(val):
-                            if isinstance(val, (int, float)):
-                                color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
-                                return f'color: {color}; font-weight: bold;'
-                            return ''
-                        
-                        format_dict = {col: '{:,.0f}' for col in df_inst.columns if df_inst[col].dtype in ['float64', 'int64']}
-                        styled_df = df_inst.style.map(style_net_buy, subset=[c for c in df_inst.columns if '買賣超' in c or '差額' in c]).format(format_dict, na_rep="")
-                        
-                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                        
-                        # 提供下載功能
-                        csv = df_inst.to_csv(index=False).encode('utf-8-sig')
-                        st.download_button(
-                            label="📥 下載資料為 CSV",
-                            data=csv,
-                            file_name=f"institutional_investors_{date_query}.csv",
-                            mime="text/csv",
-                        )
-                        st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
-                    else:
-                        st.warning("該日期查無資料（可能為非交易日或資料尚未更新）。")
-                except Exception as e:
-                    st.error(f"連線發生錯誤: {e}")
+        if st.button("查詢數據"):
+            df_inst = get_major_institutional_data(date_str)
+            
+            if df_inst is not None:
+                st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+                
+                styled_df = df_inst.style.map(
+                    color_negative_positive, 
+                    subset=['買賣差額']
+                ).format({
+                    '買進金額': '{:,.0f}',
+                    '賣出金額': '{:,.0f}',
+                    '買賣差額': '{:,.0f}'
+                })
+                
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
+            else:
+                st.warning("該日期無資料（可能是假日或尚未開市）。")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股 (直接嵌入富邦資訊)")
@@ -2148,17 +2210,17 @@ with tab_db:
             st.cache_data.clear()
             st.rerun()
 
-        reports = get_all_reports()
+        reports = get_report_list()
 
         if not reports:
             st.warning("目前找不到相關報告，請檢查官網是否變動或稍後再試。")
         else:
             for idx, report in enumerate(reports):
-                with st.expander(f"📅 {report['date']} | {report['title']}"):
+                with st.expander(f"📅 {report['日期']} | {report['title']}"):
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
-                        st.write(f"🔗 [點此查看原始 PDF]({report['url']})")
+                        st.write(f"連結: [點此查看原始 PDF]({report['url']})")
                         
                         if st.button(f"🔍 立即解析數據", key=f"btn_{idx}"):
                             with st.spinner("正在下載並讀取 PDF..."):
@@ -2180,17 +2242,12 @@ with tab_db:
                                     st.caption(data['content'])
                     
                     with col2:
-                        # 生成並顯示圖片
-                        with st.spinner("正在載入預覽..."):
-                            preview_img = pdf_to_image(report['url'])
-                            if preview_img:
-                                st.image(preview_img, use_container_width=True, caption="報告第一頁預覽")
-                            else:
-                                st.warning("無法載入預覽圖。")
+                        st.link_button("📥 點此進入原始報告下載頁面", report['url'])
 
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
         st.markdown("資料來源: [cmfaren.github.io/dispositionforecast](https://cmfaren.github.io/dispositionforecast/)")
+        # 由於所有的爬蟲皆已全面實作 @st.cache_data 且調低了 Timeout，切換到此分頁時 iframe 將會秒速顯示
         components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
 
 
