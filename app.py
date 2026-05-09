@@ -218,52 +218,88 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
 
-        chg = round(chg, 2)
-        pct_chg = round(pct_chg, 2)
+        # === 標題顯示資訊準備 (移出 try 區塊以防 UnboundLocalError) ===
+    interval_display_map = {"1m": "1分K", "5m": "5分K", "15m": "15分K", "60m": "60分K", "1d": "日K", "1wk": "週K", "1mo": "月K"}
+    interval_name = interval_display_map.get(interval, interval)
+    ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
+    
+    try:
+        last_date_obj = df_subset.index[-1]
+        if interval in ["1d", "1wk", "1mo"]:
+            date_str = last_date_obj.strftime('%Y/%m/%d')
+        else:
+            date_str = last_date_obj.strftime('%Y/%m/%d %H:%M')
+
+        op = float(df_subset['Open'].iloc[-1])
+        hi = float(df_subset['High'].iloc[-1])
+        lo = float(df_subset['Low'].iloc[-1])
+        cl = float(df_subset['Close'].iloc[-1])
+        vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
+        if pd.isna(vol): vol = 0.0
+
+        # 精準計算昨日收盤基準 (ref_prev_close)
+        ref_prev_close = cl
+        if interval in ["1m", "5m", "15m", "60m"]:
+            daily_closes = df['Close'].resample('D').last().dropna()
+            if len(daily_closes) > 1:
+                current_date = df_subset.index[-1].date()
+                if current_date == daily_closes.index[-1].date():
+                    ref_prev_close = float(daily_closes.iloc[-2])
+                else:
+                    ref_prev_close = float(daily_closes.iloc[-1])
+            else:
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        elif interval == "1d":
+            # 日K直接取前一根K棒
+            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        else:
+            # 週K、月K 透過 yfinance 抓取最近 5 日的日K來找出真正的「昨日收盤價」
+            try:
+                temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
+                if isinstance(temp_df.columns, pd.MultiIndex):
+                    temp_df.columns = temp_df.columns.droplevel(1)
+                if len(temp_df) >= 2:
+                    current_date = df_subset.index[-1].date()
+                    if temp_df.index[-1].date() == current_date:
+                        ref_prev_close = float(temp_df['Close'].iloc[-2])
+                    else:
+                        ref_prev_close = float(temp_df['Close'].iloc[-1])
+                else:
+                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            except:
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+
+        chg = cl - ref_prev_close
+        pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
+        chg, pct_chg = round(chg, 2), round(pct_chg, 2)
         
-        # 建立獨立函數，為開、高、低、收獨立判定紅綠平顏色
+        # 顏色判定
         def get_color(val, ref):
-            if pd.isna(val) or pd.isna(ref): return "white"
             return "#ff4b4b" if val > ref else ("#00e676" if val < ref else "white")
 
-        c_op = get_color(op, ref_prev_close)
-        c_hi = get_color(hi, ref_prev_close)
-        c_lo = get_color(lo, ref_prev_close)
         c_cl = get_color(cl, ref_prev_close)
-
         sign = "+" if chg > 0 else ""
 
         if is_index:
             if ticker == '^TWII':
-                if vol == 0 or pd.isna(vol):
-                    vol_num = "無資料(缺漏)"
-                    vol_unit = ""
-                else:
-                    vol_num = f"{vol/100000000:.2f}" if vol > 100000000 else f"{vol:,.2f}"
-                    vol_unit = " 億"
+                vol_num = f"{vol/100000000:.2f}" if vol > 0 else "0"
+                vol_unit, price_unit = " 億", " 點"
             else:
-                vol_num = f"{vol:,.0f}"
-                vol_unit = " 單位(口)"
-            price_unit = " 點"
+                vol_num, vol_unit, price_unit = f"{vol:,.0f}", " 單位(口)", " 點"
         else:
-            vol_num = f"{vol:,.0f}"
-            vol_unit = " 張"
-            price_unit = " 元"
+            vol_num, vol_unit, price_unit = f"{vol:,.0f}", " 張", " 元"
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 標題針對 開、高、低、收「後方數值」套用各自比較的獨立顏色
         title_html = (
             f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
-            f"開 <span style='color:{c_op};'>{op:.2f}</span> "
-            f"高 <span style='color:{c_hi};'>{hi:.2f}</span> "
-            f"低 <span style='color:{c_lo};'>{lo:.2f}</span> "
+            f"開 {op:.2f} 高 {hi:.2f} 低 {lo:.2f} "
             f"收 <span style='color:{c_cl};'>{cl:.2f}</span>{price_unit} "
             f"量 {vol_num}{vol_unit} "
             f"<span style='color:{c_cl};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
     except Exception as e:
-        print(f"Title processing error: {e}")
+        # 若上方發生任何錯誤，至少保證 title_html 有基本內容，且不會因變數未定義崩潰
         title_html = f"{display_name}{ticker_suffix} - {interval_name}"
                 
         # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
