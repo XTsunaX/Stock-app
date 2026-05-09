@@ -218,17 +218,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
 
-        # === 標題顯示資訊準備 (移出 try 區塊以防 UnboundLocalError) ===
+# === 標題顯示資訊準備 (定義於 try 之外以防 UnboundLocalError) ===
     interval_display_map = {"1m": "1分K", "5m": "5分K", "15m": "15分K", "60m": "60分K", "1d": "日K", "1wk": "週K", "1mo": "月K"}
     interval_name = interval_display_map.get(interval, interval)
     ticker_suffix = ".TW" if ticker.endswith(".TW") else (".TWO" if ticker.endswith(".TWO") else "")
     
     try:
         last_date_obj = df_subset.index[-1]
-        if interval in ["1d", "1wk", "1mo"]:
-            date_str = last_date_obj.strftime('%Y/%m/%d')
-        else:
-            date_str = last_date_obj.strftime('%Y/%m/%d %H:%M')
+        date_str = last_date_obj.strftime('%Y/%m/%d') if interval in ["1d", "1wk", "1mo"] else last_date_obj.strftime('%Y/%m/%d %H:%M')
 
         op = float(df_subset['Open'].iloc[-1])
         hi = float(df_subset['High'].iloc[-1])
@@ -237,55 +234,33 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
         if pd.isna(vol): vol = 0.0
 
-        # 精準計算昨日收盤基準 (ref_prev_close)
+        # 精準計算昨日收盤基準 (ref_prev_close) 用於顏色判斷
         ref_prev_close = cl
         if interval in ["1m", "5m", "15m", "60m"]:
             daily_closes = df['Close'].resample('D').last().dropna()
-            if len(daily_closes) > 1:
-                current_date = df_subset.index[-1].date()
-                if current_date == daily_closes.index[-1].date():
-                    ref_prev_close = float(daily_closes.iloc[-2])
-                else:
-                    ref_prev_close = float(daily_closes.iloc[-1])
-            else:
-                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            ref_prev_close = float(daily_closes.iloc[-2]) if len(daily_closes) > 1 and df_subset.index[-1].date() == daily_closes.index[-1].date() else (float(daily_closes.iloc[-1]) if not daily_closes.empty else cl)
         elif interval == "1d":
-            # 日K直接取前一根K棒
             ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
         else:
-            # 週K、月K 透過 yfinance 抓取最近 5 日的日K來找出真正的「昨日收盤價」
+            # 週K、月K 透過 yfinance 抓取最近 5 日的日K來找出正確的「昨日收盤價」
             try:
                 temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
-                if isinstance(temp_df.columns, pd.MultiIndex):
-                    temp_df.columns = temp_df.columns.droplevel(1)
-                if len(temp_df) >= 2:
-                    current_date = df_subset.index[-1].date()
-                    if temp_df.index[-1].date() == current_date:
-                        ref_prev_close = float(temp_df['Close'].iloc[-2])
-                    else:
-                        ref_prev_close = float(temp_df['Close'].iloc[-1])
-                else:
-                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+                if isinstance(temp_df.columns, pd.MultiIndex): temp_df.columns = temp_df.columns.droplevel(1)
+                ref_prev_close = float(temp_df['Close'].iloc[-2]) if len(temp_df) >= 2 and temp_df.index[-1].date() == df_subset.index[-1].date() else (float(temp_df['Close'].iloc[-1]) if not temp_df.empty else cl)
             except:
                 ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
 
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
-        chg, pct_chg = round(chg, 2), round(pct_chg, 2)
         
-        # 顏色判定
-        def get_color(val, ref):
-            return "#ff4b4b" if val > ref else ("#00e676" if val < ref else "white")
-
-        c_cl = get_color(cl, ref_prev_close)
+        # 顏色判定與符號
+        color = "#ff4b4b" if chg > 0 else ("#00e676" if chg < 0 else "white")
         sign = "+" if chg > 0 else ""
 
+        # 處理指數/個股單位
         if is_index:
-            if ticker == '^TWII':
-                vol_num = f"{vol/100000000:.2f}" if vol > 0 else "0"
-                vol_unit, price_unit = " 億", " 點"
-            else:
-                vol_num, vol_unit, price_unit = f"{vol:,.0f}", " 單位(口)", " 點"
+            vol_num = f"{vol/100000000:.2f}" if ticker == '^TWII' and vol > 0 else f"{vol:,.0f}"
+            vol_unit, price_unit = (" 億", " 點") if ticker == '^TWII' else (" 單位(口)", " 點")
         else:
             vol_num, vol_unit, price_unit = f"{vol:,.0f}", " 張", " 元"
 
@@ -294,12 +269,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         title_html = (
             f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
             f"開 {op:.2f} 高 {hi:.2f} 低 {lo:.2f} "
-            f"收 <span style='color:{c_cl};'>{cl:.2f}</span>{price_unit} "
+            f"收 <span style='color:{color};'>{cl:.2f}</span>{price_unit} "
             f"量 {vol_num}{vol_unit} "
-            f"<span style='color:{c_cl};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
+            f"<span style='color:{color};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
-    except Exception as e:
-        # 若上方發生任何錯誤，至少保證 title_html 有基本內容，且不會因變數未定義崩潰
+    except Exception:
         title_html = f"{display_name}{ticker_suffix} - {interval_name}"
                 
         # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
