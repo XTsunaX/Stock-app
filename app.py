@@ -445,34 +445,22 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-        # 精準計算漲跌幅: 無論何種週期，嚴格與昨日收盤價(或對應的正確前K棒)進行比較
+       # 精準計算漲跌幅: 簡化邏輯並確保各週期均有正確對比基準
         ref_prev_close = cl
         if interval in ["1m", "5m", "15m", "60m"]:
-            daily_closes = df['Close'].resample('D').last().dropna()
-            if len(daily_closes) > 1:
-                current_date = df_subset.index[-1].date()
-                if current_date == daily_closes.index[-1].date():
-                    ref_prev_close = float(daily_closes.iloc[-2])
-                else:
-                    ref_prev_close = float(daily_closes.iloc[-1])
-            else:
-                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-        elif interval == "1d":
-            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-        else:
-            # 週K、月K 另外快速抓取近期的日K線以獲取真實昨日收盤價，避免跨度過大
             try:
-                temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
-                if len(temp_df) >= 2:
+                daily_closes = df['Close'].resample('D').last().dropna()
+                if len(daily_closes) > 1:
                     current_date = df_subset.index[-1].date()
-                    if temp_df.index[-1].date() == current_date:
-                        ref_prev_close = float(temp_df['Close'].iloc[-2])
+                    if current_date == daily_closes.index[-1].date():
+                        ref_prev_close = float(daily_closes.iloc[-2])
                     else:
-                        ref_prev_close = float(temp_df['Close'].iloc[-1])
-                else:
-                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+                        ref_prev_close = float(daily_closes.iloc[-1])
             except:
                 ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        else:
+            # 日K、週K、月K 統一與上一根K棒收盤價比較
+            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
 
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
@@ -501,9 +489,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 標題僅針對 開、高、低、收「後方數值」以及「漲跌、漲跌幅」套用顏色，其餘保持原色
+        # 標題針對個股名稱及所有數值套用顏色
         title_html = (
-            f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
+            f"<span style='color:{color};'>{disp_title}{ticker_suffix}</span> - {interval_name} {date_str} "
             f"開 <span style='color:{color};'>{op:.2f}</span> "
             f"高 <span style='color:{color};'>{hi:.2f}</span> "
             f"低 <span style='color:{color};'>{lo:.2f}</span> "
