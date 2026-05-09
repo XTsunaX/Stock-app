@@ -119,106 +119,9 @@ def round_to_tick(price):
     rounded = (p_dec / t_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * t_dec
     return float(rounded)
 
-def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, show_vol, title=""):
-    # 判斷資料來源並統一欄位
-    if isinstance(data_source, pd.DataFrame):
-        df = data_source
-    else:
-        # 解析輸入代號 (例如 "台積電(2330)" -> "2330.TW")
-        ticker = data_source
-        if "(" in data_source and data_source.endswith(")"):
-            ticker = data_source.split("(")[-1].replace(")", "")
-            
-        if not (ticker.endswith(".TW") or ticker.endswith(".TWO") or ticker.startswith("^") or "=" in ticker):
-            if ticker.isdigit():
-                ticker = f"{ticker}.TW"
-        
-        # 決定抓取區間長度
-        period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "2y", "1wk": "5y", "1mo": "10y"}
-        pd_period = period_map.get(interval, "1mo")
-        
-        df = yf.download(ticker, period=pd_period, interval=interval)
-        
-        # 如果上市找不到，自動切換至上櫃搜尋
-        if df.empty and ticker.endswith(".TW"):
-            ticker = ticker.replace(".TW", ".TWO")
-            df = yf.download(ticker, period=pd_period, interval=interval)
-            
-        if df.empty:
-            st.warning(f"⚠️ 找不到 {data_source} 的資料，請確認代號或時間區間是否正確。")
-            return
-            
-        # yfinance 新版回傳的 MultiIndex 處理
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-            
-        df = df.dropna(subset=['High', 'Low'])
-
-    if df.empty:
-        st.warning("⚠️ 該區間內無有效交易資料")
-        return
-
-    # 擷取近期波段 (避免圖表過度壓縮)
-    df = df.tail(150)
-
-    # 計算均線
-    colors = {'MA5': 'orange', 'MA10': 'skyblue', 'MA20': 'green', 'MA60': 'yellow'}
-    for ma, shown in ma_flags.items():
-        if shown:
-            df[f'MA{ma}'] = df['Close'].rolling(window=int(ma)).mean()
-
-    # --- 費波那契計算邏輯 ---
-    price_min = float(df['Low'].min())
-    price_max = float(df['High'].max())
-    diff = price_max - price_min
-    
-    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
-    color_map = {
-        1.0: "#ff4b4b", 0.786: "#ff9d00", 0.618: "#7fff00", 0.5: "#00ffff",
-        0.382: "#1e90ff", 0.236: "#9370db", 0.0: "#ffffff"
-    }
-
-    fig = go.Figure()
-
-    # K線圖 (套用台股專用色：紅漲綠跌)
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'], name='K線',
-        increasing=dict(line=dict(color='#ff4b4b'), fillcolor='#ff4b4b'),
-        decreasing=dict(line=dict(color='#00e676'), fillcolor='#00e676')
-    ))
-
-    # 均線繪製
-    for ma, shown in ma_flags.items():
-        col = f'MA{ma}'
-        if shown and col in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=col,
-                                     line=dict(width=ma_width, color=colors[col])))
-
-    # 費波那契水平線與標籤
-    last_date = df.index[-1]
-    for r in ratios:
-        val = price_min + r * diff
-        line_col = color_map.get(r, "rgba(150, 150, 150, 0.5)")
-        
-        fig.add_hline(y=val, line_dash="dash" if r not in [0.0, 1.0] else "solid", line_color=line_col, opacity=0.8)
-        
-        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
-        fig.add_annotation(
-            x=last_date, y=val, text=f"{r_label} ({val:.2f})",
-            showarrow=False, xanchor="left", xshift=10, 
-            font=dict(size=font_size, color=line_col)
-        )
-
-    fig.update_layout(
-        title=f"{title} 費波分析 ({interval})",
-        template="plotly_dark",
-        xaxis_rangeslider_visible=False,
-        height=750,
-        margin=dict(r=100) # 留白給右側標籤
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=None, ma_width=1.5, show_vol=True):
+    if ma_flags is None:
+        ma_flags = {'5': True, '10': True, '20': True, '60': True}
 
     code_map_fibo, name_map_fibo = load_local_stock_names()
     
@@ -275,9 +178,7 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            # 依據 interval 設定合理的 lookback_days 避免 API Timeout
             days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
-            
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
@@ -285,20 +186,26 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
                     df = sj_df
                     sj_kbars_used = True
 
-        # 若永豐未登入、沒抓到、或請求區間過大 (如日、週、月K)，退回使用 yfinance 並用永豐即時更新最新一根K棒
+        # 若永豐未登入、沒抓到，退回使用 yfinance
         if not sj_kbars_used:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            
+            # yfinance >= 0.2.40 multi-index 防呆處理
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
 
             # 自動處理上櫃代號
             if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
                 ticker_two = ticker.replace(".TW", ".TWO")
                 stock_data = yf.Ticker(ticker_two)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
                 if not df.empty:
                     ticker = ticker_two 
 
-            # 期貨異常保護：若完全無資料，以加權指數代替顯示以防報錯
+            # 期貨異常保護
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
                 st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
                 ticker = "^TWII"
@@ -306,12 +213,14 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
                 is_index = True
                 stock_data = yf.Ticker(ticker)
                 df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
                 
             # 將 YF 的個股成交量 (股) 統一轉換為 (張)
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
                 
-        # 只要有登入永豐，一律透過 snapshots 即時快照更新圖表最後一筆資料 (確保大盤成交量與期貨夜盤報價是最新的)
+        # 透過 snapshots 即時快照更新圖表最後一筆資料
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
@@ -333,20 +242,16 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
                         rt_open = s.open
                         rt_high = s.high
                         rt_low = s.low
-                        
-                        # 永豐 API snapshot 的 volume 是「單筆量」，total_volume 才是「累積總量(張)」
                         rt_vol = s.total_volume 
                         
                         if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         
-                        # 確保時間是最新的
                         tz_tw = pytz.timezone('Asia/Taipei')
                         now_dt = datetime.now(tz_tw).replace(tzinfo=None)
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
                         if df.index[-1] < now_dt and s.volume > 0:
-                            # 建立新的一根 K 棒
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
                             df = pd.concat([df, new_row])
                         else:
@@ -357,10 +262,10 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
                                 df.at[df.index[-1], 'Volume'] = rt_vol
                             
                         sj_snap_used = True
-            except Exception as e:
+            except Exception:
                 pass
                 
-        # 完全無永豐資源下的 twstock 盤後修補方案 (避免 YF 收盤後延遲)
+        # twstock 盤後修補方案
         if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
@@ -389,7 +294,7 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
                         rt_open = float(stock.open[-1])
                         rt_high = float(stock.high[-1])
                         rt_low = float(stock.low[-1])
-                        rt_vol = float(stock.capacity[-1]) / 1000 # stock.capacity 是股數，轉為張
+                        rt_vol = float(stock.capacity[-1]) / 1000 
 
                 if rt_price is not None:
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
@@ -415,7 +320,7 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
         return
 
-    # 計算均線 (在裁切前計算確保準確)
+    # 計算均線
     if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
     if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
     if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -442,7 +347,7 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
     diff = high_60 - low_60
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
     
-    # 加入自訂的費波那契顏色映射邏輯
+    # 費波顏色映射表
     color_map = {
         1.0: "#ff4b4b",
         0.786: "#ff9d00",
@@ -452,25 +357,6 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
         0.236: "#9370db",
         0.0: "#ffffff"
     }
-
-    # ... (省略至迴圈部分) ...
-
-    last_date_str = x_strings[-1]
-    first_date_str = x_strings[0]
-    
-    for r in ratios:
-        price = low_60 + r * diff
-        rounded_price = round_to_tick(price)
-        
-        # 依據比例套入顏色，若無對應則預設為半透明灰色
-        line_col = color_map.get(r, "rgba(150, 150, 150, 0.5)")
-        
-        fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
-            line=dict(color=line_col, width=1, dash="dash" if r not in [0, 1] else "solid"), row=target_row, col=target_col)
-            
-        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
-        fig.add_annotation(x=last_date_str, y=price, text=f"{r_label} ({rounded_price:g})",
-            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color=line_col), row=target_row, col=target_col)
     
     fmt = '%Y-%m-%d %H:%M:%S'
     x_strings = df_subset.index.strftime(fmt).tolist()
@@ -482,7 +368,6 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
     else:
         fig = go.Figure()
 
-    # K棒實體顏色套用台股專用色 (紅漲綠跌)
     kline_trace = go.Candlestick(
         x=x_strings, open=df_subset['Open'], high=df_subset['High'],
         low=df_subset['Low'], close=df_subset['Close'], name="K線",
@@ -508,7 +393,6 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
 
     # 繪製成交量
     if show_vol and 'Volume' in df_subset.columns:
-        # 成交量柱體顏色同步台股標準
         colors = ['#ff4b4b' if close >= open else '#00e676' for close, open in zip(df_subset['Close'], df_subset['Open'])]
         vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
         fig.add_trace(vol_trace, row=2, col=1)
@@ -530,12 +414,14 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
     for r in ratios:
         price = low_60 + r * diff
         rounded_price = round_to_tick(price)
+        line_col = color_map.get(r, "rgba(150, 150, 150, 0.5)")
+        
         fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
-            line=dict(color="rgba(150, 150, 150, 0.5)", width=1, dash="dash" if r not in [0, 1] else "solid"), row=target_row, col=target_col)
+            line=dict(color=line_col, width=1, dash="dash" if r not in [0, 1] else "solid"), row=target_row, col=target_col)
             
         r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
         fig.add_annotation(x=last_date_str, y=price, text=f"{r_label} ({rounded_price:g})",
-            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color="orange" if 0 <= r <= 1 else "gray"), row=target_row, col=target_col)
+            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color=line_col), row=target_row, col=target_col)
 
     y_min_view = low_60 - diff * 1.05
     y_max_view = high_60 + diff * 0.05
@@ -547,7 +433,6 @@ def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, s
     
     try:
         last_date_obj = df_subset.index[-1]
-        
         if interval in ["1d", "1wk", "1mo"]:
             date_str = last_date_obj.strftime('%Y/%m/%d')
         else:
