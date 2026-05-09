@@ -265,7 +265,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             except Exception:
                 pass
                 
-        # twstock 盤後修補方案
+        # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
         if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
@@ -300,10 +300,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                     last_hist_date = pd.Timestamp(df.index[-1].date())
                     
-                    if last_hist_date < today_date and now_tw.weekday() < 5:
+                    # 只有日K且為最新日，才往後新增；若是週/月K，只需更新最後一根棒子即可，避免圖表異常
+                    if interval == "1d" and last_hist_date < today_date and now_tw.weekday() < 5:
                         new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                         df = pd.concat([df, new_row])
-                    elif last_hist_date == today_date:
+                    else:
                         df.at[df.index[-1], 'Close'] = rt_price
                         df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
                         df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
@@ -444,8 +445,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-        # 精準計算日線漲跌幅 (避免短線週期取到上一根K棒造成數值不準確)
-        try:
+        # 精準計算漲跌幅: 無論何種週期，嚴格與昨日收盤價(或對應的正確前K棒)進行比較
+        ref_prev_close = cl
+        if interval in ["1m", "5m", "15m", "60m"]:
             daily_closes = df['Close'].resample('D').last().dropna()
             if len(daily_closes) > 1:
                 current_date = df_subset.index[-1].date()
@@ -453,18 +455,30 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     ref_prev_close = float(daily_closes.iloc[-2])
                 else:
                     ref_prev_close = float(daily_closes.iloc[-1])
-                chg = cl - ref_prev_close
-                pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
             else:
-                prev_cl = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-                chg = cl - prev_cl
-                pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
-        except Exception:
-            prev_cl = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-            chg = cl - prev_cl
-            pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        elif interval == "1d":
+            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        else:
+            # 週K、月K 另外快速抓取近期的日K線以獲取真實昨日收盤價，避免跨度過大
+            try:
+                temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
+                if len(temp_df) >= 2:
+                    current_date = df_subset.index[-1].date()
+                    if temp_df.index[-1].date() == current_date:
+                        ref_prev_close = float(temp_df['Close'].iloc[-2])
+                    else:
+                        ref_prev_close = float(temp_df['Close'].iloc[-1])
+                else:
+                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            except:
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+
+        chg = cl - ref_prev_close
+        pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
 
         chg = round(chg, 2)
+        pct_chg = round(pct_chg, 2)
         color = "#ff4b4b" if chg > 0 else ("#00e676" if chg < 0 else "white")
         sign = "+" if chg > 0 else ""
 
@@ -487,14 +501,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 標題及週期字體維持原色，只替數值加上顏色
+        # 標題僅針對 開、高、低、收「後方數值」以及「漲跌、漲跌幅」套用顏色，其餘保持原色
         title_html = (
             f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
             f"開 <span style='color:{color};'>{op:.2f}</span> "
             f"高 <span style='color:{color};'>{hi:.2f}</span> "
             f"低 <span style='color:{color};'>{lo:.2f}</span> "
             f"收 <span style='color:{color};'>{cl:.2f}</span>{price_unit} "
-            f"量 <span style='color:{color};'>{vol_num}</span>{vol_unit} "
+            f"量 {vol_num}{vol_unit} "
             f"<span style='color:{color};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
     except Exception:
@@ -552,16 +566,15 @@ def fetch_fubon_html(url):
         # 強制轉換 meta charset 避免瀏覽器以預設編碼解析造成亂碼
         html = re.sub(r'charset=["\']?(big5|utf-8|cp950)["\']?', 'charset=utf-8', html, flags=re.IGNORECASE)
         
-        # 注入 base 標籤與 CSS：置中、縮小表格寬度、放大字體
+        # 注入 base 標籤與 CSS：消除右方空白但保留預設字體大小
         injection = '''
         <base href="https://fubon-ebrokerdj.fbs.com.tw/">
         <meta charset="utf-8">
         <style>
-            body { margin: 0 auto !important; padding: 10px !important; text-align: center; background-color: white;}
-            center { text-align: center !important; margin: 0 auto !important; }
-            table { margin: 0 auto !important; width: 85% !important; max-width: 900px !important; font-size: 1.15em !important; }
-            td, th { padding: 8px !important; font-size: 1.15em !important; }
-            .dj-container, .wrapper { margin: 0 auto !important; width: 100% !important; }
+            body { margin: 0 !important; padding: 0 !important; text-align: left; background-color: white;}
+            center { text-align: left !important; margin: 0 !important; }
+            table { margin: 0 !important; width: 100% !important; max-width: 100% !important; }
+            .dj-container, .wrapper { margin: 0 !important; padding: 0 !important; width: 100% !important; }
             a { text-decoration: none; color: #333; }
         </style>
         '''
@@ -686,51 +699,32 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (加上反爬蟲破解與重試機制)"""
-    urls = [
-        f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json",
-        f"https://www.twse.com.tw/exchangeReport/BFI82U?response=json&date={date_str}&type=day"
-    ]
-    
-    # 加入微小延遲以降低短時間內連線被封鎖機率
-    time.sleep(random.uniform(0.5, 1.5))
-    
-    for url in urls:
-        try:
-            # 模擬一般瀏覽器行為與輪替標頭
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-            ]
-            headers = {
-                'User-Agent': random.choice(user_agents),
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html'
-            }
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    try:
+        response = requests.get(url, timeout=5, verify=False)
+        data = response.json()
+        
+        if data.get("stat") != "OK":
+            return None
+        
+        # 轉換為 DataFrame
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        
+        # 清理數據：移除千分號並轉為數字
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
-            response = requests.get(url, headers=headers, timeout=8, verify=False)
-            if response.status_code == 200:
-                try:
-                    data = response.json() # 防止回傳 HTML 導致解析異常
-                    if data.get("stat") == "OK":
-                        df = pd.DataFrame(data["data"], columns=data["fields"])
-                        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-                        for col in cols_to_fix:
-                            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-                        return df
-                except json.JSONDecodeError:
-                    continue # 若被擋回傳 HTML，則嘗試下一個網址
-        except Exception as e:
-            continue
-            
-    return None
+        return df
+    except Exception as e:
+        return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
     if isinstance(val, (int, float)):
-        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'black'
-        return f'color: {color}; font-weight: bold;'
+        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
+        return f'color: {color}'
     return ''
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1956,7 +1950,7 @@ with tab2:
     if not df_calc.empty:
         table_height = (len(df_calc) + 1) * 35 
         st.dataframe(
-            df_calc.style.apply(style_calc_row, axis=1), 
+            df_calc.style.map(style_calc_row, axis=1) if hasattr(df_calc.style, 'map') else df_calc.style.apply(style_calc_row, axis=1), 
             use_container_width=False, 
             hide_index=True, 
             height=table_height,
@@ -2127,7 +2121,7 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    styled_fibo = df_fibo.style.apply(style_fibo_manual, axis=1)
+                    styled_fibo = df_fibo.style.map(style_fibo_manual, axis=1) if hasattr(df_fibo.style, 'map') else df_fibo.style.apply(style_fibo_manual, axis=1)
                     
                     st.dataframe(
                         styled_fibo, 
@@ -2153,9 +2147,11 @@ with tab_db:
         df_inst = get_major_institutional_data(date_str)
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-            styled_df = df_inst.style.map(
-                color_negative_positive, subset=['買賣差額']
-            ).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+            
+            try:
+                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+            except AttributeError:
+                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
             
             # 使用 columns 進行縮排，不讓表格佔滿全螢幕
             col_tbl, _ = st.columns([1.5, 1])
