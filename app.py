@@ -444,14 +444,27 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-        if len(df_subset) > 1:
-            prev_cl = float(df_subset['Close'].iloc[-2])
-        else:
-            prev_cl = cl
+        # 精準計算日線漲跌幅 (避免短線週期取到上一根K棒造成數值不準確)
+        try:
+            daily_closes = df['Close'].resample('D').last().dropna()
+            if len(daily_closes) > 1:
+                current_date = df_subset.index[-1].date()
+                if current_date == daily_closes.index[-1].date():
+                    ref_prev_close = float(daily_closes.iloc[-2])
+                else:
+                    ref_prev_close = float(daily_closes.iloc[-1])
+                chg = cl - ref_prev_close
+                pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
+            else:
+                prev_cl = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+                chg = cl - prev_cl
+                pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
+        except Exception:
+            prev_cl = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            chg = cl - prev_cl
+            pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
 
-        chg = cl - prev_cl
-        pct_chg = (chg / prev_cl * 100) if prev_cl > 0 else 0.0
-
+        chg = round(chg, 2)
         color = "#ff4b4b" if chg > 0 else ("#00e676" if chg < 0 else "white")
         sign = "+" if chg > 0 else ""
 
@@ -474,9 +487,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 修正: 將標題名稱部分也包裝入 color，使其能隨著漲跌顏色同步改變
+        # 標題及週期字體維持原色，只替數值加上顏色
         title_html = (
-            f"<span style='color:{color};'>{disp_title}{ticker_suffix} -{interval_name} {date_str}</span> "
+            f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
             f"開 <span style='color:{color};'>{op:.2f}</span> "
             f"高 <span style='color:{color};'>{hi:.2f}</span> "
             f"低 <span style='color:{color};'>{lo:.2f}</span> "
@@ -533,21 +546,23 @@ def fetch_fubon_html(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=10, verify=False)
-        r.encoding = 'cp950' # 富邦網頁編碼，使用 cp950 更精確避免亂碼
+        r.encoding = 'cp950' 
         html = r.text
         
         # 強制轉換 meta charset 避免瀏覽器以預設編碼解析造成亂碼
         html = re.sub(r'charset=["\']?(big5|utf-8|cp950)["\']?', 'charset=utf-8', html, flags=re.IGNORECASE)
         
-        # 注入 base 標籤與 CSS：移除置中、強制寬度填滿避免右方空白
+        # 注入 base 標籤與 CSS：置中、縮小表格寬度、放大字體
         injection = '''
         <base href="https://fubon-ebrokerdj.fbs.com.tw/">
         <meta charset="utf-8">
         <style>
-            body { margin: 0 !important; padding: 0 !important; text-align: left; background-color: white;}
-            center { text-align: left !important; margin: 0 !important; }
-            table { margin: 0 !important; width: 100% !important; max-width: 100% !important; }
-            .dj-container, .wrapper { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+            body { margin: 0 auto !important; padding: 10px !important; text-align: center; background-color: white;}
+            center { text-align: center !important; margin: 0 auto !important; }
+            table { margin: 0 auto !important; width: 85% !important; max-width: 900px !important; font-size: 1.15em !important; }
+            td, th { padding: 8px !important; font-size: 1.15em !important; }
+            .dj-container, .wrapper { margin: 0 auto !important; width: 100% !important; }
+            a { text-decoration: none; color: #333; }
         </style>
         '''
         html = re.sub(r'<head>', f'<head>{injection}', html, flags=re.IGNORECASE)
@@ -557,7 +572,7 @@ def fetch_fubon_html(url):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_report_list():
-    """爬取永豐期貨盤後快訊列表，並精準解析日期"""
+    """爬取永豐期貨盤後快訊列表，嚴格過濾台指期籌碼快訊"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
     base_url = "https://www.spf.com.tw"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -567,15 +582,18 @@ def get_report_list():
         soup = BeautifulSoup(response.text, 'html.parser')
         
         reports = []
-        
-        # 先嘗試新的 DOM 結構
         items = soup.select('div.list_news ul li')
+        
         if items:
             for item in items:
                 link_tag = item.find('a')
                 date_tag = item.find('span', class_='date')
                 if link_tag:
                     title = link_tag.get_text(strip=True)
+                    # 嚴格過濾: 只有標題含有 "台指期籌碼快訊" 才會抓取
+                    if "台指期籌碼快訊" not in title:
+                        continue
+                        
                     href = link_tag['href']
                     pdf_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/sinopacSPF/research/{href}"
                     
@@ -588,33 +606,36 @@ def get_report_list():
                     else:
                         date_str = "近期發布"
                         
-                    if "台指期籌碼快訊" in title or "期貨" in title:
-                        reports.append({"日期": date_str, "title": title, "url": pdf_url})
+                    reports.append({"日期": date_str, "title": title, "url": pdf_url})
         else:
             # 舊的 DOM 結構 fallback
             for a_tag in soup.find_all('a', href=re.compile(r'\.pdf')):
                 title = a_tag.get_text(strip=True) or a_tag.get('title', '')
-                if "台指期籌碼快訊" in title or "期貨" in title:
-                    href = a_tag['href']
-                    pdf_url = f"{base_url}{href}" if href.startswith('/') else href
+                if "台指期籌碼快訊" not in title:
+                    continue
                     
-                    date_match = re.search(r'(202\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', title)
-                    if date_match:
-                        date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
-                    else:
-                        parent = a_tag.find_parent(['tr', 'li'])
-                        dt_span = parent.find(text=re.compile(r'202\d[/-]\d{2}[/-]\d{2}')) if parent else None
-                        date_str = re.search(r'202\d[/-]\d{2}[/-]\d{2}', dt_span).group() if dt_span else "近期發布"
-
-                    reports.append({"日期": date_str, "title": title, "url": pdf_url})
+                href = a_tag['href']
+                pdf_url = f"{base_url}{href}" if href.startswith('/') else href
                 
-        # 過濾重複連結
+                date_match = re.search(r'(202\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', title)
+                if date_match:
+                    date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+                else:
+                    parent = a_tag.find_parent(['tr', 'li'])
+                    dt_span = parent.find(text=re.compile(r'202\d[/-]\d{2}[/-]\d{2}')) if parent else None
+                    date_str = re.search(r'202\d[/-]\d{2}[/-]\d{2}', dt_span).group() if dt_span else "近期發布"
+
+                reports.append({"日期": date_str, "title": title, "url": pdf_url})
+                
+        # 過濾重複連結並依照日期降冪排列 (確保第一筆一定是最新的)
         unique_reports = []
         seen = set()
         for r in reports:
             if r['url'] not in seen:
                 unique_reports.append(r)
                 seen.add(r['url'])
+                
+        unique_reports.sort(key=lambda x: x['日期'], reverse=True)
         return unique_reports
     except Exception as e:
         return []
@@ -665,27 +686,41 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (含備援網址處理 Exception)"""
+    """從證交所 API 抓取三大法人買賣金額統計 (加上反爬蟲破解與重試機制)"""
     urls = [
         f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json",
         f"https://www.twse.com.tw/exchangeReport/BFI82U?response=json&date={date_str}&type=day"
     ]
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
-    }
+    
+    # 加入微小延遲以降低短時間內連線被封鎖機率
+    time.sleep(random.uniform(0.5, 1.5))
     
     for url in urls:
         try:
-            response = requests.get(url, headers=headers, timeout=5, verify=False)
+            # 模擬一般瀏覽器行為與輪替標頭
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+            ]
+            headers = {
+                'User-Agent': random.choice(user_agents),
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=8, verify=False)
             if response.status_code == 200:
-                data = response.json()
-                if data.get("stat") == "OK":
-                    df = pd.DataFrame(data["data"], columns=data["fields"])
-                    cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-                    for col in cols_to_fix:
-                        df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-                    return df
+                try:
+                    data = response.json() # 防止回傳 HTML 導致解析異常
+                    if data.get("stat") == "OK":
+                        df = pd.DataFrame(data["data"], columns=data["fields"])
+                        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                        for col in cols_to_fix:
+                            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+                        return df
+                except json.JSONDecodeError:
+                    continue # 若被擋回傳 HTML，則嘗試下一個網址
         except Exception as e:
             continue
             
@@ -2128,7 +2163,7 @@ with tab_db:
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
             st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
         else:
-            st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 無回應）。")
+            st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 觸發防護防阻）。")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股")
@@ -2163,7 +2198,6 @@ with tab_db:
                     st.metric("散戶小台多空比", f"{val}%", delta=f"{val}%", delta_color="inverse")
                 
                 if data.get('images'):
-                    # 修正: 縮小圖片比例，進一步調整 col_img 比例限制寬度
                     col_img, _ = st.columns([1, 2])
                     with col_img:
                         for img in data['images']:
