@@ -169,7 +169,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
     
-   try:
+       try:
         last_date_obj = df_subset.index[-1]
         if interval in ["1d", "1wk", "1mo"]:
             date_str = last_date_obj.strftime('%Y/%m/%d')
