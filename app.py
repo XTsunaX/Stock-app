@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import math
 import time
@@ -24,9 +22,10 @@ from plotly.subplots import make_subplots
 import numpy as np
 import streamlit.components.v1 as components
 import urllib3
+import base64
+import pdfplumber
 import fitz  # PyMuPDF 用於將 PDF 轉為圖片
 from PIL import Image
-import pdfplumber
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -41,108 +40,6 @@ try:
     import shioaji as sj
 except ImportError:
     sj = None
-
-# =========================================================
-# Session 建立與共用邏輯（Retry 機制）
-# =========================================================
-@st.cache_resource
-def get_api_session():
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-api_session = get_api_session()
-
-TWSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-    "Referer": "https://www.twse.com.tw/"
-}
-
-# =========================================================
-# 取得最新交易日
-# =========================================================
-def get_latest_trade_date():
-    today = datetime.now()
-    while today.weekday() >= 5:
-        today -= timedelta(days=1)
-    return today.date()
-
-# =========================================================
-# 抓取 TWSE API
-# =========================================================
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_twse_data(date_str):
-    try:
-        url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
-        response = api_session.get(url, headers=TWSE_HEADERS, timeout=10)
-        
-        if response.status_code != 200:
-            return pd.DataFrame()
-            
-        content_type = response.headers.get("Content-Type", "").lower()
-        if "json" not in content_type:
-            return pd.DataFrame()
-            
-        data = response.json()
-        if data.get("stat") != "OK":
-            return pd.DataFrame()
-            
-        if "data" not in data:
-            return pd.DataFrame()
-            
-        df = pd.DataFrame(data["data"], columns=data["fields"])
-        numeric_cols = ['買進金額', '賣出金額', '買賣差額']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = (
-                    df[col]
-                    .astype(str)
-                    .str.replace(',', '', regex=False)
-                    .str.replace('--', '0', regex=False)
-                )
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception as e:
-        print(f"TWSE Error: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_tw_stocker_data(direction="buy"):
-    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
-    try:
-        response = api_session.get(url, headers=TWSE_HEADERS, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                df = pd.DataFrame(data)
-                df.rename(columns={'code': '代號', 'name': '名稱', 'change': '持股變化(%)', 'three_inst_ratio': '三大法人持股(%)'}, inplace=True)
-                existing_cols = [c for c in ['代號', '名稱', '持股變化(%)', '三大法人持股(%)'] if c in df.columns]
-                return df[existing_cols].head(20)
-    except: pass
-    return pd.DataFrame()
-
-def color_negative_positive(val):
-    if pd.isna(val): return ''
-    try:
-        val = float(val)
-        if val > 0: return 'color: #ff4b4b'
-        elif val < 0: return 'color: #00e676'
-        else: return 'color: white'
-    except Exception: return ''
 
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
@@ -368,19 +265,19 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             except Exception:
                 pass
                 
-        # twstock 盤後修補方案
+        # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
         if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
                 now_tw = datetime.now(tz_tw)
                 today_date = pd.Timestamp(now_tw.date())
+                is_post_market = now_tw.time() >= dt_time(15, 0)
                 
                 rt_price = None
                 rt_open = None
                 rt_high = None
                 rt_low = None
                 rt_vol = 0.0
-                rt_date = None
 
                 rt_data = twstock.realtime.get(raw_code)
                 if rt_data and rt_data.get('success') and rt_data['realtime']['latest_trade_price'] not in ['-', None, '']:
@@ -389,15 +286,22 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     rt_high = float(rt_data['realtime']['high']) if rt_data['realtime']['high'] != '-' else rt_price
                     rt_low = float(rt_data['realtime']['low']) if rt_data['realtime']['low'] != '-' else rt_price
                     rt_vol = float(rt_data['realtime']['accumulate_trade_volume']) if rt_data['realtime']['accumulate_trade_volume'] != '-' else 0.0
-                    
-                    rt_time_str = rt_data['info']['time']
-                    rt_date = datetime.strptime(rt_time_str, "%Y-%m-%d %H:%M:%S").date()
                 
-                if rt_price is not None and rt_date == today_date.date():
+                if is_post_market and (rt_price is None or rt_price == 0):
+                    stock = twstock.Stock(raw_code)
+                    if len(stock.date) > 0 and stock.date[-1].date() == today_date.date():
+                        rt_price = float(stock.price[-1])
+                        rt_open = float(stock.open[-1])
+                        rt_high = float(stock.high[-1])
+                        rt_low = float(stock.low[-1])
+                        rt_vol = float(stock.capacity[-1]) / 1000 
+
+                if rt_price is not None:
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                     last_hist_date = pd.Timestamp(df.index[-1].date())
                     
-                    if interval == "1d" and last_hist_date < today_date:
+                    # 只有日K且為最新日，才往後新增；若是週/月K，只需更新最後一根棒子即可，避免圖表異常
+                    if interval == "1d" and last_hist_date < today_date and now_tw.weekday() < 5:
                         new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                         df = pd.concat([df, new_row])
                     else:
@@ -541,21 +445,34 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-        # 精準計算漲跌幅
+        # 精準計算漲跌幅: 無論何種週期，嚴格與昨日收盤價(或對應的正確前K棒)進行比較
         ref_prev_close = cl
         if interval in ["1m", "5m", "15m", "60m"]:
+            daily_closes = df['Close'].resample('D').last().dropna()
+            if len(daily_closes) > 1:
+                current_date = df_subset.index[-1].date()
+                if current_date == daily_closes.index[-1].date():
+                    ref_prev_close = float(daily_closes.iloc[-2])
+                else:
+                    ref_prev_close = float(daily_closes.iloc[-1])
+            else:
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        elif interval == "1d":
+            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        else:
+            # 週K、月K 另外快速抓取近期的日K線以獲取真實昨日收盤價，避免跨度過大
             try:
-                daily_closes = df['Close'].resample('D').last().dropna()
-                if len(daily_closes) > 1:
+                temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
+                if len(temp_df) >= 2:
                     current_date = df_subset.index[-1].date()
-                    if current_date == daily_closes.index[-1].date():
-                        ref_prev_close = float(daily_closes.iloc[-2])
+                    if temp_df.index[-1].date() == current_date:
+                        ref_prev_close = float(temp_df['Close'].iloc[-2])
                     else:
-                        ref_prev_close = float(daily_closes.iloc[-1])
+                        ref_prev_close = float(temp_df['Close'].iloc[-1])
+                else:
+                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
             except:
                 ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-        else:
-            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
 
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
@@ -584,9 +501,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 標題針對個股名稱及所有數值套用顏色
+        # 標題僅針對 開、高、低、收「後方數值」以及「漲跌、漲跌幅」套用顏色，其餘保持原色
         title_html = (
-            f"<span style='color:{color};'>{disp_title}{ticker_suffix}</span> - {interval_name} {date_str} "
+            f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
             f"開 <span style='color:{color};'>{op:.2f}</span> "
             f"高 <span style='color:{color};'>{hi:.2f}</span> "
             f"低 <span style='color:{color};'>{lo:.2f}</span> "
@@ -779,6 +696,58 @@ def fetch_and_parse_pdf(pdf_url):
         }
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_major_institutional_data(date_str):
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    try:
+        response = requests.get(url, timeout=5, verify=False)
+        data = response.json()
+        
+        if data.get("stat") != "OK":
+            return None
+        
+        # 轉換為 DataFrame
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        
+        # 清理數據：移除千分號並轉為數字
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            
+        return df
+    except Exception as e:
+        return None
+
+def color_negative_positive(val):
+    """定義表格文字顏色：正數紅、負數綠"""
+    if isinstance(val, (int, float)):
+        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
+        return f'color: {color}'
+    return ''
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_stocker_data(direction):
+    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
+    try:
+        r = requests.get(url, timeout=3, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                df = pd.DataFrame(data).head(20)
+                if 'code' in df.columns:
+                    df = df.rename(columns={
+                        'code': '代號',
+                        'name': '名稱',
+                        'change': '持股變化(%)',
+                        'three_inst_ratio': '三大法人持股(%)'
+                    })
+                    return df[['代號', '名稱', '持股變化(%)', '三大法人持股(%)']]
+    except:
+        pass
+    return pd.DataFrame()
+
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -1302,7 +1271,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 df_tw = pd.DataFrame(tw_data)
                 df_tw['Date'] = pd.to_datetime(df_tw['date'])
                 df_tw = df_tw.set_index('Date')
-                rename_map = {'open': 'High', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
+                rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
                 df_tw = df_tw.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                 for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
@@ -2171,74 +2140,26 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-        st.markdown("#### 📊 台股三大法人買賣金額")
+        st.markdown("#### 📊 台股三大法人每日買賣超統計")
+        selected_date = st.date_input("選擇日期", datetime.today())
+        date_str = selected_date.strftime("%Y%m%d")
         
-        latest_trade_date = get_latest_trade_date()
-        
-        selected_date = st.date_input(
-            "選擇查詢日期",
-            value=latest_trade_date,
-            max_value=latest_trade_date
-        )
-        query_date = selected_date.strftime("%Y%m%d")
-        
-        st.info(f"目前查詢日期：{query_date}")
-        
-        with st.spinner("讀取證交所資料中..."):
-            df_inst = fetch_twse_data(query_date)
-            
-        if not df_inst.empty:
-            st.success("資料載入成功")
+        df_inst = get_major_institutional_data(date_str)
+        if df_inst is not None:
+            st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
             
             try:
                 styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
             except AttributeError:
                 styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-                
-            st.dataframe(styled_df, use_container_width=True, height=650)
             
-            st.subheader("三大法人買賣差額排行")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("### 買超前 10")
-                top_buy = df_inst.sort_values(by='買賣差額', ascending=False).head(10)
-                try: styled_buy = top_buy.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-                except AttributeError: styled_buy = top_buy.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-                st.dataframe(styled_buy, use_container_width=True, height=400)
-                
-            with col2:
-                st.write("### 賣超前 10")
-                top_sell = df_inst.sort_values(by='買賣差額', ascending=True).head(10)
-                try: styled_sell = top_sell.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-                except AttributeError: styled_sell = top_sell.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-                st.dataframe(styled_sell, use_container_width=True, height=400)
-                
+            # 使用 columns 進行縮排，不讓表格佔滿全螢幕
+            col_tbl, _ = st.columns([1.5, 1])
+            with col_tbl:
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
         else:
-            st.warning("查無資料或證交所暫時無法連線")
-            
-        st.markdown("---")
-        
-        col_buy_rank, col_sell_rank = st.columns(2)
-        with col_buy_rank:
-            st.subheader("法人持股增加排行 (前20)")
-            df_buy_rank = get_tw_stocker_data("buy")
-            if not df_buy_rank.empty:
-                try: styled_buy_rank = df_buy_rank.style.map(color_negative_positive, subset=['持股變化(%)'])
-                except AttributeError: styled_buy_rank = df_buy_rank.style.applymap(color_negative_positive, subset=['持股變化(%)'])
-                st.dataframe(styled_buy_rank, use_container_width=True, hide_index=True)
-            else:
-                st.warning("無法取得法人持股增加資料")
-
-        with col_sell_rank:
-            st.subheader("法人持股減少排行 (前20)")
-            df_sell_rank = get_tw_stocker_data("sell")
-            if not df_sell_rank.empty:
-                try: styled_sell_rank = df_sell_rank.style.map(color_negative_positive, subset=['持股變化(%)'])
-                except AttributeError: styled_sell_rank = df_sell_rank.style.applymap(color_negative_positive, subset=['持股變化(%)'])
-                st.dataframe(styled_sell_rank, use_container_width=True, hide_index=True)
-            else:
-                st.warning("無法取得法人持股減少資料")
+            st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 觸發防護防阻）。")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股")
