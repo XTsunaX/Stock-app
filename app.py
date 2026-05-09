@@ -125,10 +125,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     code_map_fibo, name_map_fibo = load_local_stock_names()
     
+    # 處理輸入(支援名稱或代號)
     raw_input = symbol.strip()
     ticker_code = raw_input
     display_name = raw_input
 
+    # 針對大盤與期貨的特例處理
     if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
         ticker_code = "^TWII"
         display_name = "加權指數(^TWII)"
@@ -174,6 +176,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         sj_snap_used = False
         twstock_used = False
         
+        # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
             days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
             if interval in days_needed:
@@ -183,12 +186,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     df = sj_df
                     sj_kbars_used = True
 
+        # 若永豐未登入、沒抓到，退回使用 yfinance
         if not sj_kbars_used:
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            
+            # yfinance >= 0.2.40 multi-index 防呆處理
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
 
+            # 自動處理上櫃代號
             if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
                 ticker_two = ticker.replace(".TW", ".TWO")
                 stock_data = yf.Ticker(ticker_two)
@@ -198,6 +205,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if not df.empty:
                     ticker = ticker_two 
 
+            # 期貨異常保護
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
                 st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
                 ticker = "^TWII"
@@ -208,9 +216,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.droplevel(1)
                 
+            # 將 YF 的個股成交量 (股) 統一轉換為 (張)
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
                 
+        # 透過 snapshots 即時快照更新圖表最後一筆資料
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
@@ -252,9 +262,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 df.at[df.index[-1], 'Volume'] = rt_vol
                             
                         sj_snap_used = True
-            except Exception as e:
+            except Exception:
                 pass
                 
+        # twstock 盤後修補方案
         if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
@@ -283,7 +294,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_open = float(stock.open[-1])
                         rt_high = float(stock.high[-1])
                         rt_low = float(stock.low[-1])
-                        rt_vol = float(stock.capacity[-1]) / 1000
+                        rt_vol = float(stock.capacity[-1]) / 1000 
 
                 if rt_price is not None:
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
@@ -309,11 +320,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
         return
 
+    # 計算均線
     if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
     if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
     if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
     if ma_flags['60']: df['MA60'] = df['Close'].rolling(window=60).mean()
 
+    # 裁切近期 K 棒
     df_subset = df.tail(lookback).copy()
     df_subset = df_subset.dropna(subset=['High', 'Low'])
     
@@ -334,6 +347,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     diff = high_60 - low_60
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
     
+    # 費波顏色映射表
     color_map = {
         1.0: "#ff4b4b",
         0.786: "#ff9d00",
@@ -364,6 +378,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
     else: fig.add_trace(kline_trace)
 
+    # 繪製均線
     ma_settings = {
         'MA5': ('orange', ma_flags['5']),
         'MA10': ('lightblue', ma_flags['10']),
@@ -376,6 +391,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             if show_vol and 'Volume' in df_subset.columns: fig.add_trace(ma_trace, row=1, col=1)
             else: fig.add_trace(ma_trace)
 
+    # 繪製成交量
     if show_vol and 'Volume' in df_subset.columns:
         colors = ['#ff4b4b' if close >= open else '#00e676' for close, open in zip(df_subset['Close'], df_subset['Open'])]
         vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
@@ -417,17 +433,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     
     try:
         last_date_obj = df_subset.index[-1]
-        
         if interval in ["1d", "1wk", "1mo"]:
             date_str = last_date_obj.strftime('%Y/%m/%d')
         else:
             date_str = last_date_obj.strftime('%Y/%m/%d %H:%M')
 
-        op = float(df_subset['Open'].iloc[-1]) if not pd.isna(df_subset['Open'].iloc[-1]) else 0.0
-        hi = float(df_subset['High'].iloc[-1]) if not pd.isna(df_subset['High'].iloc[-1]) else 0.0
-        lo = float(df_subset['Low'].iloc[-1]) if not pd.isna(df_subset['Low'].iloc[-1]) else 0.0
-        cl = float(df_subset['Close'].iloc[-1]) if not pd.isna(df_subset['Close'].iloc[-1]) else 0.0
-        vol = float(df_subset['Volume'].iloc[-1]) if ('Volume' in df_subset.columns and not pd.isna(df_subset['Volume'].iloc[-1])) else 0.0
+        op = float(df_subset['Open'].iloc[-1])
+        hi = float(df_subset['High'].iloc[-1])
+        lo = float(df_subset['Low'].iloc[-1])
+        cl = float(df_subset['Close'].iloc[-1])
+        vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
         if len(df_subset) > 1:
             prev_cl = float(df_subset['Close'].iloc[-2])
@@ -449,11 +464,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     vol_num = f"{vol/100000000:.2f}" if vol > 100000000 else f"{vol:,.2f}"
                     vol_unit = " 億"
             else:
-                vol_num = f"{vol:,.0f}" if not pd.isna(vol) else "0"
+                vol_num = f"{vol:,.0f}"
                 vol_unit = " 單位(口)"
             price_unit = " 點"
         else:
-            vol_num = f"{vol:,.0f}" if not pd.isna(vol) else "0"
+            vol_num = f"{vol:,.0f}"
             vol_unit = " 張"
             price_unit = " 元"
 
@@ -468,8 +483,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             f"量 <span style='color:{color};'>{vol_num}</span>{vol_unit} "
             f"<span style='color:{color};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
-    except Exception as e:
-        print(f"Title Format Error: {e}")
+    except Exception:
         title_html = f"{display_name}{ticker_suffix} - {interval_name}"
 
     layout_update = dict(
@@ -510,67 +524,40 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
 
 # ==========================================
-# 獨立 API 爬取模塊
+# [新增] 將網路爬蟲加入快取，避免切換分頁時卡死
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_fubon_html(url):
-    """解決富邦 DJ 拒絕 iframe 連線的問題，並擷取表格、處理亂碼與排版"""
+    """解決富邦 DJ 拒絕 iframe 連線的問題、處理亂碼與排版"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=10, verify=False)
-        html_content = r.content.decode('big5', errors='ignore')
+        r.encoding = 'big5' # 富邦網頁編碼
+        html = r.text
         
-        soup = BeautifulSoup(html_content, 'html.parser')
+        # 強制轉換 meta charset 避免瀏覽器以預設編碼解析造成亂碼
+        html = re.sub(r'charset=["\']?big5["\']?', 'charset=utf-8', html, flags=re.IGNORECASE)
         
-        # 找出擁有最多資料列的核心表格
-        target_table = None
-        max_rows = 0
-        for t in soup.find_all('table'):
-            if len(t.find_all('tr')) > max_rows:
-                max_rows = len(t.find_all('tr'))
-                target_table = t
-                
-        if target_table:
-            # 清除不必要的連結與舊版 CSS 屬性
-            for a in target_table.find_all('a'):
-                a.attrs = {}
-            for tag in target_table.find_all(True):
-                tag.attrs = {k: v for k, v in tag.attrs.items() if k.lower() not in ['style', 'width', 'height', 'bgcolor', 'color', 'class', 'border']}
-            
-            table_html = str(target_table)
-        else:
-            table_html = "<p>找不到表格</p>"
-
-        # 封裝為簡潔、深色主題的 HTML 確保版面填滿且無右側空白
-        final_html = f'''
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                body {{ margin: 0; padding: 0; background-color: transparent; color: #fafafa; font-family: sans-serif; overflow-x: hidden; }}
-                table {{ border-collapse: collapse; width: 100%; font-size: 14px; margin: 0; padding: 0; }}
-                th, td {{ padding: 6px; text-align: right; border-bottom: 1px solid #333; }}
-                th {{ background-color: #262730; font-weight: bold; text-align: center; color: white; }}
-                tr:hover {{ background-color: #333; }}
-                td:first-child {{ text-align: left; }}
-            </style>
-        </head>
-        <body>
-            {table_html}
-        </body>
-        </html>
+        # 注入 base 標籤與 CSS：移除置中、靠左對齊，限制寬度去除右邊空白
+        injection = '''
+        <base href="https://fubon-ebrokerdj.fbs.com.tw/">
+        <style>
+            body { margin: 0; padding: 10px; text-align: left; background-color: white;}
+            center { text-align: left; margin: 0; }
+            table { margin-left: 0 !important; width: auto !important; max-width: 100%; }
+        </style>
         '''
-        return final_html
+        html = re.sub(r'<head>', f'<head>{injection}', html, flags=re.IGNORECASE)
+        return html
     except Exception as e:
         return f"<html><body><h3>無法載入資料: {e}</h3></body></html>"
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_report_list():
-    """爬取永豐期貨盤後快訊列表，並精準解析日期排序"""
+    """爬取永豐期貨盤後快訊列表，並精準解析日期"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
     base_url = "https://www.spf.com.tw"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
     try:
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         response.encoding = 'utf-8'
@@ -583,21 +570,19 @@ def get_report_list():
                 href = a_tag['href']
                 pdf_url = f"{base_url}{href}" if href.startswith('/') else href
                 
-                # 精準解析 YYYYMMDD (從標題或網址)
-                date_match = re.search(r'(202\d)[/-]?(0[1-9]|1[0-2])[/-]?(0[1-9]|[12]\d|3[01])', title)
-                if not date_match:
-                    date_match = re.search(r'(202\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', href)
-                
+                # 從標題中精準萃取 YYYYMMDD 日期格式
+                date_match = re.search(r'(202\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', title)
                 if date_match:
                     date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
                 else:
-                    date_str = "未知日期"
-                    
+                    # 嘗試從同列標籤中找尋日期
+                    parent = a_tag.find_parent(['tr', 'li'])
+                    dt_span = parent.find(text=re.compile(r'202\d[/-]\d{2}[/-]\d{2}')) if parent else None
+                    date_str = re.search(r'202\d[/-]\d{2}[/-]\d{2}', dt_span).group() if dt_span else "近期發布"
+
                 reports.append({"日期": date_str, "title": title, "url": pdf_url})
                 
-        # 依日期遞減排序，確保抓到真正的最新資料
-        reports.sort(key=lambda x: x['日期'], reverse=True)
-        
+        # 過濾重複連結
         unique_reports = []
         seen = set()
         for r in reports:
@@ -608,9 +593,10 @@ def get_report_list():
     except Exception as e:
         return []
 
-def parse_pdf_data(pdf_url):
-    """下載並解析 PDF 內容 (文字與圖片轉換)"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_and_parse_pdf(pdf_url):
+    """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         if not pdf_url.lower().endswith('.pdf'):
             r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
@@ -676,6 +662,7 @@ def get_major_institutional_data(date_str):
         return None
 
 def color_negative_positive(val):
+    """定義表格文字顏色：正數紅、負數綠"""
     if isinstance(val, (int, float)):
         color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'black'
         return f'color: {color}; font-weight: bold;'
@@ -859,6 +846,7 @@ if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_
 
 if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
+# 控制圖表預設時間週期 ("1d" 或 "5m")
 if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
 if 'fibo_font_size' not in st.session_state: st.session_state.fibo_font_size = 15
 
@@ -1208,12 +1196,14 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist = pd.DataFrame()
     source_used = "none"
     
+    # 優先使用永豐 API 擷取昨日/歷史日 K 線資料
     if st.session_state.get('sj_logged_in', False):
         sj_df = fetch_shioaji_data(st.session_state.sj_api, code, interval='1d', lookback_days=40)
         if not sj_df.empty:
             hist = sj_df
             source_used = "shioaji"
 
+    # 若永豐未登入或沒抓到，退回使用 twstock 擷取
     if hist.empty:
         try:
             stock = twstock.Stock(code)
@@ -1260,6 +1250,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         except Exception: 
             pass
 
+    # 僅當未使用永豐 API，且需獲取即時資訊時，才透過 twstock.realtime 補足今日最新
     if source_used != "shioaji":
         try:
             rt_data = twstock.realtime.get(code)
@@ -1297,6 +1288,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
+    # 包含收盤價、漲跌幅，15:00 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
     tz_tw_calc = pytz.timezone('Asia/Taipei')
     now_tw_calc = datetime.now(tz_tw_calc)
     switch_time = dt_time(15, 0)
@@ -2084,30 +2076,132 @@ with tab_fibo:
             else:
                 st.info("請在上方輸入高低點數值開始計算。")
 
+# ==========================================
+# 獨立 API 爬取模塊
+# ==========================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_major_institutional_data(date_str):
+    """從證交所 API 抓取三大法人買賣金額統計"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=5, verify=False)
+        data = response.json()
+        
+        if data.get("stat") != "OK":
+            return None
+        
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            
+        return df
+    except Exception as e:
+        st.error(f"獲取資料失敗: {e}")
+        return None
+
+def color_negative_positive(val):
+    """定義表格文字顏色：正數紅、負數綠"""
+    if isinstance(val, (int, float)):
+        color = '#ff4b4b' if val > 0 else '#00e676' if val < 0 else 'white'
+        return f'color: {color}; font-weight: bold;'
+    return ''
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_report_list():
+    """爬取永豐期貨盤後快訊列表"""
+    url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
+    base_url = "https://www.spf.com.tw"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10, verify=False)
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        reports = []
+        items = soup.select('div.list_news ul li') or soup.find_all('a', href=re.compile(r'\.pdf'))
+        
+        if soup.select('div.list_news ul li'):
+            for item in soup.select('div.list_news ul li'):
+                link_tag = item.find('a')
+                date_tag = item.find('span', class_='date')
+                
+                if link_tag and date_tag:
+                    title = link_tag.get_text(strip=True)
+                    date_str = date_tag.get_text(strip=True).replace("/", "-")
+                    href = link_tag['href']
+                    pdf_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/sinopacSPF/research/{href}"
+                    
+                    if "台指期籌碼快訊" in title or "期貨" in title:
+                        reports.append({
+                            "日期": date_str,
+                            "title": title,
+                            "url": pdf_url
+                        })
+        else:
+            for item in items:
+                title = item.get_text(strip=True)
+                href = item['href'] if item.name == 'a' else item.find('a')['href']
+                pdf_url = f"{base_url}{href}" if href.startswith('/') else href
+                if "台指期" in title:
+                    reports.append({"日期": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d"), "title": title, "url": pdf_url})
+        return reports
+    except Exception as e:
+        return []
+
+def parse_pdf_data(pdf_url):
+    """下載並解析 PDF 內容"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        if not pdf_url.lower().endswith('.pdf'):
+            r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
+            soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
+            for tag in soup_inner.find_all(['a', 'iframe']):
+                link = tag.get('href') or tag.get('src')
+                if link and link.lower().endswith('.pdf'):
+                    pdf_url = link
+                    if not pdf_url.startswith('http'):
+                        pdf_url = "https://www.spf.com.tw" + pdf_url
+                    break
+
+        response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text()
+            
+            ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
+            ratio = ratio_match.group(1) if ratio_match else "N/A"
+            
+            return {
+                "ratio": ratio,
+                "content": text[:500] + "..."
+            }
+    except Exception as e:
+        return {"ratio": "解析錯誤", "content": str(e)}
+
 with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
-        
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
         
         df_inst = get_major_institutional_data(date_str)
-        
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-            
             styled_df = df_inst.style.map(
-                color_negative_positive, 
-                subset=['買賣差額']
-            ).format({
-                '買進金額': '{:,.0f}',
-                '賣出金額': '{:,.0f}',
-                '買賣差額': '{:,.0f}'
-            })
+                color_negative_positive, subset=['買賣差額']
+            ).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
             
-            # 使用 columns 進行縮排排版
+            # 使用 columns 進行縮排，不讓表格佔滿全螢幕
             col_tbl, _ = st.columns([1.5, 1])
             with col_tbl:
                 st.dataframe(styled_df, use_container_width=True, hide_index=True)
@@ -2117,7 +2211,7 @@ with tab_db:
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股")
-        
+        # 由於已注入 CSS，右側的空白將被移除，畫面會以表格為主
         inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
         with inst_tabs[0]:
             components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=600, scrolling=True)
@@ -2125,21 +2219,6 @@ with tab_db:
             components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=600, scrolling=True)
         with inst_tabs[2]:
             components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=600, scrolling=True)
-
-        st.markdown("---")
-        st.markdown("#### 📊 三大法人近期持股變化 (Top 20)")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**📈 近20日買超 Top 20**")
-            df_up = get_tw_stocker_data("up")
-            if not df_up.empty: st.dataframe(df_up, hide_index=True)
-            else: st.write("目前無資料")
-                
-        with c2:
-            st.write("**📉 近20日賣超 Top 20**")
-            df_down = get_tw_stocker_data("down")
-            if not df_down.empty: st.dataframe(df_down, hide_index=True)
-            else: st.write("目前無資料")
 
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
@@ -2157,15 +2236,15 @@ with tab_db:
             st.markdown(f"### 🔥 最新快訊: {latest_report['日期']} | {latest_report['title']}")
             
             with st.spinner("正在下載並自動預覽最新報告..."):
-                data = parse_pdf_data(latest_report['url'])
+                data = fetch_and_parse_pdf(latest_report['url'])
                 
                 if data['ratio'] != "N/A" and data['ratio'] != "解析錯誤":
                     val = float(data['ratio'])
                     st.metric("散戶小台多空比", f"{val}%", delta=f"{val}%", delta_color="inverse")
                 
                 if data.get('images'):
-                    # 縮小圖片比例：利用欄位分割限制圖片寬度置中顯示
-                    col_l, col_img, col_r = st.columns([1, 4, 1])
+                    # 縮小圖片比例：利用欄位分割限制圖片寬度
+                    col_img, _ = st.columns([1.5, 1])
                     with col_img:
                         for img in data['images']:
                             st.image(img, use_container_width=True)
