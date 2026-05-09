@@ -25,10 +25,9 @@ from plotly.subplots import make_subplots
 import numpy as np
 import streamlit.components.v1 as components
 import urllib3
-import base64
-import pdfplumber
 import fitz  # PyMuPDF 用於將 PDF 轉為圖片
 from PIL import Image
+import pdfplumber
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -43,6 +42,98 @@ try:
     import shioaji as sj
 except ImportError:
     sj = None
+
+# =========================================================
+# Session 建立與共用邏輯（最穩定版本）
+# =========================================================
+def create_session():
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        }
+    )
+    retry_strategy = Retry(
+        total=5,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    scraper.mount("https://", adapter)
+    scraper.mount("http://", adapter)
+    return scraper
+
+session = create_session()
+
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+    "Referer": "https://www.twse.com.tw/",
+    "Origin": "https://www.twse.com.tw",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+}
+
+def init_twse_session():
+    try:
+        session.get("https://www.twse.com.tw/", headers=COMMON_HEADERS, timeout=15)
+        time.sleep(random.uniform(1, 2))
+    except Exception:
+        pass
+
+def safe_get_json(url, timeout=15):
+    try:
+        time.sleep(random.uniform(1.2, 2.8))
+        response = session.get(url, headers=COMMON_HEADERS, timeout=timeout)
+        if response.status_code != 200: return None
+        if "json" not in response.headers.get("Content-Type", "").lower(): return None
+        return response.json()
+    except Exception:
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_major_institutional_data(date_str):
+    init_twse_session()
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    data = safe_get_json(url)
+    if not data or data.get("stat") != "OK" or not data.get("data"):
+        return pd.DataFrame()
+    try:
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        numeric_cols = ['買進金額', '賣出金額', '買賣差額']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('--', '0', regex=False).str.replace('X', '0', regex=False).str.strip()
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_stocker_data(direction="buy"):
+    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
+    data = safe_get_json(url)
+    if not data: return pd.DataFrame()
+    try:
+        df = pd.DataFrame(data)
+        df.rename(columns={'code': '代號', 'name': '名稱', 'change': '持股變化(%)', 'three_inst_ratio': '三大法人持股(%)'}, inplace=True)
+        existing_cols = [c for c in ['代號', '名稱', '持股變化(%)', '三大法人持股(%)'] if c in df.columns]
+        return df[existing_cols].head(20)
+    except Exception:
+        return pd.DataFrame()
+
+def color_negative_positive(val):
+    if pd.isna(val): return ''
+    try:
+        val = float(val)
+        if val > 0: return 'color: #ff4b4b'
+        elif val < 0: return 'color: #00e676'
+        else: return 'color: white'
+    except Exception: return ''
 
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
@@ -682,102 +773,6 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-# =========================================================
-# Session 建立與共用邏輯（最穩定版本）
-# =========================================================
-def create_session():
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'mobile': False
-        }
-    )
-    retry_strategy = Retry(
-        total=5,
-        backoff_factor=1.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    scraper.mount("https://", adapter)
-    scraper.mount("http://", adapter)
-    return scraper
-
-session = create_session()
-
-COMMON_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Connection": "keep-alive",
-    "Referer": "https://www.twse.com.tw/",
-    "Origin": "https://www.twse.com.tw",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache"
-}
-
-def init_twse_session():
-    try:
-        session.get("https://www.twse.com.tw/", headers=COMMON_HEADERS, timeout=15)
-        time.sleep(random.uniform(1, 2))
-    except Exception as e:
-        print(f"Init session error: {e}")
-
-def safe_get_json(url, timeout=15):
-    try:
-        time.sleep(random.uniform(1.2, 2.8))
-        response = session.get(url, headers=COMMON_HEADERS, timeout=timeout)
-        if response.status_code != 200: return None
-        if "json" not in response.headers.get("Content-Type", "").lower(): return None
-        return response.json()
-    except Exception as e:
-        print(f"safe_get_json error: {e}")
-        return None
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_major_institutional_data(date_str):
-    init_twse_session()
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
-    data = safe_get_json(url)
-    if not data or data.get("stat") != "OK" or not data.get("data"):
-        return pd.DataFrame()
-    try:
-        df = pd.DataFrame(data["data"], columns=data["fields"])
-        numeric_cols = ['買進金額', '賣出金額', '買賣差額']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('--', '0', regex=False).str.replace('X', '0', regex=False).str.strip()
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception as e:
-        print(f"DataFrame parse error: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_tw_stocker_data(direction="buy"):
-    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
-    data = safe_get_json(url)
-    if not data: return pd.DataFrame()
-    try:
-        df = pd.DataFrame(data)
-        df.rename(columns={'code': '代號', 'name': '名稱', 'change': '持股變化(%)', 'three_inst_ratio': '三大法人持股(%)'}, inplace=True)
-        existing_cols = [c for c in ['代號', '名稱', '持股變化(%)', '三大法人持股(%)'] if c in df.columns]
-        return df[existing_cols].head(20)
-    except Exception as e:
-        print(f"tw stocker error: {e}")
-        return pd.DataFrame()
-
-def color_negative_positive(val):
-    if pd.isna(val): return ''
-    try:
-        val = float(val)
-        if val > 0: return 'color: red'
-        elif val < 0: return 'color: green'
-        else: return 'color: white'
-    except: return ''
-
-
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
@@ -1300,7 +1295,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 df_tw = pd.DataFrame(tw_data)
                 df_tw['Date'] = pd.to_datetime(df_tw['date'])
                 df_tw = df_tw.set_index('Date')
-                rename_map = {'open': 'High', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
+                rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'capacity': 'Volume'}
                 df_tw = df_tw.rename(columns=rename_map)
                 cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                 for c in cols: df_tw[c] = pd.to_numeric(df_tw[c], errors='coerce')
@@ -2168,7 +2163,7 @@ with tab_fibo:
 with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
-with sub_tab1:
+    with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
