@@ -266,10 +266,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
-                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得)
                         try:
-                            if hasattr(s, 'reference') and s.reference > 0:
-                                explicit_ref_prev_close = s.reference
+                            if hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
+                                explicit_ref_prev_close = float(contract_snap.reference)
                         except:
                             pass
                         
@@ -2199,6 +2199,25 @@ with tab_db:
             components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=600, scrolling=True)
         with inst_tabs[2]:
             components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=600, scrolling=True)
+        st.markdown("---")
+        st.markdown("#### 🔥 三大法人持股變化 (近20檔)")
+        col_buy, col_sell = st.columns(2)
+        
+        with col_buy:
+            st.write("📈 **持股增加排行榜**")
+            df_buy = get_tw_stocker_data("buy")
+            if not df_buy.empty:
+                st.dataframe(df_buy, use_container_width=True, hide_index=True)
+            else:
+                st.info("目前無買進資料")
+                
+        with col_sell:
+            st.write("📉 **持股減少排行榜**")
+            df_sell = get_tw_stocker_data("sell")
+            if not df_sell.empty:
+                st.dataframe(df_sell, use_container_width=True, hide_index=True)
+            else:
+                st.info("目前無賣出資料")
 
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
