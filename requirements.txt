@@ -12,3 +12,4 @@ pdfplumber
 pillow
 PyMuPDF
 cloudscraper
+openpyxl
