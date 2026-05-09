@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
+import cloudscraper
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import math
 import time
@@ -679,61 +682,100 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構並防阻擋)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Referer': 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html'
-    }
+# =========================================================
+# Session 建立與共用邏輯（最穩定版本）
+# =========================================================
+def create_session():
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        }
+    )
+    retry_strategy = Retry(
+        total=5,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    scraper.mount("https://", adapter)
+    scraper.mount("http://", adapter)
+    return scraper
+
+session = create_session()
+
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+    "Referer": "https://www.twse.com.tw/",
+    "Origin": "https://www.twse.com.tw",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+}
+
+def init_twse_session():
     try:
-        response = requests.get(url, headers=headers, timeout=10, verify=False)
-        data = response.json()
-        
-        if data.get("stat") != "OK":
-            return None
-        
-        # 轉換為 DataFrame
-        df = pd.DataFrame(data["data"], columns=data["fields"])
-        
-        # 清理數據：移除千分號並轉為數字
-        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-        for col in cols_to_fix:
-            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            
-        return df
+        session.get("https://www.twse.com.tw/", headers=COMMON_HEADERS, timeout=15)
+        time.sleep(random.uniform(1, 2))
     except Exception as e:
+        print(f"Init session error: {e}")
+
+def safe_get_json(url, timeout=15):
+    try:
+        time.sleep(random.uniform(1.2, 2.8))
+        response = session.get(url, headers=COMMON_HEADERS, timeout=timeout)
+        if response.status_code != 200: return None
+        if "json" not in response.headers.get("Content-Type", "").lower(): return None
+        return response.json()
+    except Exception as e:
+        print(f"safe_get_json error: {e}")
         return None
 
-def color_negative_positive(val):
-    """定義表格文字顏色：正數紅、負數綠"""
-    if isinstance(val, (int, float)):
-        color = 'red' if val > 0 else 'green' if val < 0 else 'white'
-        return f'color: {color}'
-    return ''
+@st.cache_data(ttl=300, show_spinner=False)
+def get_major_institutional_data(date_str):
+    init_twse_session()
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    data = safe_get_json(url)
+    if not data or data.get("stat") != "OK" or not data.get("data"):
+        return pd.DataFrame()
+    try:
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        numeric_cols = ['買進金額', '賣出金額', '買賣差額']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('--', '0', regex=False).str.replace('X', '0', regex=False).str.strip()
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+    except Exception as e:
+        print(f"DataFrame parse error: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_tw_stocker_data(direction):
+def get_tw_stocker_data(direction="buy"):
     url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
+    data = safe_get_json(url)
+    if not data: return pd.DataFrame()
     try:
-        r = requests.get(url, timeout=3, verify=False)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                df = pd.DataFrame(data).head(20)
-                if 'code' in df.columns:
-                    df = df.rename(columns={
-                        'code': '代號',
-                        'name': '名稱',
-                        'change': '持股變化(%)',
-                        'three_inst_ratio': '三大法人持股(%)'
-                    })
-                    return df[['代號', '名稱', '持股變化(%)', '三大法人持股(%)']]
-    except:
-        pass
-    return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df.rename(columns={'code': '代號', 'name': '名稱', 'change': '持股變化(%)', 'three_inst_ratio': '三大法人持股(%)'}, inplace=True)
+        existing_cols = [c for c in ['代號', '名稱', '持股變化(%)', '三大法人持股(%)'] if c in df.columns]
+        return df[existing_cols].head(20)
+    except Exception as e:
+        print(f"tw stocker error: {e}")
+        return pd.DataFrame()
+
+def color_negative_positive(val):
+    if pd.isna(val): return ''
+    try:
+        val = float(val)
+        if val > 0: return 'color: red'
+        elif val < 0: return 'color: green'
+        else: return 'color: white'
+    except: return ''
 
 
 # ==========================================
@@ -2126,28 +2168,51 @@ with tab_fibo:
 with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
-    with sub_tab1:
+with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
         
         if st.button("查詢數據"):
-            df_inst = get_major_institutional_data(date_str)
-            if df_inst is not None:
+            with st.spinner("讀取中..."):
+                df_inst = get_major_institutional_data(date_str)
+            
+            if not df_inst.empty:
                 st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-                
                 try:
                     styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
                 except AttributeError:
                     styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
                 
-                # 使用 columns 進行縮排，不讓表格佔滿全螢幕
                 col_tbl, _ = st.columns([1.5, 1])
                 with col_tbl:
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
             else:
-                st.warning("該日期無資料（可能是假日或尚未開市）。")
+                st.warning("無法取得三大法人資料（可能尚未開市或為休假日）。")
+                
+            st.markdown("---")
+            
+            col_buy, col_sell = st.columns(2)
+            with col_buy:
+                st.subheader("法人持股增加排行 (前20)")
+                df_buy = get_tw_stocker_data("buy")
+                if not df_buy.empty:
+                    try: styled_buy = df_buy.style.map(color_negative_positive, subset=['持股變化(%)'])
+                    except AttributeError: styled_buy = df_buy.style.applymap(color_negative_positive, subset=['持股變化(%)'])
+                    st.dataframe(styled_buy, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("無法取得法人持股增加資料")
+
+            with col_sell:
+                st.subheader("法人持股減少排行 (前20)")
+                df_sell = get_tw_stocker_data("sell")
+                if not df_sell.empty:
+                    try: styled_sell = df_sell.style.map(color_negative_positive, subset=['持股變化(%)'])
+                    except AttributeError: styled_sell = df_sell.style.applymap(color_negative_positive, subset=['持股變化(%)'])
+                    st.dataframe(styled_sell, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("無法取得法人持股減少資料")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股")
