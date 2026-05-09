@@ -24,6 +24,8 @@ import streamlit.components.v1 as components
 import urllib3
 import base64
 import pdfplumber
+import fitz  # PyMuPDF 用於將 PDF 轉為圖片
+from PIL import Image
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -343,6 +345,36 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     diff = high_60 - low_60
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
     
+    # 加入自訂的費波那契顏色映射邏輯
+    color_map = {
+        1.0: "#ff4b4b",
+        0.786: "#ff9d00",
+        0.618: "#7fff00",
+        0.5: "#00ffff",
+        0.382: "#1e90ff",
+        0.236: "#9370db",
+        0.0: "#ffffff"
+    }
+
+    # ... (省略至迴圈部分) ...
+
+    last_date_str = x_strings[-1]
+    first_date_str = x_strings[0]
+    
+    for r in ratios:
+        price = low_60 + r * diff
+        rounded_price = round_to_tick(price)
+        
+        # 依據比例套入顏色，若無對應則預設為半透明灰色
+        line_col = color_map.get(r, "rgba(150, 150, 150, 0.5)")
+        
+        fig.add_shape(type="line", x0=first_date_str, y0=price, x1=last_date_str, y1=price,
+            line=dict(color=line_col, width=1, dash="dash" if r not in [0, 1] else "solid"), row=target_row, col=target_col)
+            
+        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
+        fig.add_annotation(x=last_date_str, y=price, text=f"{r_label} ({rounded_price:g})",
+            showarrow=False, xanchor="left", xshift=10, font=dict(size=font_size, color=line_col), row=target_row, col=target_col)
+    
     fmt = '%Y-%m-%d %H:%M:%S'
     x_strings = df_subset.index.strftime(fmt).tolist()
     if interval in ["1d", "1wk", "1mo"]: x_display = df_subset.index.strftime('%Y-%m-%d').tolist()
@@ -513,57 +545,68 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 # [新增] 將網路爬蟲加入快取，避免切換分頁時卡死
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
+def fetch_fubon_html(url):
+    """解決富邦 DJ 拒絕 iframe 連線的問題"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, headers=headers, timeout=10, verify=False)
+        r.encoding = 'big5'
+        html = r.text
+        # 注入 base 標籤確保相對路徑資源能正常載入
+        html = re.sub(r'<head>', '<head><base href="https://fubon-ebrokerdj.fbs.com.tw/">', html, flags=re.IGNORECASE)
+        return html
+    except Exception as e:
+        return f"<html><body><h3>無法載入資料: {e}</h3></body></html>"
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_report_list():
-    """爬取永豐期貨盤後快訊列表"""
+    """爬取永豐期貨盤後快訊列表，並修正日期抓取邏輯"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
     base_url = "https://www.spf.com.tw"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
         reports = []
-        # 尋找包含 PDF 連結的區塊 (根據永豐網頁結構調整)
         items = soup.select('div.list_news ul li') or soup.find_all('a', href=re.compile(r'\.pdf'))
         
         if soup.select('div.list_news ul li'):
             for item in soup.select('div.list_news ul li'):
                 link_tag = item.find('a')
                 date_tag = item.find('span', class_='date')
-                
                 if link_tag and date_tag:
                     title = link_tag.get_text().strip()
                     date_str = date_tag.get_text().strip().replace("/", "-")
                     href = link_tag['href']
                     pdf_url = f"{base_url}{href}" if href.startswith('/') else f"{base_url}/sinopacSPF/research/{href}"
-                    
                     if "台指期籌碼快訊" in title or "期貨" in title:
-                        reports.append({
-                            "日期": date_str,
-                            "title": title,
-                            "url": pdf_url
-                        })
+                        reports.append({"日期": date_str, "title": title, "url": pdf_url})
         else:
-            # 備用抓取方法
             for item in items:
                 title = item.get_text(strip=True)
                 href = item['href'] if item.name == 'a' else item.find('a')['href']
                 pdf_url = f"{base_url}{href}" if href.startswith('/') else href
-                if "台指期" in title:
-                    reports.append({"日期": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d"), "title": title, "url": pdf_url})
+                if "台指期" in title or "期貨" in title:
+                    # 修正舊有強制帶入今日日期的錯誤，改為從標題解析
+                    date_match = re.search(r'202\d{5}', title)
+                    if date_match:
+                        d_str = date_match.group()
+                        date_str = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:]}"
+                    else:
+                        date_str = "未知日期"
+                    reports.append({"日期": date_str, "title": title, "url": pdf_url})
         return reports
     except Exception as e:
         st.error(f"獲取列表失敗: {e}")
         return []
 
-def parse_pdf_data(pdf_url):
-    """下載並解析 PDF 內容"""
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_and_parse_pdf(pdf_url):
+    """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # 如果是相對網頁而非直接PDF，嘗試穿透
         if not pdf_url.lower().endswith('.pdf'):
             r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
             soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
@@ -576,21 +619,32 @@ def parse_pdf_data(pdf_url):
                     break
 
         response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
-        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-            text = ""
+        pdf_bytes = response.content
+        
+        text = ""
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                text += page.extract_text()
+                text += page.extract_text() or ""
             
-            # 關鍵數據擷取範例：散戶小台多空比
-            ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
-            ratio = ratio_match.group(1) if ratio_match else "N/A"
+        ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
+        ratio = ratio_match.group(1) if ratio_match else "N/A"
+        
+        images = []
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            for page in doc:
+                pix = page.get_pixmap(dpi=150)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                images.append(img)
+        except Exception as e:
+            pass
             
-            return {
-                "ratio": ratio,
-                "content": text[:500] + "..." # 僅回傳部分內容預覽
-            }
+        return {
+            "ratio": ratio,
+            "images": images
+        }
     except Exception as e:
-        return {"ratio": "解析錯誤", "content": str(e)}
+        return {"ratio": "解析錯誤", "images": []}
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
@@ -2150,62 +2204,53 @@ with tab_db:
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
         
-        if st.button("查詢數據"):
-            df_inst = get_major_institutional_data(date_str)
-            
-            if df_inst is not None:
-                st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-                
-                styled_df = df_inst.style.map(
-                    color_negative_positive, 
-                    subset=['買賣差額']
-                ).format({
-                    '買進金額': '{:,.0f}',
-                    '賣出金額': '{:,.0f}',
-                    '買賣差額': '{:,.0f}'
-                })
-                
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
-            else:
-                st.warning("該日期無資料（可能是假日或尚未開市）。")
+        # 移除按鈕，預設直接抓取並顯示所選日期的資料
+        df_inst = get_major_institutional_data(date_str)
+        
+        if df_inst is not None:
+            st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+            styled_df = df_inst.style.map(
+                color_negative_positive, 
+                subset=['買賣差額']
+            ).format({
+                '買進金額': '{:,.0f}',
+                '賣出金額': '{:,.0f}',
+                '買賣差額': '{:,.0f}'
+            })
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
+        else:
+            st.warning("該日期目前無資料（可能尚未開市或為休假日）。")
                 
         st.markdown("---")
-        st.markdown("#### 📈 法人當日買賣超個股 (直接嵌入富邦資訊)")
+        st.markdown("#### 📈 法人當日買賣超個股")
         
         inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
         with inst_tabs[0]:
-            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm", height=800, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=800, scrolling=True)
         with inst_tabs[1]:
-            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm", height=800, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=800, scrolling=True)
         with inst_tabs[2]:
-            components.iframe("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm", height=800, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=800, scrolling=True)
 
         st.markdown("---")
         st.markdown("#### 📊 三大法人近期持股變化 (Top 20)")
-        st.markdown("資料來源: [tw-institutional-stocker](https://github.com/voidful/tw-institutional-stocker)")
-        
         c1, c2 = st.columns(2)
         with c1:
             st.write("**📈 近20日買超 Top 20**")
             df_up = get_tw_stocker_data("up")
-            if not df_up.empty:
-                st.dataframe(df_up, hide_index=True)
-            else:
-                st.write("目前無資料")
+            if not df_up.empty: st.dataframe(df_up, hide_index=True)
+            else: st.write("目前無資料")
                 
         with c2:
             st.write("**📉 近20日賣超 Top 20**")
             df_down = get_tw_stocker_data("down")
-            if not df_down.empty:
-                st.dataframe(df_down, hide_index=True)
-            else:
-                st.write("目前無資料")
+            if not df_down.empty: st.dataframe(df_down, hide_index=True)
+            else: st.write("目前無資料")
 
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
-        st.info("本工具會自動爬取永豐官網最新 PDF，並嘗試解析散戶多空比數據。")
-
+        
         if st.button("🔄 刷新最新報告清單"):
             st.cache_data.clear()
             st.rerun()
@@ -2215,39 +2260,32 @@ with tab_db:
         if not reports:
             st.warning("目前找不到相關報告，請檢查官網是否變動或稍後再試。")
         else:
-            for idx, report in enumerate(reports):
+            latest_report = reports[0]
+            st.markdown(f"### 🔥 最新快訊: {latest_report['日期']} | {latest_report['title']}")
+            
+            with st.spinner("正在下載並自動預覽最新報告..."):
+                data = fetch_and_parse_pdf(latest_report['url'])
+                
+                if data['ratio'] != "N/A" and data['ratio'] != "解析錯誤":
+                    val = float(data['ratio'])
+                    st.metric("散戶小台多空比", f"{val}%", delta=f"{val}%", delta_color="inverse")
+                
+                if data.get('images'):
+                    for img in data['images']:
+                        st.image(img, use_container_width=True)
+                else:
+                    st.warning("⚠️ 無法自動轉譯為圖片，請使用下方連結開啟。")
+                    
+            st.link_button("📥 點此進入原始報告下載頁面", latest_report['url'])
+            
+            st.divider()
+            st.markdown("#### 📅 歷史報告清單")
+            for idx, report in enumerate(reports[1:], 1):
                 with st.expander(f"📅 {report['日期']} | {report['title']}"):
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        st.write(f"連結: [點此查看原始 PDF]({report['url']})")
-                        
-                        if st.button(f"🔍 立即解析數據", key=f"btn_{idx}"):
-                            with st.spinner("正在下載並讀取 PDF..."):
-                                data = parse_pdf_data(report['url'])
-                                
-                                if data['ratio'] != "N/A" and data['ratio'] != "解析錯誤":
-                                    val = float(data['ratio'])
-                                    st.metric("散戶小台多空比", f"{val}%", delta=f"{val}%", delta_color="inverse")
-                                    
-                                    if val < -10:
-                                        st.success("💡 散戶極度看空，籌碼面偏向多方思考。")
-                                    elif val > 10:
-                                        st.error("💡 散戶極度看多，需留意市場反向修正。")
-                                else:
-                                    st.warning(f"⚠️ 無法自動偵測數值或發生錯誤 ({data['ratio']})，請手動開啟 PDF 確認。")
-                                
-                                with st.sidebar:
-                                    st.subheader("PDF 文字預覽")
-                                    st.caption(data['content'])
-                    
-                    with col2:
-                        st.link_button("📥 點此進入原始報告下載頁面", report['url'])
+                    st.write(f"連結: [點此查看原始 PDF]({report['url']})")
 
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
-        st.markdown("資料來源: [cmfaren.github.io/dispositionforecast](https://cmfaren.github.io/dispositionforecast/)")
-        # 由於所有的爬蟲皆已全面實作 @st.cache_data 且調低了 Timeout，切換到此分頁時 iframe 將會秒速顯示
         components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
 
 
