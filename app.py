@@ -119,9 +119,95 @@ def round_to_tick(price):
     rounded = (p_dec / t_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * t_dec
     return float(rounded)
 
-def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=None, ma_width=1.5, show_vol=True):
-    if ma_flags is None:
-        ma_flags = {'5': True, '10': True, '20': True, '60': True}
+def plot_fibonacci_chart(data_source, interval, font_size, ma_flags, ma_width, show_vol, title=""):
+    # 判斷資料來源並統一欄位
+    if isinstance(data_source, pd.DataFrame):
+        df = data_source
+    else:
+        df = yf.download(data_source, period="1mo", interval=interval)
+        if df.empty:
+            st.warning(f"找不到 {data_source} 的資料")
+            return
+            
+        # yfinance 新版下載可能會回傳 MultiIndex，這邊做預防處理以防報錯
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+
+    # 計算均線
+    colors = {'MA5': 'orange', 'MA10': 'skyblue', 'MA20': 'green', 'MA60': 'yellow'}
+    for ma, shown in ma_flags.items():
+        if shown:
+            df[f'MA{ma}'] = df['Close'].rolling(window=int(ma)).mean()
+
+    # --- 費波那契計算邏輯 ---
+    price_min = float(df['Low'].min())
+    price_max = float(df['High'].max())
+    diff = price_max - price_min
+    
+    # 完整比例區間
+    ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
+    
+    # 顏色映射
+    color_map = {
+        1.0: "#ff4b4b",
+        0.786: "#ff9d00",
+        0.618: "#7fff00",
+        0.5: "#00ffff",
+        0.382: "#1e90ff",
+        0.236: "#9370db",
+        0.0: "#ffffff"
+    }
+
+    # 建立圖表
+    fig = go.Figure()
+
+    # K線圖 (套用台股專用色：紅漲綠跌)
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'], name='K線',
+        increasing=dict(line=dict(color='#ff4b4b'), fillcolor='#ff4b4b'),
+        decreasing=dict(line=dict(color='#00e676'), fillcolor='#00e676')
+    ))
+
+    # 均線繪製
+    for ma, shown in ma_flags.items():
+        col = f'MA{ma}'
+        if shown and col in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=col,
+                                     line=dict(width=ma_width, color=colors[col])))
+
+    # 費波那契水平線與標籤
+    last_date = df.index[-1]
+    
+    for r in ratios:
+        val = price_min + r * diff
+        
+        # 依據比例套入顏色，若無對應則預設為半透明灰色
+        line_col = color_map.get(r, "rgba(150, 150, 150, 0.5)")
+        
+        fig.add_hline(
+            y=val, 
+            line_dash="dash" if r not in [0.0, 1.0] else "solid", 
+            line_color=line_col, 
+            opacity=0.8
+        )
+        
+        r_label = "1" if r == 1.0 else ("0" if r == 0.0 else f"{r:g}")
+        fig.add_annotation(
+            x=last_date, y=val, text=f"{r_label} ({val:.2f})",
+            showarrow=False, xanchor="left", xshift=10, 
+            font=dict(size=font_size, color=line_col)
+        )
+
+    fig.update_layout(
+        title=f"{title} 費波分析 ({interval})",
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False,
+        height=750,
+        margin=dict(r=100) # 留白給右側標籤
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
     code_map_fibo, name_map_fibo = load_local_stock_names()
     
