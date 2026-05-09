@@ -19,3 +19,5 @@ urllib3
 PyMuPDF
 pdf2image
 PyPDF2
+pdfplumber
+
