@@ -1950,7 +1950,7 @@ with tab2:
     if not df_calc.empty:
         table_height = (len(df_calc) + 1) * 35 
         st.dataframe(
-            df_calc.style.map(style_calc_row, axis=1) if hasattr(df_calc.style, 'map') else df_calc.style.apply(style_calc_row, axis=1), 
+            df_calc.style.apply(style_calc_row, axis=1), 
             use_container_width=False, 
             hide_index=True, 
             height=table_height,
@@ -2121,7 +2121,7 @@ with tab_fibo:
                         return [''] * len(row)
                         
                     table_height = (len(df_fibo) + 1) * 36
-                    styled_fibo = df_fibo.style.map(style_fibo_manual, axis=1) if hasattr(df_fibo.style, 'map') else df_fibo.style.apply(style_fibo_manual, axis=1)
+                    styled_fibo = df_fibo.style.apply(style_fibo_manual, axis=1)
                     
                     st.dataframe(
                         styled_fibo, 
