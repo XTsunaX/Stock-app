@@ -11,4 +11,3 @@ urllib3
 pdfplumber
 pillow
 PyMuPDF
-openpyxl
