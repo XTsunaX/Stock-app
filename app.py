@@ -169,103 +169,101 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
     is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
     
-   try:
-        last_date_obj = df_subset.index[-1]
-        if interval in ["1d", "1wk", "1mo"]:
-            date_str = last_date_obj.strftime('%Y/%m/%d')
-        else:
-            date_str = last_date_obj.strftime('%Y/%m/%d %H:%M')
-
-        op = float(df_subset['Open'].iloc[-1])
-        hi = float(df_subset['High'].iloc[-1])
-        lo = float(df_subset['Low'].iloc[-1])
-        cl = float(df_subset['Close'].iloc[-1])
-        vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
+    try:
+        df = pd.DataFrame()
+        raw_code = ticker_code.split('.')[0]
+        sj_kbars_used = False
+        sj_snap_used = False
+        twstock_used = False
         
-        # 預防 Volume 為 NaN 引發 ValueError 格式化錯誤
-        if pd.isna(vol): vol = 0.0
+        # 優先使用永豐 API 獲取盤中即時 K 線
+        if st.session_state.get('sj_logged_in', False):
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
+            if interval in days_needed:
+                req_days = days_needed[interval]
+                sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
+                if not sj_df.empty:
+                    df = sj_df
+                    sj_kbars_used = True
 
-        # 精準計算漲跌幅: 無論何種週期，嚴格與昨日收盤價(或對應的正確前K棒)進行比較
-        ref_prev_close = cl
-        if interval in ["1m", "5m", "15m", "60m"]:
-            daily_closes = df['Close'].resample('D').last().dropna()
-            if len(daily_closes) > 1:
-                current_date = df_subset.index[-1].date()
-                if current_date == daily_closes.index[-1].date():
-                    ref_prev_close = float(daily_closes.iloc[-2])
-                else:
-                    ref_prev_close = float(daily_closes.iloc[-1])
-            else:
-                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-        elif interval == "1d":
-            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-        else:
-            # 週K、月K 另外快速抓取近期的日K線以獲取真實昨日收盤價，避免跨度過大
+        # 若永豐未登入、沒抓到，退回使用 yfinance
+        if not sj_kbars_used:
+            stock_data = yf.Ticker(ticker)
+            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+            
+            # yfinance >= 0.2.40 multi-index 防呆處理
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+
+            # 自動處理上櫃代號
+            if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
+                ticker_two = ticker.replace(".TW", ".TWO")
+                stock_data = yf.Ticker(ticker_two)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
+                if not df.empty:
+                    ticker = ticker_two 
+
+            # 期貨異常保護
+            if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
+                st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
+                ticker = "^TWII"
+                display_name = "加權指數(^TWII) *替代台指"
+                is_index = True
+                stock_data = yf.Ticker(ticker)
+                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
+                
+            # 將 YF 的個股成交量 (股) 統一轉換為 (張)
+            if not df.empty and not is_index and 'Volume' in df.columns:
+                df['Volume'] = df['Volume'] / 1000
+                
+        # 透過 snapshots 即時快照更新圖表最後一筆資料
+        if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
-                temp_df = yf.Ticker(ticker).history(period="5d", interval="1d")
-                if isinstance(temp_df.columns, pd.MultiIndex):
-                    temp_df.columns = temp_df.columns.droplevel(1)
-                if len(temp_df) >= 2:
-                    current_date = df_subset.index[-1].date()
-                    if temp_df.index[-1].date() == current_date:
-                        ref_prev_close = float(temp_df['Close'].iloc[-2])
-                    else:
-                        ref_prev_close = float(temp_df['Close'].iloc[-1])
+                contract_snap = None
+                if ticker.startswith("^TWII"):
+                    contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
+                elif ticker == "TWF=F":
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                elif ticker == "TMF=F":
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
                 else:
-                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-            except:
-                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-
-        chg = cl - ref_prev_close
-        pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
-
-        chg = round(chg, 2)
-        pct_chg = round(pct_chg, 2)
-        
-        # 建立獨立函數，為開、高、低、收獨立判定紅綠平顏色
-        def get_color(val, ref):
-            if pd.isna(val) or pd.isna(ref): return "white"
-            return "#ff4b4b" if val > ref else ("#00e676" if val < ref else "white")
-
-        c_op = get_color(op, ref_prev_close)
-        c_hi = get_color(hi, ref_prev_close)
-        c_lo = get_color(lo, ref_prev_close)
-        c_cl = get_color(cl, ref_prev_close)
-
-        sign = "+" if chg > 0 else ""
-
-        if is_index:
-            if ticker == '^TWII':
-                if vol == 0 or pd.isna(vol):
-                    vol_num = "無資料(缺漏)"
-                    vol_unit = ""
-                else:
-                    vol_num = f"{vol/100000000:.2f}" if vol > 100000000 else f"{vol:,.2f}"
-                    vol_unit = " 億"
-            else:
-                vol_num = f"{vol:,.0f}"
-                vol_unit = " 單位(口)"
-            price_unit = " 點"
-        else:
-            vol_num = f"{vol:,.0f}"
-            vol_unit = " 張"
-            price_unit = " 元"
-
-        disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
-        
-        # 標題針對 開、高、低、收「後方數值」套用各自比較的獨立顏色
-        title_html = (
-            f"{disp_title}{ticker_suffix} - {interval_name} {date_str} "
-            f"開 <span style='color:{c_op};'>{op:.2f}</span> "
-            f"高 <span style='color:{c_hi};'>{hi:.2f}</span> "
-            f"低 <span style='color:{c_lo};'>{lo:.2f}</span> "
-            f"收 <span style='color:{c_cl};'>{cl:.2f}</span>{price_unit} "
-            f"量 {vol_num}{vol_unit} "
-            f"<span style='color:{c_cl};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
-        )
-    except Exception as e:
-        print(f"Title processing error: {e}")
-        title_html = f"{display_name}{ticker_suffix} - {interval_name}"
+                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except: pass
+                
+                if contract_snap:
+                    snap = st.session_state.sj_api.snapshots([contract_snap])
+                    if snap and len(snap) > 0:
+                        s = snap[0]
+                        rt_price = s.close
+                        rt_open = s.open
+                        rt_high = s.high
+                        rt_low = s.low
+                        rt_vol = s.total_volume 
+                        
+                        if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
+                        
+                        tz_tw = pytz.timezone('Asia/Taipei')
+                        now_dt = datetime.now(tz_tw).replace(tzinfo=None)
+                        if interval in ["1d", "1wk", "1mo"]:
+                            now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                            
+                        if df.index[-1] < now_dt and s.volume > 0:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                            df = pd.concat([df, new_row])
+                        else:
+                            df.at[df.index[-1], 'Close'] = rt_price
+                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                            if interval in ["1d", "1wk", "1mo"]:
+                                df.at[df.index[-1], 'Volume'] = rt_vol
+                            
+                        sj_snap_used = True
+            except Exception:
+                pass
                 
         # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
         if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
@@ -701,22 +699,10 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構並增加 Headers 防阻擋)"""
-    url = f"[https://www.twse.com.tw/rwd/zh/fund/BFI82U?date=](https://www.twse.com.tw/rwd/zh/fund/BFI82U?date=){date_str}&response=json"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Referer': '[https://www.twse.com.tw/zh/trading/foreign/bfi82u.html](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)',
-        'X-Requested-With': 'XMLHttpRequest'
-    }
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
     try:
-        response = requests.get(url, headers=headers, timeout=10, verify=False)
-        
-        # 若 RWD 版 API 失敗，退回舊版 API
-        if response.status_code != 200:
-            url = f"[https://www.twse.com.tw/fund/BFI82U?response=json&date=](https://www.twse.com.tw/fund/BFI82U?response=json&date=){date_str}"
-            response = requests.get(url, headers=headers, timeout=10, verify=False)
-            
+        response = requests.get(url, timeout=5, verify=False)
         data = response.json()
         
         if data.get("stat") != "OK":
