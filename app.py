@@ -2194,11 +2194,11 @@ with tab_db:
         st.markdown("#### 📈 法人當日買賣超個股")
         inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
         with inst_tabs[0]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1000, width=500, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1000, width=800, scrolling=True)
         with inst_tabs[1]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1000, width=500, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1000, width=800, scrolling=True)
         with inst_tabs[2]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1000, width=500, scrolling=True)
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1000, width=800, scrolling=True)
         
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
