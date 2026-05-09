@@ -20,4 +20,4 @@ PyMuPDF
 pdf2image
 PyPDF2
 pdfplumber
-
+pillow
