@@ -174,7 +174,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         raw_code = ticker_code.split('.')[0]
         sj_kbars_used = False
         sj_snap_used = False
+        
         twstock_used = False
+        explicit_ref_prev_close = None  # 新增變數以儲存正確昨日參考價
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
@@ -186,24 +188,44 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     df = sj_df
                     sj_kbars_used = True
 
-        # 若永豐未登入、沒抓到，退回使用 yfinance
+        # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
         if not sj_kbars_used:
-            stock_data = yf.Ticker(ticker)
-            df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-            
-            # yfinance >= 0.2.40 multi-index 防呆處理
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.droplevel(1)
+            import time
+            for attempt in range(3):
+                try:
+                    stock_data = yf.Ticker(ticker)
+                    df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.droplevel(1)
+                    if not df.empty:
+                        break
+                    time.sleep(1) # 若遇 Rate limit 導致空資料，稍待後重試
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(1)
+                        continue
+                    else:
+                        break
 
             # 自動處理上櫃代號
             if (df.empty or 'High' not in df.columns) and ticker.endswith(".TW"):
                 ticker_two = ticker.replace(".TW", ".TWO")
-                stock_data = yf.Ticker(ticker_two)
-                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.droplevel(1)
-                if not df.empty:
-                    ticker = ticker_two 
+                for attempt in range(3):
+                    try:
+                        stock_data = yf.Ticker(ticker_two)
+                        df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df.columns = df.columns.droplevel(1)
+                        if not df.empty:
+                            ticker = ticker_two 
+                            break
+                        time.sleep(1)
+                    except Exception as e:
+                        if attempt < 2:
+                            time.sleep(1)
+                            continue
+                        else:
+                            break
 
             # 期貨異常保護
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
@@ -244,6 +266,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常
+                        try:
+                            if hasattr(s, 'reference') and s.reference > 0:
+                                explicit_ref_prev_close = s.reference
+                        except:
+                            pass
+                        
                         if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         
                         tz_tw = pytz.timezone('Asia/Taipei')
@@ -251,15 +280,22 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                        if df.index[-1] < now_dt and s.volume > 0:
-                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
-                            df = pd.concat([df, new_row])
+                        # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
+                        if df.index[-1] < now_dt and rt_price > 0:
+                            if interval in ["1d", "1m", "5m", "15m", "60m"]:
+                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                df = pd.concat([df, new_row])
+                            else:
+                                df.at[df.index[-1], 'Close'] = rt_price
+                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                         else:
                             df.at[df.index[-1], 'Close'] = rt_price
                             df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
                             df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
                             if interval in ["1d", "1wk", "1mo"]:
-                                df.at[df.index[-1], 'Volume'] = rt_vol
+                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             
                         sj_snap_used = True
             except Exception:
@@ -447,20 +483,25 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
        # 精準計算漲跌幅: 簡化邏輯並確保各週期均有正確對比基準
         ref_prev_close = cl
-        if interval in ["1m", "5m", "15m", "60m"]:
-            try:
-                daily_closes = df['Close'].resample('D').last().dropna()
-                if len(daily_closes) > 1:
-                    current_date = df_subset.index[-1].date()
-                    if current_date == daily_closes.index[-1].date():
-                        ref_prev_close = float(daily_closes.iloc[-2])
-                    else:
-                        ref_prev_close = float(daily_closes.iloc[-1])
-            except:
-                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        
+        # 若有永豐即時快照的精確參考價，優先使用
+        if explicit_ref_prev_close is not None and explicit_ref_prev_close > 0:
+            ref_prev_close = float(explicit_ref_prev_close)
         else:
-            # 日K、週K、月K 統一與上一根K棒收盤價比較
-            ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            if interval in ["1m", "5m", "15m", "60m"]:
+                try:
+                    daily_closes = df['Close'].resample('D').last().dropna()
+                    if len(daily_closes) > 1:
+                        current_date = df_subset.index[-1].date()
+                        if current_date == daily_closes.index[-1].date():
+                            ref_prev_close = float(daily_closes.iloc[-2])
+                        else:
+                            ref_prev_close = float(daily_closes.iloc[-1])
+                except:
+                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+            else:
+                # 日K、週K、月K 統一與上一根K棒收盤價比較
+                ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
 
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
