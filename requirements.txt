@@ -13,3 +13,4 @@ pillow
 PyMuPDF
 cloudscraper
 openpyxl
+pytz
