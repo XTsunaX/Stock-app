@@ -26,6 +26,7 @@ import base64
 import pdfplumber
 import fitz  # PyMuPDF 用於將 PDF 轉為圖片
 from PIL import Image
+import pytz
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
