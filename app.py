@@ -729,7 +729,7 @@ def fetch_and_parse_pdf(pdf_url):
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
     """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
     try:
         response = requests.get(url, timeout=5, verify=False)
         data = response.json()
