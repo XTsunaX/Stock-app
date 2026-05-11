@@ -2173,13 +2173,6 @@ with tab_db:
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
 
-        # 取得當前時間
-        now = datetime.datetime.now()
-
-        # 如果今天是週六或週日，或是在平日下午 3 點之前，預設顯示前一交易日
-        if now.weekday() >= 5 or now.hour < 15:
-            # 這裡需要一個判斷最近交易日的 logic
-            pass 
         df_inst = get_major_institutional_data(date_str)
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
