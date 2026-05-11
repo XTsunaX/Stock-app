@@ -1,3 +1,70 @@
+計算過去90根K棒(包含最新的K棒)，套用的費波納契數值為-2.618、-2、-1.618、-1、0、0.236、0.382、0.5、0.618、0.786、1、1.618、2、2.618，，顯示為費波納契數值(點數)，如:0(15000)，並標記K棒的最高點及最低點數值，並需符合台股點數邏輯
+另外要做成迷你分頁可分成1分、5分、15分、60分、日、週、月顯示
+
+將費波計算分頁中的圖表縱軸以絕對值(自動)呈現，並可容納90根K棒
+針對沒有開盤的時間點(即空白處)進行移除，只需列出有開盤的K棒即可
+若-2.618、-2、-1.618、1.618、2、2.618點數位置距離太遠先隱藏，讓我可以拉縱軸看的到就好，主要呈現-1、0、0.236、0.382、0.5、0.618、0.786、1這區間
+輸入股票代號的部分，需改成與當沖戰略室一樣可用股名及代號查詢
+
+
+只動我說的程式碼就好，不亂更動其他分頁的程式碼
+
+
+登入永豐API下方即時計算並顯示今日剩餘額度(流量)
+若額度已不足無法查詢資料，則切換成備援資料如YF
+
+更新費波計算分頁中的圖表分析:
+1.個股的日期異常，要是最新的日期
+2.首先使用永豐shioaji查閱歷史資料，使用YF會有些異常，尤其是期貨的部分，使用其contract函數試試
+
+更新費波計算分頁中的手動計算:
+手動計算出現異常:
+
+修正及回復當沖戰略室分析邏輯為
+開盤前及盤中至13:45前套用昨日的指標
+盤後13:45後才更新成當日指標
+
+API Key: AxpS4hGLfz7rXMgzEWdo2a6dom2xhRJPnKqmjw68EQSn
+Secret Key: F8deej9wyBCiuBqp2PK3PrnAut2xn4Pm4JziAkVNuLXF
+
+
+更新費波計算分頁中的圖表分析:
+1.只要資料來源為有永豐shioaji時，漲跌和漲跌幅資料會有異常且顏色無法正確被辨別
+
+戰略資料庫中的三大法人買賣超:
+這段程式碼似乎沒有被應用到，可應用的話放在頁面最下面
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_tw_stocker_data(direction):
+    url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
+    try:
+        r = requests.get(url, timeout=3, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                df = pd.DataFrame(data).head(20)
+                if 'code' in df.columns:
+                    df = df.rename(columns={
+                        'code': '代號',
+                        'name': '名稱',
+                        'change': '持股變化(%)',
+                        'three_inst_ratio': '三大法人持股(%)'
+                    })
+                    return df[['代號', '名稱', '持股變化(%)', '三大法人持股(%)']]
+    except:
+        pass
+    return pd.DataFrame()
+
+法人當日買賣超個股:
+1.表格寬度縮小，字體稍微放大
+
+戰略資料庫中的台指期籌碼快訊
+1.一律僅抓取台指期籌碼快訊的PDF，以最新日期為主
+
+
+若requirements.txt 要新增東西，也一併附給我
+不更動所有我賦予原本程式碼的邏輯
+
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -728,42 +795,25 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取資料，並進行強健的日期檢查"""
-    # 確保 date_str 是 20240511 這種 8 碼格式
-    url = f"https://twse.com.tw{date_str}&response=json"
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
     try:
         response = requests.get(url, timeout=5, verify=False)
         data = response.json()
         
         if data.get("stat") != "OK":
             return None
-            
-        # --- 強健的日期比對邏輯 ---
-        api_title = data.get("title", "")
         
-        # 轉換成民國年數字 (如 2024 -> 113)
-        year_roc = str(int(date_str[:4]) - 1911)
-        # 去除補零，適應 API 可能出現 "5月" 或 "05月" 的情況
-        month = str(int(date_str[4:6])) 
-        day = str(int(date_str[6:8]))
-        
-        # 檢查標題是否包含正確的 年、月、日
-        # 例如標題: "113年05月11日 三大法人..." 
-        # 檢查 "113" in title AND "5" in title (或 "05") AND "11" in title
-        if year_roc not in api_title or month not in api_title or day not in api_title:
-            return None
-
         # 轉換為 DataFrame
         df = pd.DataFrame(data["data"], columns=data["fields"])
         
-        # 清理數據
+        # 清理數據：移除千分號並轉為數字
         cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
         for col in cols_to_fix:
             df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
         return df
     except Exception as e:
-        print(f"Error: {e}") # 偵錯用
         return None
 
 def color_negative_positive(val):
@@ -2186,47 +2236,36 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-    st.markdown("#### 📊 台股三大法人每日買賣超統計")
-    
-        # 使用台灣時區
-        try:
-            tz = pytz.timezone('Asia/Taipei')
-            now = datetime.now(tz)
-        except:
-            now = datetime.now() # 備援方案
-        
-        # 預設邏輯優化
-        default_date = now.date()
-        if now.hour < 15: # 下午三點前預設看前一天
-            default_date -= timedelta(days=1)
-        
-        while default_date.weekday() >= 5: # 避開週六日
-            default_date -= timedelta(days=1)
-    
-        # UI 選擇器
-        selected_date = st.date_input("選擇日期", default_date, max_value=now.date())
+        st.markdown("#### 📊 台股三大法人每日買賣超統計")
+        selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
-    
-        df_inst = get_major_institutional_data(date_str)
         
+        df_inst = get_major_institutional_data(date_str)
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-            # 這裡沿用你原本的 Styled DF 邏輯...
-            # (省略重複的樣式程式碼)
-            st.dataframe(df_inst, use_container_width=True, hide_index=True) 
+            
+            try:
+                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+            except AttributeError:
+                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+            
+            # 使用 columns 進行縮排，不讓表格佔滿全螢幕
+            col_tbl, _ = st.columns([1.5, 1])
+            with col_tbl:
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
         else:
-            st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
-            st.info("💡 提示：若確定今日為交易日，請於 15:00 後再試。")
-                        
-                st.markdown("---")
-                st.markdown("#### 📈 法人當日買賣超個股")
-                inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
-                with inst_tabs[0]:
-                    components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1185, width=800, scrolling=True)
-                with inst_tabs[1]:
-                    components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1185, width=800, scrolling=True)
-                with inst_tabs[2]:
-                    components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1185, width=800, scrolling=True)
+            st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 觸發防護防阻）。")
+                
+        st.markdown("---")
+        st.markdown("#### 📈 法人當日買賣超個股")
+        inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
+        with inst_tabs[0]:
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1185, width=800, scrolling=True)
+        with inst_tabs[1]:
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1185, width=800, scrolling=True)
+        with inst_tabs[2]:
+            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1185, width=800, scrolling=True)
         
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
