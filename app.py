@@ -2186,48 +2186,48 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-    # 這裡必須縮進 4 個空格
-    st.markdown("#### 📊 台股三大法人每日買賣超統計")
-    
-    # --- 設定台灣時區與初始日期 ---
-    try:
-        tz = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz)
-    except:
-        now = datetime.now()
-    
-    # 判斷預設日期：下午三點前看昨天，避開週末
-    default_date = now.date()
-    if now.hour < 15:
-        default_date -= timedelta(days=1)
-    
-    while default_date.weekday() >= 5: # 5 是週六, 6 是週日
-        default_date -= timedelta(days=1)
-
-    selected_date = st.date_input("選擇日期", default_date, max_value=now.date(), key="major_inst_date")
-    date_str = selected_date.strftime("%Y%m%d")
-
-    # --- 執行抓取 ---
-    df_inst = get_major_institutional_data(date_str)
-    
-    if df_inst is not None:
-        st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+        # 這裡必須縮進 4 個空格
+        st.markdown("#### 📊 台股三大法人每日買賣超統計")
+        
+        # --- 設定台灣時區與初始日期 ---
         try:
-            styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({
-                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
-            })
-        except AttributeError:
-            styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({
-                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
-            })
-
-        col_tbl, _ = st.columns([1.5, 1])
-        with col_tbl:
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://twse.com.tw)")
-    else:
-        st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
-        st.info("💡 提示：台股交易日資料通常於下午 15:00 前後更新；週末及國定假日不開盤。")
+            tz = pytz.timezone('Asia/Taipei')
+            now = datetime.now(tz)
+        except:
+            now = datetime.now()
+        
+        # 判斷預設日期：下午三點前看昨天，避開週末
+        default_date = now.date()
+        if now.hour < 15:
+            default_date -= timedelta(days=1)
+        
+        while default_date.weekday() >= 5: # 5 是週六, 6 是週日
+            default_date -= timedelta(days=1)
+    
+        selected_date = st.date_input("選擇日期", default_date, max_value=now.date(), key="major_inst_date")
+        date_str = selected_date.strftime("%Y%m%d")
+    
+        # --- 執行抓取 ---
+        df_inst = get_major_institutional_data(date_str)
+        
+        if df_inst is not None:
+            st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+            try:
+                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({
+                    '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+                })
+            except AttributeError:
+                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({
+                    '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+                })
+    
+            col_tbl, _ = st.columns([1.5, 1])
+            with col_tbl:
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                st.caption("數據來源：[台灣證券交易所 (TWSE)](https://twse.com.tw)")
+        else:
+            st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
+            st.info("💡 提示：台股交易日資料通常於下午 15:00 前後更新；週末及國定假日不開盤。")
 
                 
         st.markdown("---")
