@@ -728,26 +728,35 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    # 修正重點 1：加入 type=day 與改用 dayDate 參數
+    url = f"https://twse.com.tw{date_str}&type=day"
+    
     try:
-        response = requests.get(url, timeout=5, verify=False)
+        # 修正重點 2：證交所 API 有流量限制，建議加入簡單的 User-Agent
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         
-        if data.get("stat") != "OK":
+        if data.get("stat") != "OK" or "data" not in data:
             return None
-        
-        # 轉換為 DataFrame
+            
         df = pd.DataFrame(data["data"], columns=data["fields"])
         
-        # 清理數據：移除千分號並轉為數字
+        # 修正重點 3：清理數值並排除「合計」列以避免重複計算
         cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
         for col in cols_to_fix:
             df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            
+        
+        # 建議：過濾掉最後一行的「合計」
+        df = df[df['單位名稱'] != '合計']
+        
         return df
     except Exception as e:
+        print(f"Error: {e}")
         return None
+
+# 使用範例 (日期格式 YYYYMMDD)
+# df = get_major_institutional_data("20240510")
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
