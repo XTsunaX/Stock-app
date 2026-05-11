@@ -728,25 +728,38 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?date={date_str}&response=json"
+    """從證交所 API 抓取資料，並嚴格比對回傳日期是否正確"""
+    url = f"https://twse.com.tw{date_str}&response=json"
     try:
         response = requests.get(url, timeout=5, verify=False)
         data = response.json()
         
+        # 檢查 1: API 狀態
         if data.get("stat") != "OK":
             return None
+            
+        # 檢查 2: 嚴格日期比對 (防止 API 自動回補最新資料)
+        # date_str 格式為 "20240508"，轉換為民國年格式 "113年05月08日"
+        year_roc = str(int(date_str[:4]) - 1911)
+        month = date_str[4:6]
+        day = date_str[6:8]
+        expected_date_str = f"{year_roc}年{month}月{day}日"
         
+        api_title = data.get("title", "")
+        if expected_date_str not in api_title:
+            # 如果標題日期與請求日期不符，代表當天沒開盤，回傳 None
+            return None
+
         # 轉換為 DataFrame
         df = pd.DataFrame(data["data"], columns=data["fields"])
         
-        # 清理數據：移除千分號並轉為數字
+        # 清理數據
         cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
         for col in cols_to_fix:
             df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
         return df
-    except Exception as e:
+    except Exception:
         return None
 
 def color_negative_positive(val):
@@ -2169,26 +2182,49 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-        st.markdown("#### 📊 台股三大法人每日買賣超統計")
-        selected_date = st.date_input("選擇日期", datetime.today())
-        date_str = selected_date.strftime("%Y%m%d")
+    st.markdown("#### 📊 台股三大法人每日買賣超統計")
+    
+    # --- 設定台灣時區與初始日期 ---
+    tz = pytz.timezone('Asia/Taipei')
+    now = datetime.now(tz)
+    
+    # 判斷邏輯：
+    # 1. 如果現在還沒下午 3:00 (15:00)，當天資料通常還沒出，預設看昨天
+    # 2. 如果今天是週六/週日，自動回溯到週五
+    default_date = now.date()
+    if now.hour < 15:
+        default_date -= timedelta(days=1)
+    
+    # 避開週末 (週日=6, 週六=5)
+    while default_date.weekday() >= 5:
+        default_date -= timedelta(days=1)
 
-        df_inst = get_major_institutional_data(date_str)
-        if df_inst is not None:
-            st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-            
-            try:
-                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-            except AttributeError:
-                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
-            
-            # 使用 columns 進行縮排，不讓表格佔滿全螢幕
-            col_tbl, _ = st.columns([1.5, 1])
-            with col_tbl:
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
-        else:
-            st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 觸發防護防阻）。")
+    # UI 選擇器，限制最大日期不能超過今天
+    selected_date = st.date_input("選擇日期", default_date, max_value=now.date())
+    date_str = selected_date.strftime("%Y%m%d")
+
+    # --- 執行抓取 ---
+    df_inst = get_major_institutional_data(date_str)
+    
+    if df_inst is not None:
+        st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+        try:
+            # 新版 Streamlit 建議使用 st.column_config 或 .map
+            styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({
+                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+            })
+        except AttributeError:
+            styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({
+                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+            })
+
+        col_tbl, _ = st.columns([1.5, 1])
+        with col_tbl:
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://twse.com.tw)")
+    else:
+        st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
+        st.info("💡 提示：台股交易日資料通常於下午 15:00 前後更新；週末及國定假日不開盤。")
                 
         st.markdown("---")
         st.markdown("#### 📈 法人當日買賣超個股")
