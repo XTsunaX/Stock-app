@@ -2183,59 +2183,59 @@ with tab_db:
     sub_tab1, sub_tab2, sub_tab3 = st.tabs(["三大法人買賣超", "台指期籌碼快訊", "處置股"])
     
     with sub_tab1:
-    st.markdown("#### 📊 台股三大法人每日買賣超統計")
+        st.markdown("#### 📊 台股三大法人每日買賣超統計")
+        
+        # --- 設定台灣時區與初始日期 ---
+        tz = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz)
+        
+        # 判斷邏輯：
+        # 1. 如果現在還沒下午 3:00 (15:00)，當天資料通常還沒出，預設看昨天
+        # 2. 如果今天是週六/週日，自動回溯到週五
+        default_date = now.date()
+        if now.hour < 15:
+            default_date -= timedelta(days=1)
+        
+        # 避開週末 (週日=6, 週六=5)
+        while default_date.weekday() >= 5:
+            default_date -= timedelta(days=1)
     
-    # --- 設定台灣時區與初始日期 ---
-    tz = pytz.timezone('Asia/Taipei')
-    now = datetime.now(tz)
+        # UI 選擇器，限制最大日期不能超過今天
+        selected_date = st.date_input("選擇日期", default_date, max_value=now.date())
+        date_str = selected_date.strftime("%Y%m%d")
     
-    # 判斷邏輯：
-    # 1. 如果現在還沒下午 3:00 (15:00)，當天資料通常還沒出，預設看昨天
-    # 2. 如果今天是週六/週日，自動回溯到週五
-    default_date = now.date()
-    if now.hour < 15:
-        default_date -= timedelta(days=1)
+        # --- 執行抓取 ---
+        df_inst = get_major_institutional_data(date_str)
+        
+        if df_inst is not None:
+            st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
+            try:
+                # 新版 Streamlit 建議使用 st.column_config 或 .map
+                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({
+                    '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+                })
+            except AttributeError:
+                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({
+                    '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
+                })
     
-    # 避開週末 (週日=6, 週六=5)
-    while default_date.weekday() >= 5:
-        default_date -= timedelta(days=1)
-
-    # UI 選擇器，限制最大日期不能超過今天
-    selected_date = st.date_input("選擇日期", default_date, max_value=now.date())
-    date_str = selected_date.strftime("%Y%m%d")
-
-    # --- 執行抓取 ---
-    df_inst = get_major_institutional_data(date_str)
-    
-    if df_inst is not None:
-        st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
-        try:
-            # 新版 Streamlit 建議使用 st.column_config 或 .map
-            styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({
-                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
-            })
-        except AttributeError:
-            styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({
-                '買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'
-            })
-
-        col_tbl, _ = st.columns([1.5, 1])
-        with col_tbl:
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.caption("數據來源：[台灣證券交易所 (TWSE)](https://twse.com.tw)")
-    else:
-        st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
-        st.info("💡 提示：台股交易日資料通常於下午 15:00 前後更新；週末及國定假日不開盤。")
-                
-        st.markdown("---")
-        st.markdown("#### 📈 法人當日買賣超個股")
-        inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
-        with inst_tabs[0]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1185, width=800, scrolling=True)
-        with inst_tabs[1]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1185, width=800, scrolling=True)
-        with inst_tabs[2]:
-            components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1185, width=800, scrolling=True)
+            col_tbl, _ = st.columns([1.5, 1])
+            with col_tbl:
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                st.caption("數據來源：[台灣證券交易所 (TWSE)](https://twse.com.tw)")
+        else:
+            st.warning(f"⚠️ {selected_date.strftime('%Y-%m-%d')} 目前無資料。")
+            st.info("💡 提示：台股交易日資料通常於下午 15:00 前後更新；週末及國定假日不開盤。")
+                    
+            st.markdown("---")
+            st.markdown("#### 📈 法人當日買賣超個股")
+            inst_tabs = st.tabs(["外資當日買賣超", "投信當日買賣超", "自營商當日買賣超"])
+            with inst_tabs[0]:
+                components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_D.djhtm"), height=1185, width=800, scrolling=True)
+            with inst_tabs[1]:
+                components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DD.djhtm"), height=1185, width=800, scrolling=True)
+            with inst_tabs[2]:
+                components.html(fetch_fubon_html("https://fubon-ebrokerdj.fbs.com.tw/Z/ZG/ZGK_DB.djhtm"), height=1185, width=800, scrolling=True)
         
     with sub_tab2:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
