@@ -733,7 +733,7 @@ def get_major_institutional_data(date_str):
     
     try:
         # 修正重點 2：證交所 API 有流量限制，建議加入簡單的 User-Agent
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
         
