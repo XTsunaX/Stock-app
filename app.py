@@ -564,7 +564,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         )
 
     fig.update_layout(**layout_update)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, `width='stretch')
     
     fetch_time_str = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')
     
@@ -1073,13 +1073,13 @@ with st.sidebar:
     
     col_restore, col_clear = st.columns([1, 1], gap="small")
     with col_restore:
-        if st.button("♻️ 全部復原", use_container_width=True):
+        if st.button("♻️ 全部復原", `width='stretch'):
             st.session_state.ignored_stocks.clear()
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             st.toast("已重置忽略名單。", icon="🔄")
             st.rerun()
     with col_clear:
-        if st.button("🗑️ 全部清空", type="primary", use_container_width=True):
+        if st.button("🗑️ 全部清空", type="primary", `width='stretch'):
             st.session_state.stock_data = pd.DataFrame()
             st.session_state.ignored_stocks = set()
             st.session_state.all_candidates = []
@@ -1094,9 +1094,9 @@ with st.sidebar:
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
-    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", use_container_width=True)
-    st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", use_container_width=True)
-    st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", use_container_width=True)
+    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", `width='stretch')
+    st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", `width='stretch')
+    st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", `width='stretch')
 
 @st.cache_data(ttl=86400)
 def fetch_futures_list():
@@ -1547,7 +1547,7 @@ with tab1:
         search_selection = st.multiselect("🔍 快速查詢 (中文/代號)", options=stock_options, key="search_multiselect", on_change=update_search_cache, placeholder="輸入 2330 或 台積電...")
 
     c_run, c_space = st.columns([1.5, 5])
-    with c_run: btn_run = st.button("🚀 執行分析", use_container_width=True)
+    with c_run: btn_run = st.button("🚀 執行分析", `width='stretch')
 
     if btn_run:
         save_search_cache(st.session_state.search_multiselect)
@@ -1851,8 +1851,8 @@ with tab1:
 
         st.markdown("---")
         col_btn, col_clear, _ = st.columns([2, 2, 4])
-        with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", use_container_width=True, type="primary")
-        with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", use_container_width=True, help="清除所有記憶的戰略備註內容")
+        with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", `width='stretch', type="primary")
+        with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", `width='stretch', help="清除所有記憶的戰略備註內容")
         
         if btn_clear_notes:
             st.session_state.saved_notes = {}
@@ -1903,13 +1903,13 @@ with tab2:
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
     with b1:
-        if st.button("🔽 向下", use_container_width=True):
+        if st.button("🔽 向下", `width='stretch'):
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
             st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
             if st.session_state.calc_view_price < limit_down: st.session_state.calc_view_price = limit_down
             st.rerun()
     with b2:
-        if st.button("🔼 向上", use_container_width=True):
+        if st.button("🔼 向上", `width='stretch'):
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
             st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
             if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
@@ -2055,7 +2055,7 @@ with tab_fibo:
             tag_cols = st.columns(len(btn_labels))
             for i, (label, val) in enumerate(btn_labels):
                 if i < len(tag_cols):
-                    tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), use_container_width=True, key=f"btn_fibo_{i}")
+                    tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), `width='stretch', key=f"btn_fibo_{i}")
 
         fibo_stock_options = [f"{n}({c})" for c, n in sorted(code_map_fibo.items())]
         current_val = st.session_state.fibo_search_input
@@ -2154,7 +2154,7 @@ with tab_fibo:
                     
                     st.dataframe(
                         styled_fibo, 
-                        use_container_width=True, 
+                        `width='stretch', 
                         height=table_height, 
                         hide_index=True,
                         column_config={"_raw_r": None}
@@ -2185,7 +2185,7 @@ with tab_db:
             # 使用 columns 進行縮排，不讓表格佔滿全螢幕
             col_tbl, _ = st.columns([1.5, 1])
             with col_tbl:
-                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                st.dataframe(styled_df, `width='stretch', hide_index=True)
             st.caption("數據來源：[台灣證券交易所 (TWSE)](https://www.twse.com.tw/zh/trading/foreign/bfi82u.html)")
         else:
             st.warning("該日期目前無資料（可能尚未開市或為休假日或證交所 API 觸發防護防阻）。")
@@ -2226,7 +2226,7 @@ with tab_db:
                     col_img, _ = st.columns([1, 2])
                     with col_img:
                         for img in data['images']:
-                            st.image(img, use_container_width=True)
+                            st.image(img, `width='stretch')
                 else:
                     st.warning("⚠️ 無法自動轉譯為圖片，請使用下方連結開啟。")
                     
@@ -2274,8 +2274,8 @@ with tab3:
     sel_month = st.session_state.cal_month
 
     col_prev, col_header, col_next = st.columns([1, 8, 1])
-    with col_prev: st.button("◀️", on_click=change_month, args=(-1,), use_container_width=True)
-    with col_next: st.button("▶️", on_click=change_month, args=(1,), use_container_width=True)
+    with col_prev: st.button("◀️", on_click=change_month, args=(-1,), `width='stretch')
+    with col_next: st.button("▶️", on_click=change_month, args=(1,), `width='stretch')
     with col_header: st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
     def get_holidays(year):
