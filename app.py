@@ -50,11 +50,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
-            # 避免連續合約 (TXFR1) 取不到 K 線，改取第一個近月合約
-            contract = next((c for c in api.Contracts.Futures.TXF if c.code != "TXFR1"), api.Contracts.Futures.TXF.TXFR1)
+            # 篩選代號後兩碼為數字的正規近月合約 (過濾掉 TXFR1 與價差合約)
+            valid_c = [c for c in api.Contracts.Futures.TXF if c.code[-2:].isdigit()]
+            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
-            # 避免連續合約 (TMFR1) 取不到 K 線，改取第一個近月合約
-            contract = next((c for c in api.Contracts.Futures.TMF if c.code != "TMFR1"), api.Contracts.Futures.TMF.TMFR1)
+            # 篩選代號後兩碼為數字的正規近月合約 (過濾掉 TMFR1 與價差合約)
+            valid_c = [c for c in api.Contracts.Futures.TMF if c.code[-2:].isdigit()]
+            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
         else:
             try:
                 contract = api.Contracts.Stocks[code]
