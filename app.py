@@ -166,7 +166,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     ticker_code = raw_input
 
     ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
-    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "max", "1wk": "max", "1mo": "max"}
+    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "2y", "1wk": "2y", "1mo": "5y"}
     is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
     
     try:
@@ -682,7 +682,7 @@ def get_report_list():
     except Exception as e:
         return []
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=5, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
     """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -726,7 +726,7 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=10, show_spinner=False)
 def get_major_institutional_data(date_str):
     """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
     url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
@@ -1654,7 +1654,7 @@ with tab1:
             if source == 'upload': upload_current += 1
             seen.add((code, source))
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
