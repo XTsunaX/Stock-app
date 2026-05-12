@@ -50,9 +50,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+            # 避免連續合約 (TXFR1) 取不到 K 線，改取第一個近月合約
+            contract = next((c for c in api.Contracts.Futures.TXF if c.code != "TXFR1"), api.Contracts.Futures.TXF.TXFR1)
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
+            # 避免連續合約 (TMFR1) 取不到 K 線，改取第一個近月合約
+            contract = next((c for c in api.Contracts.Futures.TMF if c.code != "TMFR1"), api.Contracts.Futures.TMF.TMFR1)
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -180,7 +182,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
+            # 增加 1d, 1wk, 1mo 讓大時區也能透過永豐抓取，避免退回 Yahoo Finance
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 180, "1wk": 730, "1mo": 1825}
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
