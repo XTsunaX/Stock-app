@@ -242,26 +242,21 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
                 
-        # 透過 snapshots 即時快照更新圖表最後一筆資料 (使用同步快照確保立刻拿到報價)
+        # 透過 snapshots 即時快照更新圖表最後一筆資料
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-                    valid_c = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-                    contract_snap = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-                    valid_c = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-                    contract_snap = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
                 
                 if contract_snap:
-                    # 使用 snapshots 發出同步請求，會強制等待最新報價回來才繼續往下執行
                     snap = st.session_state.sj_api.snapshots([contract_snap])
                     if snap and len(snap) > 0:
                         s = snap[0]
@@ -271,6 +266,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得)
                         try:
                             if hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
@@ -284,7 +280,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                        # 將最新報價更新到 df 中
+                        # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
                         if df.index[-1] < now_dt and rt_price > 0:
                             if interval in ["1d", "1m", "5m", "15m", "60m"]:
                                 new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
@@ -302,7 +298,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             
                         sj_snap_used = True
-            except Exception as e:
+            except Exception:
                 pass
                 
         # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
