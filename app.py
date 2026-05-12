@@ -53,11 +53,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
             # 加入條件：交割月份必須 >= 當前月份，過濾掉已結算的舊合約
             valid_c = [c for c in api.Contracts.Futures.TXF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TXF.TXFR1
+            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TXF.TXF202605
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
             current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
             valid_c = [c for c in api.Contracts.Futures.TMF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TMF.TMFR1
+            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TMF.TMF202605
         else:
             try:
                 contract = api.Contracts.Stocks[code]
