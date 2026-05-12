@@ -242,7 +242,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
                 
-        # 透過 subscribe 訂閱即時 Tick 更新圖表最後一筆資料 (取代原本的 snapshots)
+        # 透過 snapshots 即時快照更新圖表最後一筆資料 (使用同步快照確保立刻拿到報價)
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
@@ -261,34 +261,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     except: pass
                 
                 if contract_snap:
-                    # 1. 註冊回呼函式 (確保 Session 期間只執行一次)
-                    if 'sj_tick_callback_set' not in st.session_state:
-                        def quote_callback(exchange, tick):
-                            # 將最新 Tick 價格存入 session_state
-                            st.session_state[f"rt_price_{tick.code}"] = float(tick.close)
-                        try:
-                            st.session_state.sj_api.quote.set_on_tick_fop_v1_callback(quote_callback)
-                            st.session_state.sj_api.quote.set_on_tick_stk_v1_callback(quote_callback)
-                            st.session_state.sj_tick_callback_set = True
-                        except: pass
-
-                    # 2. 訂閱合約 (避免重複訂閱導致報錯)
-                    if 'subscribed_set' not in st.session_state:
-                        st.session_state.subscribed_set = set()
-                    
-                    if contract_snap.code not in st.session_state.subscribed_set:
-                        st.session_state.sj_api.quote.subscribe(contract_snap, quote_type=sj.constant.QuoteType.Tick)
-                        st.session_state.subscribed_set.add(contract_snap.code)
-
-                    # 3. 從 session_state 取出最新的 Tick 價格
-                    rt_price = st.session_state.get(f"rt_price_{contract_snap.code}")
-                    
-                    if rt_price:
-                        # 因 Tick 無開高低及總量，高低點改與歷史最後一筆資料做比較
-                        rt_open = float(df['Open'].iloc[-1])
-                        rt_high = max(float(df['High'].iloc[-1]), rt_price)
-                        rt_low = min(float(df['Low'].iloc[-1]), rt_price)
-                        rt_vol = float(df['Volume'].iloc[-1]) # 無法取得即時累積量
+                    # 使用 snapshots 發出同步請求，會強制等待最新報價回來才繼續往下執行
+                    snap = st.session_state.sj_api.snapshots([contract_snap])
+                    if snap and len(snap) > 0:
+                        s = snap[0]
+                        rt_price = s.close
+                        rt_open = s.open
+                        rt_high = s.high
+                        rt_low = s.low
+                        rt_vol = s.total_volume 
                         
                         try:
                             if hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
@@ -303,19 +284,22 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                        # 4. 更新 df 最後一筆資料
+                        # 將最新報價更新到 df 中
                         if df.index[-1] < now_dt and rt_price > 0:
                             if interval in ["1d", "1m", "5m", "15m", "60m"]:
                                 new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
                                 df = pd.concat([df, new_row])
                             else:
                                 df.at[df.index[-1], 'Close'] = rt_price
-                                df.at[df.index[-1], 'High'] = rt_high
-                                df.at[df.index[-1], 'Low'] = rt_low
+                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                         else:
                             df.at[df.index[-1], 'Close'] = rt_price
-                            df.at[df.index[-1], 'High'] = rt_high
-                            df.at[df.index[-1], 'Low'] = rt_low
+                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                            if interval in ["1d", "1wk", "1mo"]:
+                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             
                         sj_snap_used = True
             except Exception as e:
