@@ -50,14 +50,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
-            current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-            # 加入條件：交割月份必須 >= 當前月份，過濾掉已結算的舊合約
-            valid_c = [c for c in api.Contracts.Futures.TXF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TXF.TXFR1
+            contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
-            current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-            valid_c = [c for c in api.Contracts.Futures.TMF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-            contract = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else api.Contracts.Futures.TMF.TXFR1
+            contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -185,8 +180,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            # 增加 1d, 1wk, 1mo 讓大時區也能透過永豐抓取，避免退回 Yahoo Finance
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 180, "1wk": 730, "1mo": 1825}
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
@@ -255,13 +249,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-                    valid_c = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-                    contract_snap = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    current_ym = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m")
-                    valid_c = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if getattr(c, 'delivery_month', '') >= current_ym and '/' not in c.code]
-                    contract_snap = sorted(valid_c, key=lambda x: x.delivery_month)[0] if valid_c else None
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
