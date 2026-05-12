@@ -583,7 +583,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 # ==========================================
 # 網路爬蟲加入快取，避免切換分頁時卡死
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def fetch_fubon_html(url):
     """解決富邦 DJ 拒絕 iframe 連線的問題、處理亂碼與排版"""
     try:
@@ -612,7 +612,7 @@ def fetch_fubon_html(url):
     except Exception as e:
         return f"<html><body><h3>無法載入資料: {e}</h3></body></html>"
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_report_list():
     """爬取永豐期貨盤後快訊列表，嚴格過濾台指期籌碼快訊"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
@@ -716,6 +716,7 @@ def fetch_and_parse_pdf(pdf_url):
                 pix = page.get_pixmap(dpi=150)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 images.append(img)
+            doc.close()  # 新增這行，釋放底層記憶體
         except Exception as e:
             pass
             
@@ -726,7 +727,7 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, max_entries=10, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
     """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
     url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
@@ -756,7 +757,7 @@ def color_negative_positive(val):
         return f'color: {color}'
     return ''
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_tw_stocker_data(direction):
     url = f"https://voidful.github.io/tw-institutional-stocker/data/top_three_inst_change_20_{direction}.json"
     try:
