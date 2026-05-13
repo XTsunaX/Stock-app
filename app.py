@@ -956,7 +956,7 @@ if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 saved_config = load_config()
 fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "長榮(2603)", "聯鈞(3450)"])
 
-if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = "加權指數(^TWII)"
+if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = ""
 if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
 
 if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = fibo_tags[0] if len(fibo_tags)>0 else "台積電(2330)"
@@ -967,9 +967,8 @@ if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_
 
 if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
-# 控制圖表預設時間週期 ("1d" 或 "5m")
-if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "5m" 
-if 'fibo_font_size' not in st.session_state: st.session_state.fibo_font_size = 15
+# 控制圖表預設時間週期
+if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "1d"
 
 tz_tw = pytz.timezone('Asia/Taipei')
 now_tw = datetime.now(tz_tw)
@@ -2059,10 +2058,7 @@ with tab_fibo:
         def set_fibo_search(val):
             st.session_state.fibo_search_input = val
             st.session_state.fibo_trigger_search = True
-            if "^TWII" in val or "TWF=F" in val or "TMF=F" in val or "加權" in val or "台指" in val:
-                st.session_state.fibo_interval = "5m"
-            else:
-                st.session_state.fibo_interval = "1d"
+            st.session_state.fibo_interval = "1d"
 
         with st.expander("⚙️ 設定快速標籤"):
             st.info("💡 將圖表字體大小設定獨立：")
@@ -2092,26 +2088,28 @@ with tab_fibo:
 
         fibo_stock_options = [f"{n}({c})" for c, n in sorted(code_map_fibo.items())]
         current_val = st.session_state.fibo_search_input
-        default_index = 0
+        default_index = None
         search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)", "微型台指期貨(TMF=F)"] + fibo_stock_options
         
-        for i, opt in enumerate(search_list):
-            if current_val in opt:
-                default_index = i
-                break
+        if current_val:
+            for i, opt in enumerate(search_list):
+                if current_val in opt:
+                    default_index = i
+                    break
 
         def selectbox_changed():
             val = st.session_state.fibo_selectbox
-            st.session_state.fibo_search_input = val
-            if "^TWII" in val or "TWF=F" in val or "TMF=F" in val or "加權" in val or "台指" in val:
-                st.session_state.fibo_interval = "5m"
-            else:
+            if val:
+                st.session_state.fibo_search_input = val
                 st.session_state.fibo_interval = "1d"
+            else:
+                st.session_state.fibo_search_input = ""
 
         selected_raw = st.selectbox(
             "🔍 搜尋股票 (可直接輸入股號或股名查找，或點擊上方快捷按鈕)",
             options=search_list,
             index=default_index,
+            placeholder="請選擇或輸入...",
             key="fibo_selectbox",
             on_change=selectbox_changed
         )
@@ -2131,9 +2129,9 @@ with tab_fibo:
         ma_flags = {'5': s_ma5, '10': s_ma10, '20': s_ma20, '60': s_ma60}
 
         st.write("---")
-        interval_options = {"1m": "1分", "5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
+        interval_options = {"1d": "日", "1wk": "週", "1mo": "月"}
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
-        except: default_radio_idx = 4 
+        except: default_radio_idx = 0 
 
         selected_interval_label = st.radio(
             "⏱️ 選擇時間標籤",
@@ -2145,7 +2143,10 @@ with tab_fibo:
         selected_interval = list(interval_options.keys())[list(interval_options.values()).index(selected_interval_label)]
         st.session_state.fibo_interval = selected_interval 
         
-        plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=st.session_state.ma_w, show_vol=s_vol)
+        if final_target.strip():
+            plot_fibonacci_chart(final_target, selected_interval, font_size=st.session_state.fibo_font_size, ma_flags=ma_flags, ma_width=st.session_state.ma_w, show_vol=s_vol)
+        else:
+            st.info("請在上方選擇或輸入股票/期貨以顯示圖表。")
 
     with tab_fibo_manual:
         st.write("📌 **手動輸入高低點，計算費波納契回撤與延伸點位**")
