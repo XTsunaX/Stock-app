@@ -51,20 +51,27 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         contract_recent = None
         is_future = False
         
+        tz_tw = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz_tw)
+        today_str = now.strftime("%Y/%m/%d") # 用於過濾已結算合約
+        
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract_hist = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             try: contract_hist = api.Contracts.Futures.TXF.TXFR1
             except: pass
-            # 動態抓取實體近月合約 (供最新夜盤使用)
-            try: contract_recent = min([x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
+            try: 
+                # 過濾掉已經結算的合約，確保抓到的實體近月一定包含最新夜盤
+                valids = [x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"] and x.delivery_date >= today_str]
+                if valids: contract_recent = min(valids, key=lambda x: x.delivery_date)
             except: pass
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             try: contract_hist = api.Contracts.Futures.TMF.TMFR1
             except: pass
-            # 動態抓取實體近月合約 (供最新夜盤使用)
-            try: contract_recent = min([x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
+            try: 
+                valids = [x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"] and x.delivery_date >= today_str]
+                if valids: contract_recent = min(valids, key=lambda x: x.delivery_date)
             except: pass
             is_future = True
         else:
@@ -74,17 +81,15 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract_hist and not contract_recent:
             return pd.DataFrame()
 
-        # 針對期貨：阻擋分K(1m, 5m, 15m, 60m)，僅保留日K、週K、月K的長線圖表
+        # 針對期貨：阻擋分K，僅保留日K、週K、月K的長線圖表
         if is_future and interval in ['1m', '5m', '15m', '60m']:
             return pd.DataFrame()
 
-        # 2. 分段抓取歷史資料 (雙合約無縫接軌)
-        tz_tw = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz_tw)
-        
+        # 2. 分段抓取歷史資料
         dfs = []
         chunk_days = 20 if is_future else 60
-        current_end = now
+        # 結束日強制往後推一天，確保 API 絕對不會切斷最新跳動的夜盤 K 棒
+        current_end = now + timedelta(days=1)
         earliest_start = now - timedelta(days=lookback_days)
 
         while current_end >= earliest_start:
@@ -93,10 +98,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             s_date = current_start.strftime("%Y-%m-%d")
             e_date = current_end.strftime("%Y-%m-%d")
             
-            # 預設使用歷史連續合約
             target_contract = contract_hist
-            
-            # 關鍵修正：如果是期貨，且這個區塊落在最近 20 天內，切換為「實體近月合約」以取得包含 15:00 開盤的夜盤資料
             if is_future and contract_recent:
                 if current_end >= now - timedelta(days=20):
                     target_contract = contract_recent
@@ -112,13 +114,12 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 except Exception:
                     pass
                 
-            # 將查詢結束日往前推一天，進入下一個循環
             current_end = current_start - timedelta(days=1)
 
         if not dfs:
             return pd.DataFrame()
 
-        # 3. 合併所有分段資料與時間轉換
+        # 3. 合併與時間轉換
         df = pd.concat(dfs, ignore_index=True)
         
         if pd.api.types.is_numeric_dtype(df['ts']):
@@ -128,7 +129,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if df['ts'].dt.tz is not None:
                 df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
 
-        # 移除交接處可能重複的 K 棒
         df.drop_duplicates(subset=['ts'], inplace=True)
         df.sort_values('ts', inplace=True)
         df.set_index('ts', inplace=True)
@@ -144,15 +144,16 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             pass
         elif interval in ['1d', '1wk', '1mo']:
             if is_future:
-                # 處理期貨夜盤日K對齊 (將 T-1 15:00 到 T 13:45 劃為同一交易日)
-                df.index = df.index + pd.Timedelta(hours=9)
+                # 關鍵修正：將時間倒退 15 小時，讓完整的交易日(15:00~隔日13:45)
+                # 完美收斂到「夜盤開盤當天」的日曆天內。
+                # 這保證了 Open 絕對是 15:00 的夜盤價，且避免產生被圖表剔除的未來日期(T+1)
+                df.index = df.index - pd.Timedelta(hours=15)
                 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
             else: df = df.resample('M').agg(agg_dict).dropna()
             
             if is_future:
-                # 恢復為正常的日期標籤
                 df.index = df.index.normalize()
         else:
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
