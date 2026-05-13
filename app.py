@@ -62,12 +62,22 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
             
-        tz_tw = pytz.timezone('Asia/Taipei')
+       tz_tw = pytz.timezone('Asia/Taipei')
         end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
-        start_date = (datetime.now(tz_tw) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         
-        # 獲取 K 線資料
-        kbars = api.kbars(contract, start=start_date, end=end_date)
+        # 針對期貨近月合約(存續期短)，若請求歷史天數過長會導致 API 回傳空值，加入遞減天數的重試機制
+        is_future = hasattr(contract, 'code') and contract.code in ["TXFR1", "TMFR1"]
+        retry_days_list = [lookback_days, 60, 30, 15, 5] if is_future else [lookback_days]
+        
+        kbars = None
+        for days in retry_days_list:
+            if days > lookback_days and days != retry_days_list[0]:
+                continue
+            start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
+            kbars = api.kbars(contract, start=start_date, end=end_date)
+            if kbars and kbars.get('ts'):
+                break
+                
         if not kbars or not kbars.get('ts'):
             return pd.DataFrame()
             
