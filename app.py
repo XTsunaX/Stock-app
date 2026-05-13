@@ -46,108 +46,63 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 取得合約 (連續合約供歷史，實體近月合約供最新日夜盤)
-        contract_hist = None
-        contract_recent = None
+        # 1. 依照官方文件取得連續期貨合約物件
+        contract = None
         is_future = False
         
-        tz_tw = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz_tw)
-        today_str = now.strftime("%Y/%m/%d") # 用於過濾已結算合約
-        
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract_hist = api.Contracts.Indices.TSE.TSE01
+            contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            try: contract_hist = api.Contracts.Futures.TXF.TXFR1
-            except: pass
-            try: 
-                # 過濾掉已經結算的合約，確保抓到的實體近月一定包含最新夜盤
-                valids = [x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"] and x.delivery_date >= today_str]
-                if valids: contract_recent = min(valids, key=lambda x: x.delivery_date)
-            except: pass
+            contract = api.Contracts.Futures.TXF.TXFR1  
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            try: contract_hist = api.Contracts.Futures.TMF.TMFR1
-            except: pass
-            try: 
-                valids = [x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"] and x.delivery_date >= today_str]
-                if valids: contract_recent = min(valids, key=lambda x: x.delivery_date)
-            except: pass
+            contract = api.Contracts.Futures.TMF.TMFR1  
             is_future = True
         else:
-            try: contract_hist = api.Contracts.Stocks[code]
-            except: pass
+            try:
+                contract = api.Contracts.Stocks[code]
+            except:
+                pass
 
-        if not contract_hist and not contract_recent:
+        if not contract:
             return pd.DataFrame()
 
-        # 針對期貨：阻擋分K，僅保留日K、週K、月K的長線圖表
-        if is_future and interval in ['1m', '5m', '15m', '60m']:
-            return pd.DataFrame()
-
-        # 2. 分段抓取歷史資料
-        dfs = []
-        chunk_days = 20 if is_future else 60
-        # 結束日強制往後推一天，確保 API 絕對不會切斷最新跳動的夜盤 K 棒
-        current_end = now + timedelta(days=1)
-        earliest_start = now - timedelta(days=lookback_days)
-
-        while current_end >= earliest_start:
-            current_start = max(current_end - timedelta(days=chunk_days), earliest_start)
-            
-            s_date = current_start.strftime("%Y-%m-%d")
-            e_date = current_end.strftime("%Y-%m-%d")
-            
-            target_contract = contract_hist
-            if is_future and contract_recent:
-                if current_end >= now - timedelta(days=20):
-                    target_contract = contract_recent
-                    
-            if target_contract:
-                try:
-                    res = api.kbars(target_contract, start=s_date, end=e_date)
-                    if res:
-                        if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
-                            dfs.append(pd.DataFrame({**res}))
-                        elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
-                            dfs.append(pd.DataFrame(res))
-                except Exception:
-                    pass
-                
-            current_end = current_start - timedelta(days=1)
-
-        if not dfs:
-            return pd.DataFrame()
-
-        # 3. 合併與時間轉換
-        df = pd.concat(dfs, ignore_index=True)
+        # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
+        tz_tw = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz_tw)
+        end_date = now.strftime("%Y-%m-%d")
         
-        if pd.api.types.is_numeric_dtype(df['ts']):
-            df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        else:
-            df['ts'] = pd.to_datetime(df['ts'])
-            if df['ts'].dt.tz is not None:
-                df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+        actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
+        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        df.drop_duplicates(subset=['ts'], inplace=True)
-        df.sort_values('ts', inplace=True)
+        # 3. 呼叫官方 api.kbars 
+        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+
+        # 4. 依照官方文件轉換成 DataFrame 格式
+        if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame({**kbars})
+        df['ts'] = pd.to_datetime(df['ts'])
+
+        # 將時間設為 Index 並確保移除時區資訊以利畫圖
+        if df['ts'].dt.tz is not None:
+            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        
         df.set_index('ts', inplace=True)
         
-        rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
-        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-        
+        # 確保擁有官方的開高低收量欄位
         agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
         agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
 
-        # 4. K棒週期重取樣
+        # 5. K棒週期重取樣
         if interval == '1m':
             pass
         elif interval in ['1d', '1wk', '1mo']:
             if is_future:
-                # 關鍵修正：將時間倒退 15 小時，讓完整的交易日(15:00~隔日13:45)
-                # 完美收斂到「夜盤開盤當天」的日曆天內。
-                # 這保證了 Open 絕對是 15:00 的夜盤價，且避免產生被圖表剔除的未來日期(T+1)
-                df.index = df.index - pd.Timedelta(hours=15)
+                # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
+                df.index = df.index + pd.Timedelta(hours=9)
                 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
