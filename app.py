@@ -180,7 +180,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45}
+            # 增加日/週/月K的支援天數，確保各週期都能由 Shioaji 取得精確資料
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
@@ -227,16 +228,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         else:
                             break
 
-            # 期貨異常保護
+            # 期貨異常保護 (移除自動替換加權指數邏輯)
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
-                st.warning("⚠️ Yahoo Finance 目前缺少台指期貨歷史資料，已自動替換為加權指數(^TWII)作參考。")
-                ticker = "^TWII"
-                display_name = "加權指數(^TWII) *替代台指"
-                is_index = True
-                stock_data = yf.Ticker(ticker)
-                df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.droplevel(1)
+                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。請確保已登入永豐 Shioaji API 以獲取完整的期貨(日/夜盤)數據。")
+                return
                 
             # 將 YF 的個股成交量 (股) 統一轉換為 (張)
             if not df.empty and not is_index and 'Volume' in df.columns:
@@ -266,10 +261,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
-                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得)
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得，支援期貨反推)
                         try:
                             if hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
+                            elif hasattr(contract_snap, 'limit_down') and contract_snap.limit_down > 0:
+                                # 期貨無 reference 屬性，利用跌停價(10%)反推精確昨日結算價
+                                explicit_ref_prev_close = round(float(contract_snap.limit_down) / 0.9)
                         except:
                             pass
                         
@@ -301,8 +299,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             except Exception:
                 pass
                 
-        # twstock 盤後修補方案 (修正: 避免 1wk, 1mo 被錯誤加上單日 K棒)
-        if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index and interval in ["1d", "1wk", "1mo"]:
+       # twstock 盤後修補方案 (修正: 支援盤中所有週期取得最新即時價格，以修復盤中漲跌幅度與標題顏色)
+        if not sj_kbars_used and not sj_snap_used and not df.empty and not is_index:
             try:
                 tz_tw = pytz.timezone('Asia/Taipei')
                 now_tw = datetime.now(tz_tw)
@@ -336,10 +334,25 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                     last_hist_date = pd.Timestamp(df.index[-1].date())
                     
-                    # 只有日K且為最新日，才往後新增；若是週/月K，只需更新最後一根棒子即可，避免圖表異常
-                    if interval == "1d" and last_hist_date < today_date and now_tw.weekday() < 5:
-                        new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
-                        df = pd.concat([df, new_row])
+                    if interval == "1d":
+                        if last_hist_date < today_date and now_tw.weekday() < 5:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
+                            df = pd.concat([df, new_row])
+                        else:
+                            df.at[df.index[-1], 'Close'] = rt_price
+                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                            df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                    elif interval in ["1m", "5m", "15m", "60m"]:
+                        now_dt_naive = now_tw.replace(tzinfo=None)
+                        # 判斷最後一根K棒時間，若落後即時時間則追加一根最新的，否則直接更新最後一根
+                        if df.index[-1] < now_dt_naive and rt_price > 0:
+                            new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
+                            df = pd.concat([df, new_row])
+                        else:
+                            df.at[df.index[-1], 'Close'] = rt_price
+                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
                     else:
                         df.at[df.index[-1], 'Close'] = rt_price
                         df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
