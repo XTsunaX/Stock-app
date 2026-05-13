@@ -46,19 +46,19 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 取得合約 (官方解法：放棄 R1 連續合約，動態抓取真實近月實體合約)
+        # 1. 取得合約 (退回使用連續合約 TXFR1 / TMFR1，確保包含夜盤)
         contract = None
         is_future = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            # 篩選排除 R1/R2，找出結算日最近的台指期實體合約
-            contract = min([x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
+            try: contract = api.Contracts.Futures.TXF.TXFR1
+            except: pass
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            # 篩選排除 R1/R2，找出結算日最近的微台期實體合約
-            contract = min([x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
+            try: contract = api.Contracts.Futures.TMF.TMFR1
+            except: pass
             is_future = True
         else:
             try: contract = api.Contracts.Stocks[code]
@@ -67,14 +67,17 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
 
-        # 2. 設定時間 (強制縮短查詢天數以防 API 截斷)
+        # 針對期貨：直接阻擋分K(1m, 5m, 15m, 60m)，僅保留日K、週K、月K
+        if is_future and interval in ['1m', '5m', '15m', '60m']:
+            return pd.DataFrame()
+
+        # 2. 設定時間
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 期貨分K資料量龐大，強制最多只抓 5 天以防報錯
-        actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
-        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
+        # 由於期貨只支援日/週/月K，直接使用原本的 lookback_days
+        start_date = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
         # 3. 呼叫官方 kbars 取得 1 分 K 基礎資料
         kbars = api.kbars(contract, start=start_date, end=end_date)
