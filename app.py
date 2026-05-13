@@ -968,7 +968,8 @@ if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_
 if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
 # 控制圖表預設時間週期
-if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "1d"
+if 'fibo_interval' not in st.session_state: st.session_state.fibo_interval = "1d" 
+if 'fibo_font_size' not in st.session_state: st.session_state.fibo_font_size = 15
 
 tz_tw = pytz.timezone('Asia/Taipei')
 now_tw = datetime.now(tz_tw)
