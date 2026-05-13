@@ -46,37 +46,44 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 取得合約 (使用連續合約 TXFR1 / TMFR1，確保包含夜盤資料)
-        contract = None
+        # 1. 取得合約 (連續合約供歷史，實體近月合約供最新日夜盤)
+        contract_hist = None
+        contract_recent = None
         is_future = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
+            contract_hist = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            try: contract = api.Contracts.Futures.TXF.TXFR1
+            try: contract_hist = api.Contracts.Futures.TXF.TXFR1
+            except: pass
+            # 動態抓取實體近月合約 (供最新夜盤使用)
+            try: contract_recent = min([x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
             except: pass
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            try: contract = api.Contracts.Futures.TMF.TMFR1
+            try: contract_hist = api.Contracts.Futures.TMF.TMFR1
+            except: pass
+            # 動態抓取實體近月合約 (供最新夜盤使用)
+            try: contract_recent = min([x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
             except: pass
             is_future = True
         else:
-            try: contract = api.Contracts.Stocks[code]
+            try: contract_hist = api.Contracts.Stocks[code]
             except: pass
 
-        if not contract:
+        if not contract_hist and not contract_recent:
             return pd.DataFrame()
 
         # 針對期貨：阻擋分K(1m, 5m, 15m, 60m)，僅保留日K、週K、月K的長線圖表
         if is_future and interval in ['1m', '5m', '15m', '60m']:
             return pd.DataFrame()
 
-        # 2. 分段抓取歷史資料 (解決 API 單次筆數達上限，導致漏掉最新資料的問題)
+        # 2. 分段抓取歷史資料 (雙合約無縫接軌)
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
         
         dfs = []
-        chunk_days = 15 if is_future else 60  # 期貨資料龐大，每15天為一單位分段往前抓
+        chunk_days = 20 if is_future else 60
         current_end = now
         earliest_start = now - timedelta(days=lookback_days)
 
@@ -86,15 +93,24 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             s_date = current_start.strftime("%Y-%m-%d")
             e_date = current_end.strftime("%Y-%m-%d")
             
-            try:
-                res = api.kbars(contract, start=s_date, end=e_date)
-                if res:
-                    if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
-                        dfs.append(pd.DataFrame({**res}))
-                    elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
-                        dfs.append(pd.DataFrame(res))
-            except Exception:
-                pass
+            # 預設使用歷史連續合約
+            target_contract = contract_hist
+            
+            # 關鍵修正：如果是期貨，且這個區塊落在最近 20 天內，切換為「實體近月合約」以取得包含 15:00 開盤的夜盤資料
+            if is_future and contract_recent:
+                if current_end >= now - timedelta(days=20):
+                    target_contract = contract_recent
+                    
+            if target_contract:
+                try:
+                    res = api.kbars(target_contract, start=s_date, end=e_date)
+                    if res:
+                        if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
+                            dfs.append(pd.DataFrame({**res}))
+                        elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
+                            dfs.append(pd.DataFrame(res))
+                except Exception:
+                    pass
                 
             # 將查詢結束日往前推一天，進入下一個循環
             current_end = current_start - timedelta(days=1)
@@ -112,6 +128,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if df['ts'].dt.tz is not None:
                 df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
 
+        # 移除交接處可能重複的 K 棒
         df.drop_duplicates(subset=['ts'], inplace=True)
         df.sort_values('ts', inplace=True)
         df.set_index('ts', inplace=True)
