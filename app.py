@@ -62,7 +62,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
             
-       tz_tw = pytz.timezone('Asia/Taipei')
+        tz_tw = pytz.timezone('Asia/Taipei')
         end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
         
         # 針對期貨近月合約(存續期短)，若請求歷史天數過長會導致 API 回傳空值，加入遞減天數的重試機制
