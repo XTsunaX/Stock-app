@@ -46,7 +46,7 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 取得合約 (退回使用連續合約 TXFR1 / TMFR1，確保包含夜盤)
+        # 1. 取得合約 (使用連續合約 TXFR1 / TMFR1，確保包含夜盤資料)
         contract = None
         is_future = False
         
@@ -67,26 +67,43 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
 
-        # 針對期貨：直接阻擋分K(1m, 5m, 15m, 60m)，僅保留日K、週K、月K
+        # 針對期貨：阻擋分K(1m, 5m, 15m, 60m)，僅保留日K、週K、月K的長線圖表
         if is_future and interval in ['1m', '5m', '15m', '60m']:
             return pd.DataFrame()
 
-        # 2. 設定時間
+        # 2. 分段抓取歷史資料 (解決 API 單次筆數達上限，導致漏掉最新資料的問題)
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
-        end_date = now.strftime("%Y-%m-%d")
         
-        # 由於期貨只支援日/週/月K，直接使用原本的 lookback_days
-        start_date = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        dfs = []
+        chunk_days = 15 if is_future else 60  # 期貨資料龐大，每15天為一單位分段往前抓
+        current_end = now
+        earliest_start = now - timedelta(days=lookback_days)
 
-        # 3. 呼叫官方 kbars 取得 1 分 K 基礎資料
-        kbars = api.kbars(contract, start=start_date, end=end_date)
-        
-        if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
+        while current_end >= earliest_start:
+            current_start = max(current_end - timedelta(days=chunk_days), earliest_start)
+            
+            s_date = current_start.strftime("%Y-%m-%d")
+            e_date = current_end.strftime("%Y-%m-%d")
+            
+            try:
+                res = api.kbars(contract, start=s_date, end=e_date)
+                if res:
+                    if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
+                        dfs.append(pd.DataFrame({**res}))
+                    elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
+                        dfs.append(pd.DataFrame(res))
+            except Exception:
+                pass
+                
+            # 將查詢結束日往前推一天，進入下一個循環
+            current_end = current_start - timedelta(days=1)
+
+        if not dfs:
             return pd.DataFrame()
 
-        # 4. DataFrame 轉換 (相容官方回傳的奈秒或 datetime 格式)
-        df = pd.DataFrame({**kbars})
+        # 3. 合併所有分段資料與時間轉換
+        df = pd.concat(dfs, ignore_index=True)
         
         if pd.api.types.is_numeric_dtype(df['ts']):
             df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -95,21 +112,22 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if df['ts'].dt.tz is not None:
                 df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
 
+        df.drop_duplicates(subset=['ts'], inplace=True)
+        df.sort_values('ts', inplace=True)
         df.set_index('ts', inplace=True)
         
-        # 統一轉換為首字母大寫的標準欄位
         rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
         df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
         
         agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
         agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
 
-        # 5. K棒週期重取樣 (Resample: 將 1分K 合成為各週期)
+        # 4. K棒週期重取樣
         if interval == '1m':
             pass
         elif interval in ['1d', '1wk', '1mo']:
             if is_future:
-                # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
+                # 處理期貨夜盤日K對齊 (將 T-1 15:00 到 T 13:45 劃為同一交易日)
                 df.index = df.index + pd.Timedelta(hours=9)
                 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
@@ -117,9 +135,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             else: df = df.resample('M').agg(agg_dict).dropna()
             
             if is_future:
+                # 恢復為正常的日期標籤
                 df.index = df.index.normalize()
         else:
-            # 合成 5m, 15m, 60m
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
