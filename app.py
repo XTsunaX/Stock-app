@@ -46,16 +46,16 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 解析合約，加入 try-except 保護，避免舊版 Shioaji 缺少 TMF 屬性導致報錯中斷
+        # 解析合約
         contract = None
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             try: contract = api.Contracts.Indices.TSE.TSE01
             except: pass
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
-            try: contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+            try: contract = api.Contracts.Futures.TXF.TXFR1  
             except: pass
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
-            try: contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
+            try: contract = api.Contracts.Futures.TMF.TMFR1  
             except: pass
         else:
             try: contract = api.Contracts.Stocks[code]
@@ -67,16 +67,15 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         tz_tw = pytz.timezone('Asia/Taipei')
         end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
         
-        # 針對期貨，加入多梯度的天數重試機制
         is_future = code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指期貨", "微型台指期貨", "台指", "微台"]
-        if is_future:
-            # 期貨近月合約存續期間短，若查詢天數過長會引發錯誤或空值
-            retry_days_list = [lookback_days, 60, 30, 15, 10, 5, 3, 1]
-            retry_days_list = sorted(list(set([d for d in retry_days_list if d <= 60 or d == lookback_days])), reverse=True)
-            if lookback_days not in retry_days_list:
-                retry_days_list.insert(0, min(lookback_days, 60))
-        else:
-            retry_days_list = [lookback_days]
+        
+        # 關鍵修正 1：防止 API 截斷導致抓到舊資料
+        # 強制限制期貨(1分K)的最大查詢天數，確保拿到的資料是「到今天為止」的最新盤勢
+        max_safe_days = 30 if is_future else lookback_days
+        actual_lookback = min(lookback_days, max_safe_days)
+        
+        retry_days_list = [actual_lookback, 15, 10, 5, 3, 1]
+        retry_days_list = sorted(list(set(retry_days_list)), reverse=True)
             
         kbars = None
         for days in retry_days_list:
@@ -84,7 +83,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
                 res = api.kbars(contract, start=start_date, end=end_date)
                 
-                # 檢查不同版本 Shioaji 的回傳結構 (Kbars 物件或 Dict)
                 if res:
                     if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
                         kbars = res
@@ -102,29 +100,35 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if df.empty or 'ts' not in df.columns:
             return pd.DataFrame()
             
-        df['ts'] = pd.to_datetime(df['ts']).dt.tz_localize('Asia/Taipei').dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        # 關鍵修正 2：精準轉換 UTC 奈秒，解決 K 棒時間差 8 小時的問題
+        df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df.set_index('ts', inplace=True)
         
-        # 處理欄位大小寫，相容不同版本的 shioaji
         rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
         df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
         
         agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
         agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
         
-        # 依照要求的頻率重新取樣 (Resample)
         if interval == '1m':
-            pass # 預設即為 1 分鐘
-        elif interval == '1d':
-            df = df.resample('D').agg(agg_dict).dropna()
-        elif interval == '1wk':
-            df = df.resample('W').agg(agg_dict).dropna()
-        elif interval == '1mo':
-            df = df.resample('M').agg(agg_dict).dropna()
+            pass
+        elif interval in ['1d', '1wk', '1mo']:
+            # 關鍵修正 3：期貨夜盤對齊邏輯 (T-1 15:00 到 T 13:45 為同一交易日)
+            if is_future:
+                # 將時間平移 +9 小時，讓 15:00~13:45 落在同一個日曆日內，這樣算出來的日 K 才會正確
+                df.index = df.index + pd.Timedelta(hours=9)
+                
+            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
+            elif interval == '1wk': df = df.resample('W').agg(agg_dict).dropna()
+            else: df = df.resample('M').agg(agg_dict).dropna()
+            
+            if is_future:
+                # 平移回 00:00 (日 K 僅取日期，避免圖表 X 軸時間顯示為 +9 小時後的怪異時間)
+                df.index = df.index.normalize()
         else:
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
-                df = df.resample(resample_map[interval]).agg(agg_dict).dropna()
+                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
                 
         return df
     except Exception as e:
