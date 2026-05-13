@@ -69,9 +69,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         is_future = code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指期貨", "微型台指期貨", "台指", "微台", "微台期(全)", "台指期(全)", "微台(全)", "台指(全)"]
         
-        # 限制期貨(1分K)的最大查詢天數，防止 API 回傳數量達到上限而被截斷
+        # 限制期貨(1分K)的最大查詢天數，並保證至少查詢5天以涵蓋週末休市
         max_safe_days = 30 if is_future else lookback_days
-        actual_lookback = min(lookback_days, max_safe_days)
+        actual_lookback = min(max(lookback_days, 5), max_safe_days)
         
         # 遞減重試清單
         retry_days_list = [actual_lookback, 15, 10, 5, 3, 1]
@@ -84,7 +84,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 res = api.kbars(contract, start=start_date, end=end_date)
                 
                 if res:
-                    # 判斷是新版 Kbars 物件或是舊版 Dict
                     if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
                         kbars = res
                         break
@@ -101,14 +100,15 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if df.empty or 'ts' not in df.columns:
             return pd.DataFrame()
             
-        # 安全轉換時間，相容新舊版 Shioaji 以避免解析崩潰
-        try:
+        # 最強韌的 ts 時間解析，解決 1分/5分/15分/60分K 時間錯位與帶不出資料的問題
+        if pd.api.types.is_numeric_dtype(df['ts']):
+            # Shioaji 舊版回傳數值 (預設為 UTC 奈秒)，需強制轉換為台北時間
+            df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        else:
+            # Shioaji 新版回傳 datetime 物件或字串
             df['ts'] = pd.to_datetime(df['ts'])
-        except Exception:
-            df['ts'] = pd.to_datetime(df['ts'], unit='ns')
-            
-        if df['ts'].dt.tz is not None:
-            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+            if df['ts'].dt.tz is not None:
+                df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
             
         df.set_index('ts', inplace=True)
         
@@ -130,9 +130,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             else: df = df.resample('M').agg(agg_dict).dropna()
             
             if is_future:
-                # 恢復為當日的 00:00，確保圖表 X 軸顯示正常的日期標籤
                 df.index = df.index.normalize()
         else:
+            # 盤中各分K 重取樣
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
