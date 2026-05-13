@@ -46,22 +46,35 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 解析合約
-        contract = None
+        contracts_to_try = []
+        
+        # 1. 辨識與蒐集可能的合約清單 (加入實體月份備援機制，解決 TMFR1 抓不到資料的 Bug)
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            try: contract = api.Contracts.Indices.TSE.TSE01
+            try: contracts_to_try.append(api.Contracts.Indices.TSE.TSE01)
             except: pass
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            try: contract = api.Contracts.Futures.TXF.TXFR1  
-            except: pass
+            try: target_category = api.Contracts.Futures.TXF
+            except: target_category = None
+            if target_category:
+                try: contracts_to_try.append(target_category.TXFR1)
+                except: pass
+                # 備援：加入所有台指期實體月份合約 (TXF05, TXF06...)
+                try: contracts_to_try.extend([c for c in target_category])
+                except: pass
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            try: contract = api.Contracts.Futures.TMF.TMFR1  
-            except: pass
+            try: target_category = api.Contracts.Futures.TMF
+            except: target_category = None
+            if target_category:
+                try: contracts_to_try.append(target_category.TMFR1)
+                except: pass
+                # 備援：加入所有微台期實體月份合約 (TMF05, TMF06...)
+                try: contracts_to_try.extend([c for c in target_category])
+                except: pass
         else:
-            try: contract = api.Contracts.Stocks[code]
+            try: contracts_to_try.append(api.Contracts.Stocks[code])
             except: pass
-        
-        if not contract:
+
+        if not contracts_to_try:
             return pd.DataFrame()
             
         tz_tw = pytz.timezone('Asia/Taipei')
@@ -69,43 +82,49 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         is_future = code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指期貨", "微型台指期貨", "台指", "微台", "微台期(全)", "台指期(全)", "微台(全)", "台指(全)"]
         
-        # 限制期貨(1分K)的最大查詢天數，並保證至少查詢5天以涵蓋週末休市
         max_safe_days = 30 if is_future else lookback_days
         actual_lookback = min(max(lookback_days, 5), max_safe_days)
+        retry_days_list = sorted(list(set([actual_lookback, 15, 10, 5, 3, 1])), reverse=True)
         
-        # 遞減重試清單
-        retry_days_list = [actual_lookback, 15, 10, 5, 3, 1]
-        retry_days_list = sorted(list(set([d for d in retry_days_list if d <= actual_lookback])), reverse=True)
-            
         kbars = None
-        for days in retry_days_list:
-            try:
-                start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
-                res = api.kbars(contract, start=start_date, end=end_date)
-                
-                if res:
-                    if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
-                        kbars = res
-                        break
-                    elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
-                        kbars = res
-                        break
-            except Exception:
-                continue
+        # 2. 雙層迴圈：如果連續月合約失敗，自動切換到當月/次月實體合約重新嘗試
+        for contract in contracts_to_try:
+            for days in retry_days_list:
+                try:
+                    start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
+                    res = api.kbars(contract, start=start_date, end=end_date)
+                    
+                    if res:
+                        if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
+                            kbars = res
+                            break
+                        elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
+                            kbars = res
+                            break
+                except Exception:
+                    continue
+            if kbars:
+                break # 只要任一合約(如 TMF05) 成功拿到資料，立即中斷尋找
                 
         if not kbars:
             return pd.DataFrame()
             
-        df = pd.DataFrame({**kbars})
+        # 3. 更強健的 DataFrame 轉換
+        try:
+            if isinstance(kbars, dict):
+                df = pd.DataFrame(kbars)
+            else:
+                df = pd.DataFrame({**kbars})
+        except Exception:
+            df = pd.DataFrame(kbars.__dict__)
+            
         if df.empty or 'ts' not in df.columns:
             return pd.DataFrame()
             
-        # 最強韌的 ts 時間解析，解決 1分/5分/15分/60分K 時間錯位與帶不出資料的問題
+        # 4. 時間解析
         if pd.api.types.is_numeric_dtype(df['ts']):
-            # Shioaji 舊版回傳數值 (預設為 UTC 奈秒)，需強制轉換為台北時間
             df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         else:
-            # Shioaji 新版回傳 datetime 物件或字串
             df['ts'] = pd.to_datetime(df['ts'])
             if df['ts'].dt.tz is not None:
                 df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -121,7 +140,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if interval == '1m':
             pass
         elif interval in ['1d', '1wk', '1mo']:
-            # 期貨夜盤對齊邏輯 (將 T-1 15:00 到 T 13:45 劃為同一交易日)
             if is_future:
                 df.index = df.index + pd.Timedelta(hours=9)
                 
@@ -132,7 +150,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if is_future:
                 df.index = df.index.normalize()
         else:
-            # 盤中各分K 重取樣
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
