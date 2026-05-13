@@ -46,57 +46,62 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 依照官方文件取得連續期貨合約物件
+        # 1. 取得合約 (官方解法：放棄 R1 連續合約，動態抓取真實近月實體合約)
         contract = None
         is_future = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
+            # 篩選排除 R1/R2，找出結算日最近的台指期實體合約
+            contract = min([x for x in api.Contracts.Futures.TXF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
+            # 篩選排除 R1/R2，找出結算日最近的微台期實體合約
+            contract = min([x for x in api.Contracts.Futures.TMF if x.code[-2:] not in ["R1", "R2"]], key=lambda x: x.delivery_date)
             is_future = True
         else:
-            try:
-                contract = api.Contracts.Stocks[code]
-            except:
-                pass
+            try: contract = api.Contracts.Stocks[code]
+            except: pass
 
         if not contract:
             return pd.DataFrame()
 
-        # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
+        # 2. 設定時間 (強制縮短查詢天數以防 API 截斷)
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+        # 期貨分K資料量龐大，強制最多只抓 5 天以防報錯
         actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars 
-        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-
-        # 4. 依照官方文件轉換成 DataFrame 格式
+        # 3. 呼叫官方 kbars 取得 1 分 K 基礎資料
+        kbars = api.kbars(contract, start=start_date, end=end_date)
+        
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
-            
-        df = pd.DataFrame({**kbars})
-        df['ts'] = pd.to_datetime(df['ts'])
 
-        # 將時間設為 Index 並確保移除時區資訊以利畫圖
-        if df['ts'].dt.tz is not None:
-            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        # 4. DataFrame 轉換 (相容官方回傳的奈秒或 datetime 格式)
+        df = pd.DataFrame({**kbars})
         
+        if pd.api.types.is_numeric_dtype(df['ts']):
+            df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        else:
+            df['ts'] = pd.to_datetime(df['ts'])
+            if df['ts'].dt.tz is not None:
+                df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+
         df.set_index('ts', inplace=True)
         
-        # 確保擁有官方的開高低收量欄位
+        # 統一轉換為首字母大寫的標準欄位
+        rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
+        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+        
         agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
         agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
 
-        # 5. K棒週期重取樣
+        # 5. K棒週期重取樣 (Resample: 將 1分K 合成為各週期)
         if interval == '1m':
             pass
         elif interval in ['1d', '1wk', '1mo']:
@@ -111,95 +116,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if is_future:
                 df.index = df.index.normalize()
         else:
+            # 合成 5m, 15m, 60m
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
-        return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
-            
-        # 3. 更強健的 DataFrame 轉換
-        try:
-            if isinstance(kbars, dict):
-                df = pd.DataFrame(kbars)
-            else:
-                df = pd.DataFrame({**kbars})
-        except Exception:
-            df = pd.DataFrame(kbars.__dict__)
-            
-        if df.empty or 'ts' not in df.columns:
-            return pd.DataFrame()
-            
-        # 4. 時間解析
-        if pd.api.types.is_numeric_dtype(df['ts']):
-            df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        else:
-            df['ts'] = pd.to_datetime(df['ts'])
-            if df['ts'].dt.tz is not None:
-                df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-            
-        df.set_index('ts', inplace=True)
-        
-        rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
-        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-        
-        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-        
-        if interval == '1m':
-            pass
-        elif interval in ['1d', '1wk', '1mo']:
-            if is_future:
-                df.index = df.index + pd.Timedelta(hours=9)
-                
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            
-            if is_future:
-                df.index = df.index.normalize()
-        else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
-            if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
-                
-        return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
-            
-        # 關鍵修正 2：精準轉換 UTC 奈秒，解決 K 棒時間差 8 小時的問題
-        df['ts'] = pd.to_datetime(df['ts'], unit='ns', utc=True).dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        df.set_index('ts', inplace=True)
-        
-        rename_map = {'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
-        df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-        
-        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-        
-        if interval == '1m':
-            pass
-        elif interval in ['1d', '1wk', '1mo']:
-            # 關鍵修正 3：期貨夜盤對齊邏輯 (T-1 15:00 到 T 13:45 為同一交易日)
-            if is_future:
-                # 將時間平移 +9 小時，讓 15:00~13:45 落在同一個日曆日內，這樣算出來的日 K 才會正確
-                df.index = df.index + pd.Timedelta(hours=9)
-                
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            
-            if is_future:
-                # 平移回 00:00 (日 K 僅取日期，避免圖表 X 軸時間顯示為 +9 小時後的怪異時間)
-                df.index = df.index.normalize()
-        else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
-            if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
-                
         return df
     except Exception as e:
         print(f"Shioaji fetch error for {code}: {e}")
