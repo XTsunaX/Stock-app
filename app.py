@@ -66,8 +66,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
         
         # 針對期貨近月合約(存續期短)，若請求歷史天數過長會導致 API 回傳空值，加入遞減天數的重試機制
-        is_future = hasattr(contract, 'code') and contract.code in ["TXFR1", "TMFR1"]
-        retry_days_list = [lookback_days, 60, 30, 15, 5] if is_future else [lookback_days]
+        # 修正：直接用傳入的 code 判斷，避免因合約物件的 code 為實際月份(如 TMF05) 導致判斷失敗
+        is_future = code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指期貨", "微型台指期貨", "台指", "微台"]
+        retry_days_list = [lookback_days, 60, 30, 15, 5, 3] if is_future else [lookback_days]
         
         kbars = None
         for days in retry_days_list:
