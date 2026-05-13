@@ -46,18 +46,20 @@ except ImportError:
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 解析合約
+        # 解析合約，加入 try-except 保護，避免舊版 Shioaji 缺少 TMF 屬性導致報錯中斷
+        contract = None
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
+            try: contract = api.Contracts.Indices.TSE.TSE01
+            except: pass
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+            try: contract = api.Contracts.Futures.TXF.TXFR1  # 台指期近月
+            except: pass
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
+            try: contract = api.Contracts.Futures.TMF.TMFR1  # 微型台指期近月
+            except: pass
         else:
-            try:
-                contract = api.Contracts.Stocks[code]
-            except:
-                contract = None
+            try: contract = api.Contracts.Stocks[code]
+            except: pass
         
         if not contract:
             return pd.DataFrame()
@@ -65,24 +67,41 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         tz_tw = pytz.timezone('Asia/Taipei')
         end_date = datetime.now(tz_tw).strftime("%Y-%m-%d")
         
-        # 針對期貨近月合約(存續期短)，若請求歷史天數過長會導致 API 回傳空值，加入遞減天數的重試機制
-        # 修正：直接用傳入的 code 判斷，避免因合約物件的 code 為實際月份(如 TMF05) 導致判斷失敗
+        # 針對期貨，加入多梯度的天數重試機制
         is_future = code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指期貨", "微型台指期貨", "台指", "微台"]
-        retry_days_list = [lookback_days, 60, 30, 15, 5, 3] if is_future else [lookback_days]
-        
+        if is_future:
+            # 期貨近月合約存續期間短，若查詢天數過長會引發錯誤或空值
+            retry_days_list = [lookback_days, 60, 30, 15, 10, 5, 3, 1]
+            retry_days_list = sorted(list(set([d for d in retry_days_list if d <= 60 or d == lookback_days])), reverse=True)
+            if lookback_days not in retry_days_list:
+                retry_days_list.insert(0, min(lookback_days, 60))
+        else:
+            retry_days_list = [lookback_days]
+            
         kbars = None
         for days in retry_days_list:
-            if days > lookback_days and days != retry_days_list[0]:
-                continue
-            start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
-            kbars = api.kbars(contract, start=start_date, end=end_date)
-            if kbars and kbars.get('ts'):
-                break
+            try:
+                start_date = (datetime.now(tz_tw) - timedelta(days=days)).strftime("%Y-%m-%d")
+                res = api.kbars(contract, start=start_date, end=end_date)
                 
-        if not kbars or not kbars.get('ts'):
+                # 檢查不同版本 Shioaji 的回傳結構 (Kbars 物件或 Dict)
+                if res:
+                    if hasattr(res, 'ts') and res.ts is not None and len(res.ts) > 0:
+                        kbars = res
+                        break
+                    elif isinstance(res, dict) and 'ts' in res and len(res['ts']) > 0:
+                        kbars = res
+                        break
+            except Exception:
+                continue
+                
+        if not kbars:
             return pd.DataFrame()
             
         df = pd.DataFrame({**kbars})
+        if df.empty or 'ts' not in df.columns:
+            return pd.DataFrame()
+            
         df['ts'] = pd.to_datetime(df['ts']).dt.tz_localize('Asia/Taipei').dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
         df.set_index('ts', inplace=True)
         
