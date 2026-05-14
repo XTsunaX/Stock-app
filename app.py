@@ -2270,21 +2270,23 @@ with tab_db:
             st.divider()
             st.markdown("#### 📅 歷史報告清單")
             
-            # 過濾僅保留最近7天的報告
-            now_dt = datetime.now()
-            recent_reports = []
-            for r in reports[1:]:
+            # 設定7天前的日期界線
+            limit_date = datetime.now() - timedelta(days=7)
+            
+            for idx, report in enumerate(reports[1:], 1):
+                show_report = True
                 try:
-                    rep_date = datetime.strptime(r['日期'], "%Y-%m-%d")
-                    if (now_dt - rep_date).days <= 7:
-                        recent_reports.append(r)
-                except:
-                    # 無法解析日期的項目（如"近期發布"）保守保留
-                    recent_reports.append(r)
-
-            for idx, report in enumerate(recent_reports, 1):
-                with st.expander(f"📅 {report['日期']} | {report['title']}"):
-                    st.write(f"連結: [點此查看原始 PDF]({report['url']})")
+                    # 解析報告日期進行比對
+                    rep_date = datetime.strptime(report['日期'], "%Y-%m-%d")
+                    if rep_date < limit_date:
+                        show_report = False
+                except ValueError:
+                    # 若為 "近期發布" 或其他無法解析的日期格式，則保留顯示
+                    pass
+                    
+                if show_report:
+                    with st.expander(f"📅 {report['日期']} | {report['title']}"):
+                        st.write(f"連結: [點此查看原始 PDF]({report['url']})")
 
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
