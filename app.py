@@ -2270,20 +2270,26 @@ with tab_db:
             st.divider()
             st.markdown("#### 📅 歷史報告清單")
             
-            # 設定7天前的日期界線
-            limit_date = datetime.now() - timedelta(days=7)
+            # 設定7天前的日期界線 (以台灣時間計算，精準到天)
+            tz_tw = pytz.timezone('Asia/Taipei')
+            limit_date = pd.Timestamp(datetime.now(tz_tw).date() - timedelta(days=7))
             
             for idx, report in enumerate(reports[1:], 1):
-                show_report = True
+                show_report = False # 預設改為不顯示
+                
                 try:
-                    # 解析報告日期進行比對
-                    rep_date = datetime.strptime(report['日期'], "%Y-%m-%d")
-                    if rep_date < limit_date:
-                        show_report = False
-                except ValueError:
-                    # 若為 "近期發布" 或其他無法解析的日期格式，則保留顯示
-                    pass
-                    
+                    # 改用 pandas 處理日期，可自動適應 - 或 / 等不同格式
+                    rep_date = pd.to_datetime(report['日期'])
+                    if rep_date.tzinfo is not None: 
+                        rep_date = rep_date.tz_localize(None)
+                        
+                    if rep_date >= limit_date:
+                        show_report = True
+                except:
+                    # 只有在明確寫 "近期發布" 時才例外顯示
+                    if report['日期'] == "近期發布":
+                        show_report = True
+                        
                 if show_report:
                     with st.expander(f"📅 {report['日期']} | {report['title']}"):
                         st.write(f"連結: [點此查看原始 PDF]({report['url']})")
