@@ -1540,7 +1540,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # ==========================================
 # 主介面 (Tabs)
 # ==========================================
-tab1, tab2, tab_fibo, tab_db, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📚 戰略資料庫", "📅 台股行事曆"])
+tab1, tab2, tab_fibo, tab_db, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📚 戰略資料庫", "📅 股市行事曆"])
 
 with tab1:
     col_search, col_file = st.columns([2, 1])
@@ -2267,9 +2267,22 @@ with tab_db:
                     
             st.link_button("📥 點此進入原始報告下載頁面", latest_report['url'])
             
-            st.divider()
+           st.divider()
             st.markdown("#### 📅 歷史報告清單")
-            for idx, report in enumerate(reports[1:], 1):
+            
+            # 過濾僅保留最近7天的報告
+            now_dt = datetime.now()
+            recent_reports = []
+            for r in reports[1:]:
+                try:
+                    rep_date = datetime.strptime(r['日期'], "%Y-%m-%d")
+                    if (now_dt - rep_date).days <= 7:
+                        recent_reports.append(r)
+                except:
+                    # 無法解析日期的項目（如"近期發布"）保守保留
+                    recent_reports.append(r)
+
+            for idx, report in enumerate(recent_reports, 1):
                 with st.expander(f"📅 {report['日期']} | {report['title']}"):
                     st.write(f"連結: [點此查看原始 PDF]({report['url']})")
 
@@ -2335,7 +2348,63 @@ with tab3:
         return h
 
     current_holidays = get_holidays(sel_year)
+    def get_us_events(y, m):
+        events = {}
+        def add_evt(d, txt, color):
+            if d not in events: events[d] = []
+            events[d].append(f"<div style='color:{color}; font-size:0.8em; margin-top:2px; font-weight:bold;'>{txt}</div>")
+        
+        cal_temp = calendar.Calendar(firstweekday=6)
+        month_days_list = list(cal_temp.itermonthdays2(y, m))
+        
+        # (2) 美國非農人數公布 (每個月第一個週五)
+        for d, wd in month_days_list:
+            if d != 0 and wd == 4:
+                add_evt(d, "美國非農(20:30/21:30)", "#00E5FF") # 亮藍色
+                break
+                
+        # (6) 四巫日 (3,6,9,12月 第三個週五)
+        if m in [3, 6, 9, 12]:
+            fridays = [d for d, wd in month_days_list if d != 0 and wd == 4]
+            if len(fridays) >= 3:
+                add_evt(fridays[2], "四巫日", "#FF00FF") # 洋紅色
+                
+        # (5) 13F報告 (通常在2,5,8,11月的14日或15日，以估算值為主)
+        if m == 2: add_evt(14, "13F報告", "#FFD700") # 金黃色
+        elif m == 5: add_evt(15, "13F報告", "#FFD700")
+        elif m == 8: add_evt(14, "13F報告", "#FFD700")
+        elif m == 11: add_evt(14, "13F報告", "#FFD700")
+        
+        # (3) MSCI季調 (2,5,8,11月最後一個交易日生效)
+        if m in [2, 5, 8, 11]:
+            weekdays = [d for d, wd in month_days_list if d != 0 and wd < 5]
+            if weekdays:
+                add_evt(weekdays[-1], "MSCI季調生效", "#FF9800") # 橘色
 
+        # (4) FOMC (台灣時間，大多為週四凌晨 02:00，整理2024-2026日期)
+        fomc_dates = {
+            2024: [(2,1), (3,21), (5,2), (6,13), (8,1), (9,19), (11,8), (12,19)],
+            2025: [(1,30), (3,20), (5,8), (6,19), (7,31), (9,18), (10,30), (12,11)],
+            2026: [(1,29), (3,19), (5,7), (6,18), (7,30), (9,17), (10,29), (12,10)]
+        }
+        if y in fomc_dates:
+            for fm, fd in fomc_dates[y]:
+                if fm == m: add_evt(fd, "FOMC (02:00)", "#FF4500") # 橙紅色
+                
+        # (1) 美國CPI公布 (台灣時間 20:30 或 21:30，整理2024-2026日期)
+        cpi_dates = {
+            2024: [(1,11), (2,13), (3,12), (4,10), (5,15), (6,12), (7,11), (8,14), (9,11), (10,10), (11,13), (12,11)],
+            2025: [(1,15), (2,12), (3,12), (4,9), (5,14), (6,11), (7,16), (8,13), (9,10), (10,15), (11,12), (12,10)],
+            2026: [(1,14), (2,11), (3,11), (4,15), (5,13), (6,10), (7,15), (8,12), (9,16), (10,15), (11,12), (12,16)]
+        }
+        if y in cpi_dates:
+            for cm, cd in cpi_dates[y]:
+                if cm == m: add_evt(cd, "美國CPI (20:30/21:30)", "#00FA9A") # 春綠色
+        
+        return events
+
+    # 取得本月美國重要事件
+    us_events = get_us_events(sel_year, sel_month)
     def is_market_closed_func(d_date):
         if d_date.weekday() >= 5: return True
         name = current_holidays.get((d_date.month, d_date.day), "")
@@ -2418,6 +2487,10 @@ with tab3:
             content_html = [f"<b>{day}</b>"]
             if holiday_name and holiday_name != "封關日": content_html.append(f"<div class='holiday-tag'>{holiday_name}</div>")
             if holiday_name == "封關日": content_html.append(f"<div style='color:#ff9800; font-size:0.8em;'>{holiday_name}</div>")
+            
+            # 加入外國重要股市事件
+            if day in us_events:
+                content_html.extend(us_events[day])
             
             if curr_date in real_settlements:
                 infos = real_settlements[curr_date]
