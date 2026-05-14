@@ -2267,7 +2267,7 @@ with tab_db:
                     
             st.link_button("📥 點此進入原始報告下載頁面", latest_report['url'])
             
-           st.divider()
+            st.divider()
             st.markdown("#### 📅 歷史報告清單")
             
             # 過濾僅保留最近7天的報告
