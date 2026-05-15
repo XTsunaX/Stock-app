@@ -871,8 +871,8 @@ def save_fibo_config():
         st.session_state.get('custom_tag_1', "台積電(2330)"), 
         st.session_state.get('custom_tag_2', "鴻海(2317)"), 
         st.session_state.get('custom_tag_3', "聯發科(2454)"), 
-        st.session_state.get('custom_tag_4', "長榮(2603)"), 
-        st.session_state.get('custom_tag_5', "聯鈞(3450)")
+        st.session_state.get('custom_tag_4', "創威(6530)"), 
+        st.session_state.get('custom_tag_5', "晶彩科(3535)")
     ]
     if 'ma_w' in st.session_state:
         config['ma_width'] = st.session_state.ma_w
