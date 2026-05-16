@@ -985,10 +985,13 @@ if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_con
 if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
 if 'update_delay_sec' not in st.session_state: st.session_state.update_delay_sec = saved_config.get('delay_sec', 1.0) 
 
-# API 記憶功能初始化
-if 'sj_key' not in st.session_state: st.session_state.sj_key = saved_config.get('sj_key', '')
-if 'sj_secret' not in st.session_state: st.session_state.sj_secret = saved_config.get('sj_secret', '')
-if 'remember_sj' not in st.session_state: st.session_state.remember_sj = saved_config.get('remember_sj', False)
+# 永豐API帳密：
+if 'sj_key' not in st.session_state: 
+    st.session_state.sj_key = st.secrets.get('sj_key', saved_config.get('sj_key', ''))
+if 'sj_secret' not in st.session_state: 
+    st.session_state.sj_secret = st.secrets.get('sj_secret', saved_config.get('sj_secret', ''))
+if 'remember_sj' not in st.session_state: 
+    st.session_state.remember_sj = True if 'sj_key' in st.secrets else saved_config.get('remember_sj', False)
 
 if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('sj_logged_in', False):
     try:
