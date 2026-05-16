@@ -17,6 +17,7 @@ import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
 import random
+import gc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
@@ -714,7 +715,7 @@ def get_report_list():
     except Exception as e:
         return []
 
-@st.cache_data(ttl=3600, max_entries=5, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
     """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -745,10 +746,13 @@ def fetch_and_parse_pdf(pdf_url):
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             for page in doc:
-                pix = page.get_pixmap(dpi=150)
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                pix = page.get_pixmap(dpi=72) # 調降解析度，大幅降低記憶體消耗
+                img_bytes = io.BytesIO(pix.tobytes("png"))
+                img = Image.open(img_bytes)
+                img.load() # 確保圖片已載入，避免檔案關閉後遺失資料
                 images.append(img)
-            doc.close()  # 新增這行，釋放底層記憶體
+                img_bytes.close() # 關閉 BytesIO 釋放資源
+            doc.close()  # 釋放底層記憶體
         except Exception as e:
             pass
             
@@ -1709,6 +1713,9 @@ with tab1:
         if existing_data:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            
+        # 執行完大型迴圈與多執行緒後，強制回收系統記憶體
+        gc.collect()
 
     if not st.session_state.stock_data.empty:
         df_all = st.session_state.stock_data.copy()
