@@ -746,7 +746,7 @@ def fetch_and_parse_pdf(pdf_url):
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             for page in doc:
-                pix = page.get_pixmap(dpi=105) # 調降解析度，大幅降低記憶體消耗
+                pix = page.get_pixmap(dpi=100) # 調降解析度，大幅降低記憶體消耗
                 img_bytes = io.BytesIO(pix.tobytes("png"))
                 img = Image.open(img_bytes)
                 img.load() # 確保圖片已載入，避免檔案關閉後遺失資料
