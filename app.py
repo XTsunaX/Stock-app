@@ -888,10 +888,31 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
     try:
         df_save = df.fillna("") 
         data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes}
+        
+        # 1. 同時保留原先本機檔案的存取邏輯
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        
+        # 2. 將分析資料同步備份到雲端 Google Sheets 達成永久保存
+        if "gsheet_api_url" in st.secrets:
+            json_str = json.dumps(data_to_save, ensure_ascii=False)
+            requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
     except: pass
 
 def load_data_cache():
+    # 1. 優先嘗試從雲端永久儲存點撈回分析資料
+    if "gsheet_api_url" in st.secrets:
+        try:
+            r = requests.get(st.secrets["gsheet_api_url"], timeout=5)
+            if r.status_code == 200 and r.text.strip():
+                data = json.loads(r.text)
+                df = pd.DataFrame(data.get('stock_data', []))
+                ignored = set(data.get('ignored_stocks', []))
+                candidates = data.get('all_candidates', [])
+                saved_notes = data.get('saved_notes', {}) 
+                return df, ignored, candidates, saved_notes
+        except: pass
+
+    # 2. 雲端失敗或未設定時的 Fallback 方案：讀取本機暫存
     if os.path.exists(DATA_CACHE_FILE):
         try:
             with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f: data = json.load(f)
