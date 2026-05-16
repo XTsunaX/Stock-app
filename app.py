@@ -954,7 +954,7 @@ if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
-fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "長榮(2603)", "聯鈞(3450)"])
+fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "創威(6530)", "晶彩科(3535)"])
 
 if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = ""
 if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
@@ -962,8 +962,8 @@ if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_
 if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = fibo_tags[0] if len(fibo_tags)>0 else "台積電(2330)"
 if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = fibo_tags[1] if len(fibo_tags)>1 else "鴻海(2317)"
 if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = fibo_tags[2] if len(fibo_tags)>2 else "聯發科(2454)"
-if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = fibo_tags[3] if len(fibo_tags)>3 else "長榮(2603)"
-if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_tags[4] if len(fibo_tags)>4 else "聯鈞(3450)"
+if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = fibo_tags[3] if len(fibo_tags)>3 else "創威(6530)"
+if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_tags[4] if len(fibo_tags)>4 else "晶彩科(3535)"
 
 if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
