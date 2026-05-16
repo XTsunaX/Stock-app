@@ -1783,7 +1783,7 @@ with tab1:
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px, disabled=False),
             },
-            hide_index=True, width=content, num_rows="fixed", key="main_editor"
+            hide_index=True, width='content', num_rows="fixed", key="main_editor"
         )
         
         if not edited_df.empty:
@@ -2013,7 +2013,7 @@ with tab2:
         table_height = (len(df_calc) + 1) * 35 
         st.dataframe(
             df_calc.style.apply(style_calc_row, axis=1), 
-            width=content, 
+            width='content', 
             hide_index=True, 
             height=table_height,
             column_config={"_profit": None, "_note_type": None, "_is_base": None}
