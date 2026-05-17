@@ -821,21 +821,25 @@ def get_tw_stocker_data(direction):
 def fetch_goodinfo_data():
     url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new") # 使用較新的 headless 模式較不易被偵測
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # 隱藏自動化特徵
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
+    # 🟢 關鍵修改：明確指定 Streamlit 雲端主機上的瀏覽器與驅動程式路徑
+    chrome_options.binary_location = "/usr/bin/chromium"
+
     try:
-        service = Service(ChromeDriverManager().install())
+        # 🟢 關鍵修改：直接指向系統安裝好的 chromedriver，不再讓套件亂下載
+        service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # 繞過基礎 webdriver 檢測
+        # 隱藏 webdriver 特徵
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
             Object.defineProperty(navigator, 'webdriver', {
@@ -845,15 +849,15 @@ def fetch_goodinfo_data():
         })
         
         driver.get(url)
-        time.sleep(20) # 稍微延長等待時間到 20 秒
+        time.sleep(20) # 等待動態表格載入
         
         html = driver.page_source
         
-        # --- 除錯區塊開始 ---
+        # --- 除錯區塊 ---
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, 'html.parser')
         page_title = driver.title
-        page_text = soup.get_text(strip=True)[:200] # 只抓前 200 字
+        page_text = soup.get_text(strip=True)[:200]
         
         st.warning(f"🔍 網頁讀取結果標題：{page_title}")
         st.info(f"📄 網頁內容預覽：{page_text}")
