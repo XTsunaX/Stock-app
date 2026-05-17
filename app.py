@@ -863,7 +863,7 @@ def fetch_goodinfo_data():
         st.info(f"📄 網頁內容預覽：{page_text}")
         # --- 除錯區塊結束 ---
 
-        tables = pd.read_html(html)
+        tables = pd.read_html(io.StringIO(html))
         
         target_df = None
         for df in tables:
