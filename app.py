@@ -1239,7 +1239,7 @@ with st.sidebar:
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
                 # 將檔案暫存於 session_state 供下載
-                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False, encoding='utf-8-sig')
+                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 st.success("抓取成功！請點擊下方按鈕下載。")
             else:
                 st.error("抓取失敗或查無資料，請稍後再試。")
