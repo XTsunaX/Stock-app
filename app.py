@@ -831,15 +831,12 @@ def fetch_goodinfo_data():
     chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
-    # 🟢 關鍵修改：明確指定 Streamlit 雲端主機上的瀏覽器與驅動程式路徑
     chrome_options.binary_location = "/usr/bin/chromium"
 
     try:
-        # 🟢 關鍵修改：直接指向系統安裝好的 chromedriver，不再讓套件亂下載
         service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # 隱藏 webdriver 特徵
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": """
             Object.defineProperty(navigator, 'webdriver', {
@@ -849,20 +846,11 @@ def fetch_goodinfo_data():
         })
         
         driver.get(url)
-        time.sleep(20) # 等待動態表格載入
+        time.sleep(10) # 等待動態表格載入
         
         html = driver.page_source
         
-        # --- 除錯區塊 ---
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
-        page_title = driver.title
-        page_text = soup.get_text(strip=True)[:200]
-        
-        st.warning(f"🔍 網頁讀取結果標題：{page_title}")
-        st.info(f"📄 網頁內容預覽：{page_text}")
-        # --- 除錯區塊結束 ---
-
+        import io
         tables = pd.read_html(io.StringIO(html))
         
         target_df = None
