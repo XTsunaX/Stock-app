@@ -1222,7 +1222,7 @@ with st.sidebar:
     st.markdown("### 🔗 外部資源")
     
     # 觸發爬蟲的按鈕
-    if st.button("📥 抓取 Goodinfo 週轉率排行", help="需等待網頁載入約15秒", width='stretch'):
+    if st.button("📥 抓取 Goodinfo 週轉率排行", help="需等待網頁載入約10秒", width='stretch'):
         with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
