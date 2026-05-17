@@ -27,6 +27,10 @@ import base64
 import pdfplumber
 import fitz  # PyMuPDF 用於將 PDF 轉為圖片
 from PIL import Image
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -814,6 +818,52 @@ def get_tw_stocker_data(direction):
         pass
     return pd.DataFrame()
 
+def fetch_goodinfo_data():
+    url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920x1080")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.get(url)
+        time.sleep(15) # 等待動態表格載入
+        
+        html = driver.page_source
+        tables = pd.read_html(html)
+        
+        target_df = None
+        for df in tables:
+            if df.shape[0] > 10 and df.shape[1] > 5:
+                if target_df is None or (df.shape[0] * df.shape[1] > target_df.shape[0] * target_df.shape[1]):
+                    target_df = df
+                    
+        if target_df is not None:
+            # 清理重複的多層次欄位
+            if isinstance(target_df.columns, pd.MultiIndex):
+                new_columns = []
+                for col in target_df.columns:
+                    cleaned_parts = []
+                    for item in col:
+                        item_str = str(item).strip()
+                        if item_str and not item_str.startswith('Unnamed'):
+                            if not cleaned_parts or cleaned_parts[-1] != item_str:
+                                cleaned_parts.append(item_str)
+                    new_columns.append('_'.join(cleaned_parts))
+                target_df.columns = new_columns
+            return target_df
+    except Exception as e:
+        return None
+    finally:
+        if 'driver' in locals():
+            driver.quit()
+    return None
 
 # ==========================================
 # 0. 頁面設定與初始化
@@ -1155,7 +1205,27 @@ with st.sidebar:
     st.info("🗑️ **如何刪除股票？**\n\n在表格左側勾選「刪除」框，資料將會立即移除並**自動遞補下一檔**。")
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
-    st.link_button("📥 Goodinfo 當日週轉率排行", "https://reurl.cc/Or9e37", width='stretch')
+    
+    # 觸發爬蟲的按鈕
+    if st.button("📥 抓取 Goodinfo 週轉率排行", help="需等待網頁載入約15秒", width='stretch'):
+        with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
+            df_goodinfo = fetch_goodinfo_data()
+            if df_goodinfo is not None and not df_goodinfo.empty:
+                # 將檔案暫存於 session_state 供下載
+                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False, encoding='utf-8-sig')
+                st.success("抓取成功！請點擊下方按鈕下載。")
+            else:
+                st.error("抓取失敗或查無資料，請稍後再試。")
+                
+    # 若資料準備好，則顯示下載按鈕
+    if 'goodinfo_csv' in st.session_state:
+        st.download_button(
+            label="💾 下載 Report.csv",
+            data=st.session_state['goodinfo_csv'],
+            file_name="Report.csv",
+            mime="text/csv",
+            width='stretch'
+        )
     st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", width='stretch')
     st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", width='stretch')
 
