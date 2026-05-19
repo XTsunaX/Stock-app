@@ -846,7 +846,7 @@ def fetch_goodinfo_data():
         })
         
         driver.get(url)
-        time.sleep(20) # 等待動態表格載入
+        time.sleep(15) # 等待動態表格載入
         
         html = driver.page_source
         
