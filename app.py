@@ -846,7 +846,7 @@ def fetch_goodinfo_data():
         })
         
         driver.get(url)
-        time.sleep(15) # 等待動態表格載入
+        time.sleep(20) # 等待動態表格載入
         
         html = driver.page_source
         
@@ -865,12 +865,16 @@ def fetch_goodinfo_data():
                 for col in target_df.columns:
                     cleaned_parts = []
                     for item in col:
-                        item_str = str(item).strip()
+                        # 加上 .replace(' ', '') 移除所有空白字元
+                        item_str = str(item).replace(' ', '').strip()
                         if item_str and not item_str.startswith('Unnamed'):
                             if not cleaned_parts or cleaned_parts[-1] != item_str:
                                 cleaned_parts.append(item_str)
                     new_columns.append('_'.join(cleaned_parts))
                 target_df.columns = new_columns
+            else:
+                # 預防若表格非多層欄位，也一併移除空白
+                target_df.columns = [str(c).replace(' ', '').strip() for c in target_df.columns]
             return target_df
     except Exception as e:
         st.error(f"系統發生異常: {e}")
