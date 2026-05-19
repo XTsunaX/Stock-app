@@ -865,16 +865,12 @@ def fetch_goodinfo_data():
                 for col in target_df.columns:
                     cleaned_parts = []
                     for item in col:
-                        # 加上 .replace(' ', '') 移除所有空白字元
-                        item_str = str(item).replace(' ', '').strip()
+                        item_str = str(item).strip()
                         if item_str and not item_str.startswith('Unnamed'):
                             if not cleaned_parts or cleaned_parts[-1] != item_str:
                                 cleaned_parts.append(item_str)
                     new_columns.append('_'.join(cleaned_parts))
                 target_df.columns = new_columns
-            else:
-                # 預防若表格非多層欄位，也一併移除空白
-                target_df.columns = [str(c).replace(' ', '').strip() for c in target_df.columns]
             return target_df
     except Exception as e:
         st.error(f"系統發生異常: {e}")
@@ -1230,15 +1226,13 @@ with st.sidebar:
         with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
-                # 🟢 變更：同時將 DataFrame 存入 session_state 供戰略室直接讀取
-                st.session_state['goodinfo_df'] = df_goodinfo.astype(str)
-                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False).encode('utf-8-sig')
-                
-                st.success("💡 抓取成功並已載入暫存！\n\n若要分析此數據，請確保主畫面「未上傳檔案」且「未輸入雲端連結」，直接點擊主畫面的『🚀 執行分析』即可。")
+                # 將檔案暫存於 session_state 供下載
+                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                st.success("抓取成功！請點擊下方按鈕下載。")
             else:
                 st.error("抓取失敗或查無資料，請稍後再試。")
                 
-    # 保留原有的下載按鈕
+    # 若資料準備好，則顯示下載按鈕
     if 'goodinfo_csv' in st.session_state:
         st.download_button(
             label="💾 下載 Report.csv",
@@ -1747,12 +1741,6 @@ with tab1:
                 except:
                     try: df_up = pd.read_excel(url, dtype=str)
                     except: st.error("❌ 無法讀取雲端檔案。")
-            
-            # 🟢 新增：若無上傳與雲端輸入，且檢測到有 Goodinfo 暫存資料時直接讀取
-            elif 'goodinfo_df' in st.session_state:
-                df_up = st.session_state['goodinfo_df'].copy()
-                st.toast("已直接載入 Goodinfo 週轉率排行暫存資料進行分析！", icon="🔄")
-                
         except Exception as e: st.error(f"讀取失敗: {e}")
 
         if search_selection:
