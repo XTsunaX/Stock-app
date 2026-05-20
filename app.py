@@ -649,7 +649,7 @@ def fetch_fubon_html(url):
     except Exception as e:
         return f"<html><body><h3>無法載入資料: {e}</h3></body></html>"
 
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def get_report_list():
     """爬取永豐期貨盤後快訊列表，嚴格過濾台指期籌碼快訊"""
     url = "https://www.spf.com.tw/sinopacSPF/research/list.do?id=1709f20d3ff00000d8e2039e8984ed51"
@@ -719,7 +719,7 @@ def get_report_list():
     except Exception as e:
         return []
 
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
     """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -1804,7 +1804,7 @@ with tab1:
             if source == 'upload': upload_current += 1
             seen.add((code, source))
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+       with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
@@ -1819,6 +1819,8 @@ with tab1:
                     data['_order'] = t_extra
                     data['_source_rank'] = 1 if t_source == 'upload' else 2
                     existing_data[t_code] = data
+                # 每個單一股票任務結束後即時主動回收
+                del data
         
         bar.empty()
         status_text.empty()
@@ -1827,7 +1829,9 @@ with tab1:
             st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             
-        # 執行完大型迴圈與多執行緒後，強制回收系統記憶體
+        # 強制清除大型臨時變數並回收記憶體
+        del tasks_to_run
+        del existing_data
         gc.collect()
 
     if not st.session_state.stock_data.empty:
