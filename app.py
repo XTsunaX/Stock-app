@@ -1710,7 +1710,7 @@ with tab1:
                 st.session_state.url_history.insert(0, current_url) 
                 save_url_history(st.session_state.url_history)
         
-        try:
+       try:
             if uploaded_file:
                 uploaded_file.seek(0)
                 fname = uploaded_file.name.lower()
@@ -1745,8 +1745,13 @@ with tab1:
                 except:
                     try: df_up = pd.read_excel(url, dtype=str)
                     except: st.error("❌ 無法讀取雲端檔案。")
+            
+            # 🟢 新增：若無上傳與雲端輸入，且檢測到有 Goodinfo 暫存資料時直接讀取
+            elif 'goodinfo_df' in st.session_state:
+                df_up = st.session_state['goodinfo_df'].copy()
+                st.toast("已直接載入 Goodinfo 週轉率排行暫存資料進行分析！", icon="🔄")
+                
         except Exception as e: st.error(f"讀取失敗: {e}")
-
         if search_selection:
             for item in search_selection:
                 parts = item.split(' ', 1)
