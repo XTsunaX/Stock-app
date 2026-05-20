@@ -1710,7 +1710,7 @@ with tab1:
                 st.session_state.url_history.insert(0, current_url) 
                 save_url_history(st.session_state.url_history)
         
-       try:
+           try:
             if uploaded_file:
                 uploaded_file.seek(0)
                 fname = uploaded_file.name.lower()
