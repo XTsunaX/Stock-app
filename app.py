@@ -1230,13 +1230,15 @@ with st.sidebar:
         with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
-                # 將檔案暫存於 session_state 供下載
-                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-                st.success("抓取成功！請點擊下方按鈕下載。")
+                # 🟢 變更：同時將 DataFrame 存入 session_state 供戰略室直接讀取
+                st.session_state['goodinfo_df'] = df_goodinfo.astype(str)
+                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False).encode('utf-8-sig')
+                
+                st.success("💡 抓取成功並已載入暫存！\n\n若要分析此數據，請確保主畫面「未上傳檔案」且「未輸入雲端連結」，直接點擊主畫面的『🚀 執行分析』即可。")
             else:
                 st.error("抓取失敗或查無資料，請稍後再試。")
                 
-    # 若資料準備好，則顯示下載按鈕
+    # 保留原有的下載按鈕
     if 'goodinfo_csv' in st.session_state:
         st.download_button(
             label="💾 下載 Report.csv",
