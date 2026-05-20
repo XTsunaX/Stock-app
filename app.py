@@ -1804,7 +1804,7 @@ with tab1:
             if source == 'upload': upload_current += 1
             seen.add((code, source))
 
-       with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
