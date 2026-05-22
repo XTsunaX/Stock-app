@@ -769,99 +769,68 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (處理「請稍候再試」彈窗警告)"""
-    import json
-    import time
-    import random
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
+    """從證交所抓取三大法人買賣金額統計 (改用防護最寬鬆的舊版靜態 CSV 下載端點，徹底避開 Cloudflare 阻擋)"""
+    import io
+    import requests
+    import pandas as pd
     
-    main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
-    json_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
-
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
+    # 切換至證交所防護最寬鬆的舊版靜態 CSV 下載路徑
+    legacy_url = f"https://www.twse.com.tw/fund/BFI82U?response=csv&dayDate={date_str}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+    }
+    
     try:
-        chrome_options.binary_location = "/usr/bin/chromium"
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
-        driver = webdriver.Chrome(options=chrome_options)
-
-    try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        })
+        # 捨棄容易被阻擋的 Selenium，回歸輕量化的 Requests
+        response = requests.get(legacy_url, headers=headers, timeout=8, verify=False)
         
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # 1. 訪問主頁並稍微拉長等待時間，降低觸發防護的機率
-                driver.get(main_url)
-                time.sleep(random.uniform(4.0, 6.0))
+        if response.status_code == 200 and response.text.strip():
+            raw_text = response.text
+            
+            # 檢查是否不幸拿到 Cloudflare 阻擋頁面
+            if "Cloudflare" in raw_text or "403 Forbidden" in raw_text:
+                return None
                 
-                # 嘗試關閉主頁可能出現的頻率限制彈窗
-                try:
-                    driver.switch_to.alert.accept()
-                except NoAlertPresentException:
-                    pass
+            # 尋找三大法人資料表格的起點
+            if "三大法人買賣金額統計表" in raw_text or "買賣差額" in raw_text:
+                lines = raw_text.split('\n')
+                start_idx = None
                 
-                # 2. 轉往 JSON API 端點
-                driver.get(json_url)
+                # 尋找含有欄位名稱的起始行
+                for idx, line in enumerate(lines):
+                    if "單位名稱" in line and "買進金額" in line:
+                        start_idx = idx
+                        break
                 
-                # 嘗試關閉 JSON 頁面可能出現的彈窗
-                try:
-                    driver.switch_to.alert.accept()
-                    time.sleep(3) # 若出現彈窗代表被擋，冷卻後重整
-                    driver.refresh()
-                except NoAlertPresentException:
-                    pass
-                
-                # 3. 確保頁面內容已載入且沒有被彈窗卡住
-                WebDriverWait(driver, 10).until(
-                    lambda d: "stat" in d.find_element(By.TAG_NAME, "body").text
-                )
-                
-                page_text = driver.find_element(By.TAG_NAME, "body").text
-                data = json.loads(page_text)
-                
-                if data.get("stat") == "OK":
-                    df = pd.DataFrame(data["data"], columns=data["fields"])
+                if start_idx is not None:
+                    # 重新組合乾淨的 CSV 內容
+                    clean_csv = "\n".join(lines[start_idx:])
+                    df = pd.read_csv(io.StringIO(clean_csv))
+                    
+                    # 清理欄位與名稱中的空白字元與雙引號
+                    df.columns = df.columns.str.replace('"', '').str.strip()
+                    if '單位名稱' in df.columns:
+                        df['單位名稱'] = df['單位名稱'].astype(str).str.replace('"', '').str.strip()
+                        # 濾除結尾的說明文字行
+                        df = df[df['單位名稱'].str.contains('證券商|自營商|投信|外資|合計', na=False)]
+                    
+                    # 轉換數值型態
                     cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
                     for col in cols_to_fix:
                         if col in df.columns:
-                            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-                    return df
-                else:
-                    break # 回傳非 OK (如查無資料)，無需重試
-                    
-            except UnexpectedAlertPresentException:
-                # 攔截 Selenium 丟出的預期外彈窗錯誤，按下確認並強制冷卻
-                try:
-                    driver.switch_to.alert.accept()
-                except:
-                    pass
-                time.sleep(5)
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise e
-                time.sleep(3)
+                            df[col] = df[col].astype(str).str.replace(',', '').str.replace('"', '').str.strip()
+                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                            
+                    if not df.empty:
+                        return df
 
-    except Exception as e:
-        st.sidebar.error(f"三大法人資料抓取異常: {e}")
-    finally:
-        if 'driver' in locals():
-            driver.quit()
-            
+    except Exception:
+        pass
+        
     return None
 
 def color_negative_positive(val):
