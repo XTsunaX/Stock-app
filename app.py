@@ -767,63 +767,46 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=3600, max_entries=5, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (改用 Selenium 模擬真實瀏覽器以徹底繞過 TLS/WAF 阻擋)"""
-    url = f"https://www.twse.com.tw/zh/exchangeReport/BFI82U?response=json&dayDate={date_str}"
+    """從證交所 API 抓取三大法人買賣金額統計 (導入 Session 維持 Cookie)"""
+    # 回歸證交所新版 RWD API 端點
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
     
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-
+    # 使用 Session 來自動儲存與傳遞伺服器發放的 Cookie
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html",
+        "Connection": "keep-alive"
+    }
+    
     try:
-        # 沿用環境中已設定好的 Chromium 路徑 (與 fetch_goodinfo_data 相同)
-        chrome_options.binary_location = "/usr/bin/chromium"
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
-        # 容錯處理：若為本地端開發環境路徑不同
-        driver = webdriver.Chrome(options=chrome_options)
-
-    try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-            """
-        })
+        # 步驟一：先訪問證交所前端頁面，建立合法的 Session 狀態
+        session.get("https://www.twse.com.tw/zh/trading/foreign/bfi82u.html", headers=headers, timeout=5, verify=False)
+        time.sleep(random.uniform(1.0, 2.5))  # 模擬人類閱讀網頁的停頓時間
         
-        driver.get(url)
-        # 給予充分時間通過可能的 Cloudflare JS 挑戰
-        time.sleep(random.uniform(2.0, 4.0)) 
+        # 步驟二：攜帶剛取得的 Cookie 去請求真實的資料 API
+        response = session.get(url, headers=headers, timeout=10, verify=False)
         
-        # 網頁回傳的會是純 JSON 文字，包在 body 標籤內
-        from selenium.webdriver.common.by import By
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        
-        data = json.loads(page_text)
-        
-        if data.get("stat") == "OK":
-            df = pd.DataFrame(data["data"], columns=data["fields"])
-            cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-            for col in cols_to_fix:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            return df
-        else:
-            return None
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("stat") == "OK":
+                df = pd.DataFrame(data["data"], columns=data["fields"])
+                
+                cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                for col in cols_to_fix:
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+                        
+                return df
+                
     except Exception as e:
-        return None
-    finally:
-        if 'driver' in locals():
-            driver.quit()
+        st.sidebar.error(f"證交所連線異常: {e}")
+        
+    return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
