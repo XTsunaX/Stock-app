@@ -769,56 +769,128 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (改用防護最寬鬆的舊版靜態 CSV 下載端點，徹底避開 Cloudflare 阻擋)"""
+    """從證交所抓取三大法人買賣金額統計 (透過 Selenium 模擬真實點擊下載按鈕並讀取實體檔案)"""
     import io
-    import requests
+    import os
+    import glob
+    import time
+    import random
     import pandas as pd
-    
-    # 切換至證交所防護最寬鬆的舊版靜態 CSV 下載路徑
-    legacy_url = f"https://www.twse.com.tw/fund/BFI82U?response=csv&dayDate={date_str}"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    # 設定模擬下載的暫存路徑
+    download_dir = os.path.join(os.getcwd(), "twse_downloads")
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+
+    # 清除上一次可能殘留的舊檔案
+    for f in glob.glob(os.path.join(download_dir, "*")):
+        try: os.remove(f)
+        except: pass
+
+    main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    # 設定 Chrome 自動下載行為，不彈出視窗並指定路徑
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True
     }
-    
+    chrome_options.add_experimental_option("prefs", prefs)
+
     try:
-        # 捨棄容易被阻擋的 Selenium，回歸輕量化的 Requests
-        response = requests.get(legacy_url, headers=headers, timeout=8, verify=False)
+        chrome_options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception:
+        driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         
-        if response.status_code == 200 and response.text.strip():
-            raw_text = response.text
-            
-            # 檢查是否不幸拿到 Cloudflare 阻擋頁面
-            if "Cloudflare" in raw_text or "403 Forbidden" in raw_text:
-                return None
+        # 1. 進入三大法人歷史綜合查詢主頁面
+        driver.get(main_url)
+        time.sleep(random.uniform(4.0, 5.0))
+        
+        # 處理可能卡住畫面的 Alert 彈窗
+        try:
+            driver.switch_to.alert.accept()
+        except:
+            pass
+
+        # 2. 定位網頁上真正的「下載 CSV」按鈕並點擊它
+        # 證交所該頁面的下載 CSV 按鈕通常帶有 class "csv" 或在名為 .tools 的區塊內
+        csv_btn_selectors = [
+            "//a[contains(@class, 'csv')]",
+            "//button[contains(text(), 'CSV')]",
+            "//a[contains(@href, 'response=csv')]"
+        ]
+        
+        btn_clicked = False
+        for selector in csv_btn_selectors:
+            try:
+                download_btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, selector))
+                )
+                driver.execute_script("arguments[0].click();", download_btn)
+                btn_clicked = True
+                break
+            except:
+                continue
+
+        if not btn_clicked:
+            # 備用方案：若找不到按鈕，直接強迫網頁導向帶有下載參數的 URL 觸發下載
+            csv_dl_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=csv"
+            driver.get(csv_dl_url)
+
+        # 3. 等待檔案下載完成 (最多等待 8 秒)
+        downloaded_file = None
+        for _ in range(16):
+            time.sleep(0.5)
+            files = glob.glob(os.path.join(download_dir, "*"))
+            # 確保檔案存在且不是下載中的暫存檔 (.crdownload)
+            valid_files = [f for f in files if not f.endswith('.crdownload') and os.path.getsize(f) > 0]
+            if valid_files:
+                downloaded_file = valid_files[0]
+                break
+
+        # 4. 讀取實體檔案並解析
+        if downloaded_file and os.path.exists(downloaded_file):
+            with open(downloaded_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
                 
-            # 尋找三大法人資料表格的起點
-            if "三大法人買賣金額統計表" in raw_text or "買賣差額" in raw_text:
-                lines = raw_text.split('\n')
+            if "三大法人買賣金額統計表" in content or "買賣差額" in content:
+                lines = content.split('\n')
                 start_idx = None
-                
-                # 尋找含有欄位名稱的起始行
                 for idx, line in enumerate(lines):
                     if "單位名稱" in line and "買進金額" in line:
                         start_idx = idx
                         break
                 
                 if start_idx is not None:
-                    # 重新組合乾淨的 CSV 內容
                     clean_csv = "\n".join(lines[start_idx:])
                     df = pd.read_csv(io.StringIO(clean_csv))
                     
-                    # 清理欄位與名稱中的空白字元與雙引號
                     df.columns = df.columns.str.replace('"', '').str.strip()
                     if '單位名稱' in df.columns:
                         df['單位名稱'] = df['單位名稱'].astype(str).str.replace('"', '').str.strip()
-                        # 濾除結尾的說明文字行
                         df = df[df['單位名稱'].str.contains('證券商|自營商|投信|外資|合計', na=False)]
                     
-                    # 轉換數值型態
                     cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
                     for col in cols_to_fix:
                         if col in df.columns:
@@ -830,8 +902,12 @@ def get_major_institutional_data(date_str):
 
     except Exception:
         pass
-        
+    finally:
+        if 'driver' in locals():
+            driver.quit()
+            
     return None
+
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
