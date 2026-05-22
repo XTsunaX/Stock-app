@@ -2339,7 +2339,6 @@ with tab_db:
         selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
         
-        @st.cache_data(ttl=3600)
         df_inst = get_major_institutional_data(date_str)
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
