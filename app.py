@@ -769,86 +769,104 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """利用防護較寬鬆的個股三大法人明細 (T86) 端點，計算並組裝出當日三大法人買賣金額總計表格"""
-    import requests
-    import pandas as pd
+    """從證交所網頁爬取三大法人買賣金額統計 (透過 Selenium 模擬真實瀏覽並直接解析網頁 HTML 表格元素)"""
+    from bs4 import BeautifulSoup
+    import re
     
-    # 使用 T86 API 端點，指定 type=ALLBUT0999 (全部個股，不含權證)
-    url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALLBUT0999&response=json"
+    # 格式化日期為網頁查詢需要的格式 (YYYY/MM/DD)
+    formatted_date = f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:]}"
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
-        "Referer": "https://www.twse.com.tw/zh/trading/foreign/t86.html"
-    }
-    
+    # 直接前往三大法人買賣金額統計的歷史查詢網頁
+    main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
     try:
-        response = requests.get(url, headers=headers, timeout=8, verify=False)
-        if response.status_code == 200:
-            json_data = response.json()
-            
-            if json_data.get("stat") == "OK" and "data" in json_data:
-                # 取得 T86 的欄位結構
-                fields = json_data.get("fields", [])
-                raw_rows = json_data.get("data", [])
-                df_detail = pd.DataFrame(raw_rows, columns=fields)
+        chrome_options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception:
+        driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+        
+        # 1. 進入主網頁
+        driver.get(main_url)
+        time.sleep(random.uniform(4.0, 5.0))
+        
+        # 處理可能擋住網頁操作的 Alert 彈窗
+        try:
+            driver.switch_to.alert.accept()
+        except:
+            pass
+
+        # 2. 利用 JavaScript 動態修改網頁上的日期輸入框並觸發查詢
+        # 這樣可以避開直接對 API 發送請求時被 Cloudflare 抓到特徵的風險
+        script = f"""
+        document.querySelector('input[name="d"]').value = "{formatted_date}";
+        document.querySelector('.search button').click();
+        """
+        driver.execute_script(script)
+        time.sleep(random.uniform(3.0, 4.0)) # 等待非同步資料渲染完成
+
+        # 3. 直接撈取點擊查詢後的網頁 Source HTML
+        page_html = driver.page_source
+        soup = BeautifulSoup(page_html, 'html.parser')
+        
+        # 4. 尋找網頁上的資料表格 (證交所表格通常在 #table-container 或帶有 table_data 樣式)
+        table = soup.find('table')
+        if not table:
+            # 備用尋找邏輯
+            table = soup.find('div', {'id': 'table-container'}).find('table') if soup.find('div', {'id': 'table-container'}) else None
+
+        if table:
+            # 使用 pandas 直接解析該段乾淨的 HTML 表格字串
+            dfs = pd.read_html(io.StringIO(str(table)))
+            if dfs:
+                df = dfs[0]
                 
-                # 為了計算三大法人的「總計」，將千分逗號濾除並轉換成數值
-                # 欄位通常為：外陸資買進股數、外陸資賣出股數、投信買進股數、投信賣出股數、自營商買進股數、自營商賣出股數 等
-                for col in df_detail.columns:
-                    if "股數" in col or "張數" in col or "金額" in col:
-                        df_detail[col] = df_detail[col].astype(str).str.replace(',', '').str.strip()
-                        df_detail[col] = pd.to_numeric(df_detail[col], errors='coerce').fillna(0)
+                # 處理多層次標題
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(0)
                 
-                # 動態比對 T86 的欄位結構，精準抽離三大法人的股數或金額進行總和統計
-                summary_rows = []
+                # 清理欄位名稱中的空白
+                df.columns = [str(c).replace(' ', '').strip() for c in df.columns]
                 
-                # 1. 外資與陸資 (排除自營商)
-                f_buy_col = next((c for c in df_detail.columns if "外陸資" in c and "買進" in c and "不含外資自營商" in c), None)
-                f_sell_col = next((c for c in df_detail.columns if "外陸資" in c and "賣出" in c and "不含外資自營商" in c), None)
-                if f_buy_col and f_sell_col:
-                    f_buy = df_detail[f_buy_col].sum()
-                    f_sell = df_detail[f_sell_col].sum()
-                    summary_rows.append({"單位名稱": "外資及陸資(不含外資自營商)", "買進金額": f_buy, "賣出金額": f_sell, "買賣差額": f_buy - f_sell})
-                
-                # 2. 投信
-                sit_buy_col = next((c for c in df_detail.columns if "投信" in c and "買進" in c), None)
-                sit_sell_col = next((c for c in df_detail.columns if "投信" in c and "賣出" in c), None)
-                if sit_buy_col and sit_sell_col:
-                    sit_buy = df_detail[sit_buy_col].sum()
-                    sit_sell = df_detail[sit_sell_col].sum()
-                    summary_rows.append({"單位名稱": "投信", "買進金額": sit_buy, "賣出金額": sit_sell, "買賣差額": sit_buy - sit_sell})
-                
-                # 3. 自營商 (自行買賣與避險加總)
-                dealer_buy_self = next((c for c in df_detail.columns if "自營商" in c and "買進" in c and "自行買賣" in c), None)
-                dealer_sell_self = next((c for c in df_detail.columns if "自營商" in c and "賣出" in c and "自行買賣" in c), None)
-                dealer_buy_hedge = next((c for c in df_detail.columns if "自營商" in c and "買進" in c and "避險" in c), None)
-                dealer_sell_hedge = next((c for c in df_detail.columns if "自營商" in c and "賣出" in c and "避險" in c), None)
-                
-                d_buy = 0.0
-                d_sell = 0.0
-                if dealer_buy_self: d_buy += df_detail[dealer_buy_self].sum()
-                if dealer_buy_hedge: d_buy += df_detail[dealer_buy_hedge].sum()
-                if dealer_sell_self: d_sell += df_detail[dealer_sell_self].sum()
-                if dealer_sell_hedge: d_sell += df_detail[dealer_sell_hedge].sum()
-                
-                if dealer_buy_self or dealer_buy_hedge:
-                    summary_rows.append({"單位名稱": "自營商", "買進金額": d_buy, "賣出金額": d_sell, "買賣差額": d_buy - d_sell})
-                
-                # 4. 合計
-                if summary_rows:
-                    total_buy = sum(r["買進金額"] for r in summary_rows)
-                    total_sell = sum(r["賣出金額"] for r in summary_rows)
-                    summary_rows.append({"單位名稱": "三大法人合計", "買進金額": total_buy, "賣出金額": total_sell, "買賣差額": total_buy - total_sell})
+                # 確保欄位名稱符合介面預期
+                if '單位名稱' in df.columns and '買進金額' in df.columns:
+                    # 濾除說明的雜行，只保留主資料列
+                    df['單位名稱'] = df['單位名稱'].astype(str).str.replace(' ', '').str.strip()
+                    df = df[df['單位名稱'].str.contains('自營商|投信|外資|外陸資|合計', na=False)]
                     
-                    df_result = pd.DataFrame(summary_rows)
-                    return df_result
-                    
+                    # 數值型態清理
+                    cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                    for col in cols_to_fix:
+                        if col in df.columns:
+                            df[col] = df[col].astype(str).str.replace(',', '').str.strip()
+                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                            
+                    if not df.empty:
+                        return df
+
     except Exception:
         pass
-        
+    finally:
+        if 'driver' in locals():
+            driver.quit()
+            
     return None
+
 
 
 def color_negative_positive(val):
