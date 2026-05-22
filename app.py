@@ -769,69 +769,87 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (改用防護最寬鬆的舊版靜態 CSV 下載端點，徹底避開 Cloudflare 阻擋)"""
-    import io
+    """利用防護較寬鬆的個股三大法人明細 (T86) 端點，計算並組裝出當日三大法人買賣金額總計表格"""
     import requests
     import pandas as pd
     
-    # 切換至證交所防護最寬鬆的舊版靜態 CSV 下載路徑
-    legacy_url = f"https://www.twse.com.tw/fund/BFI82U?response=csv&dayDate={date_str}"
+    # 使用 T86 API 端點，指定 type=ALLBUT0999 (全部個股，不含權證)
+    url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALLBUT0999&response=json"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
+        "Referer": "https://www.twse.com.tw/zh/trading/foreign/t86.html"
     }
     
     try:
-        # 捨棄容易被阻擋的 Selenium，回歸輕量化的 Requests
-        response = requests.get(legacy_url, headers=headers, timeout=8, verify=False)
-        
-        if response.status_code == 200 and response.text.strip():
-            raw_text = response.text
+        response = requests.get(url, headers=headers, timeout=8, verify=False)
+        if response.status_code == 200:
+            json_data = response.json()
             
-            # 檢查是否不幸拿到 Cloudflare 阻擋頁面
-            if "Cloudflare" in raw_text or "403 Forbidden" in raw_text:
-                return None
+            if json_data.get("stat") == "OK" and "data" in json_data:
+                # 取得 T86 的欄位結構
+                fields = json_data.get("fields", [])
+                raw_rows = json_data.get("data", [])
+                df_detail = pd.DataFrame(raw_rows, columns=fields)
                 
-            # 尋找三大法人資料表格的起點
-            if "三大法人買賣金額統計表" in raw_text or "買賣差額" in raw_text:
-                lines = raw_text.split('\n')
-                start_idx = None
+                # 為了計算三大法人的「總計」，將千分逗號濾除並轉換成數值
+                # 欄位通常為：外陸資買進股數、外陸資賣出股數、投信買進股數、投信賣出股數、自營商買進股數、自營商賣出股數 等
+                for col in df_detail.columns:
+                    if "股數" in col or "張數" in col or "金額" in col:
+                        df_detail[col] = df_detail[col].astype(str).str.replace(',', '').str.strip()
+                        df_detail[col] = pd.to_numeric(df_detail[col], errors='coerce').fillna(0)
                 
-                # 尋找含有欄位名稱的起始行
-                for idx, line in enumerate(lines):
-                    if "單位名稱" in line and "買進金額" in line:
-                        start_idx = idx
-                        break
+                # 動態比對 T86 的欄位結構，精準抽離三大法人的股數或金額進行總和統計
+                summary_rows = []
                 
-                if start_idx is not None:
-                    # 重新組合乾淨的 CSV 內容
-                    clean_csv = "\n".join(lines[start_idx:])
-                    df = pd.read_csv(io.StringIO(clean_csv))
+                # 1. 外資與陸資 (排除自營商)
+                f_buy_col = next((c for c in df_detail.columns if "外陸資" in c and "買進" in c and "不含外資自營商" in c), None)
+                f_sell_col = next((c for c in df_detail.columns if "外陸資" in c and "賣出" in c and "不含外資自營商" in c), None)
+                if f_buy_col and f_sell_col:
+                    f_buy = df_detail[f_buy_col].sum()
+                    f_sell = df_detail[f_sell_col].sum()
+                    summary_rows.append({"單位名稱": "外資及陸資(不含外資自營商)", "買進金額": f_buy, "賣出金額": f_sell, "買賣差額": f_buy - f_sell})
+                
+                # 2. 投信
+                sit_buy_col = next((c for c in df_detail.columns if "投信" in c and "買進" in c), None)
+                sit_sell_col = next((c for c in df_detail.columns if "投信" in c and "賣出" in c), None)
+                if sit_buy_col and sit_sell_col:
+                    sit_buy = df_detail[sit_buy_col].sum()
+                    sit_sell = df_detail[sit_sell_col].sum()
+                    summary_rows.append({"單位名稱": "投信", "買進金額": sit_buy, "賣出金額": sit_sell, "買賣差額": sit_buy - sit_sell})
+                
+                # 3. 自營商 (自行買賣與避險加總)
+                dealer_buy_self = next((c for c in df_detail.columns if "自營商" in c and "買進" in c and "自行買賣" in c), None)
+                dealer_sell_self = next((c for c in df_detail.columns if "自營商" in c and "賣出" in c and "自行買賣" in c), None)
+                dealer_buy_hedge = next((c for c in df_detail.columns if "自營商" in c and "買進" in c and "避險" in c), None)
+                dealer_sell_hedge = next((c for c in df_detail.columns if "自營商" in c and "賣出" in c and "避險" in c), None)
+                
+                d_buy = 0.0
+                d_sell = 0.0
+                if dealer_buy_self: d_buy += df_detail[dealer_buy_self].sum()
+                if dealer_buy_hedge: d_buy += df_detail[dealer_buy_hedge].sum()
+                if dealer_sell_self: d_sell += df_detail[dealer_sell_self].sum()
+                if dealer_sell_hedge: d_sell += df_detail[dealer_sell_hedge].sum()
+                
+                if dealer_buy_self or dealer_buy_hedge:
+                    summary_rows.append({"單位名稱": "自營商", "買進金額": d_buy, "賣出金額": d_sell, "買賣差額": d_buy - d_sell})
+                
+                # 4. 合計
+                if summary_rows:
+                    total_buy = sum(r["買進金額"] for r in summary_rows)
+                    total_sell = sum(r["賣出金額"] for r in summary_rows)
+                    summary_rows.append({"單位名稱": "三大法人合計", "買進金額": total_buy, "賣出金額": total_sell, "買賣差額": total_buy - total_sell})
                     
-                    # 清理欄位與名稱中的空白字元與雙引號
-                    df.columns = df.columns.str.replace('"', '').str.strip()
-                    if '單位名稱' in df.columns:
-                        df['單位名稱'] = df['單位名稱'].astype(str).str.replace('"', '').str.strip()
-                        # 濾除結尾的說明文字行
-                        df = df[df['單位名稱'].str.contains('證券商|自營商|投信|外資|合計', na=False)]
+                    df_result = pd.DataFrame(summary_rows)
+                    return df_result
                     
-                    # 轉換數值型態
-                    cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-                    for col in cols_to_fix:
-                        if col in df.columns:
-                            df[col] = df[col].astype(str).str.replace(',', '').str.replace('"', '').str.strip()
-                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-                            
-                    if not df.empty:
-                        return df
-
     except Exception:
         pass
         
     return None
+
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
