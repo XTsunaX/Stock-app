@@ -769,11 +769,13 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (Selenium 進入主頁取得憑證後，再讀取 JSON)"""
+    """從證交所抓取三大法人買賣金額統計 (處理「請稍候再試」彈窗警告)"""
     import json
+    import time
+    import random
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
     
     main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
     json_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
@@ -800,30 +802,59 @@ def get_major_institutional_data(date_str):
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
         
-        # 1. 先訪問主頁，讓瀏覽器取得合法 Cookie 並自然通過 Cloudflare 防護
-        driver.get(main_url)
-        time.sleep(random.uniform(3.0, 5.0))
-        
-        # 2. 在同一個已驗證的視窗中，轉往 JSON API 端點
-        driver.get(json_url)
-        
-        # 3. 等待頁面 body 中出現預期的 JSON 關鍵字 (避免提早抓到空白或驗證中畫面)
-        WebDriverWait(driver, 10).until(
-            lambda d: "stat" in d.find_element(By.TAG_NAME, "body").text
-        )
-        
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        
-        # Chrome 在直接開啟 JSON 時，有時會將內容包在 <pre> 內，直接萃取文字並解析
-        data = json.loads(page_text)
-        
-        if data.get("stat") == "OK":
-            df = pd.DataFrame(data["data"], columns=data["fields"])
-            cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-            for col in cols_to_fix:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            return df
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 1. 訪問主頁並稍微拉長等待時間，降低觸發防護的機率
+                driver.get(main_url)
+                time.sleep(random.uniform(4.0, 6.0))
+                
+                # 嘗試關閉主頁可能出現的頻率限制彈窗
+                try:
+                    driver.switch_to.alert.accept()
+                except NoAlertPresentException:
+                    pass
+                
+                # 2. 轉往 JSON API 端點
+                driver.get(json_url)
+                
+                # 嘗試關閉 JSON 頁面可能出現的彈窗
+                try:
+                    driver.switch_to.alert.accept()
+                    time.sleep(3) # 若出現彈窗代表被擋，冷卻後重整
+                    driver.refresh()
+                except NoAlertPresentException:
+                    pass
+                
+                # 3. 確保頁面內容已載入且沒有被彈窗卡住
+                WebDriverWait(driver, 10).until(
+                    lambda d: "stat" in d.find_element(By.TAG_NAME, "body").text
+                )
+                
+                page_text = driver.find_element(By.TAG_NAME, "body").text
+                data = json.loads(page_text)
+                
+                if data.get("stat") == "OK":
+                    df = pd.DataFrame(data["data"], columns=data["fields"])
+                    cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                    for col in cols_to_fix:
+                        if col in df.columns:
+                            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+                    return df
+                else:
+                    break # 回傳非 OK (如查無資料)，無需重試
+                    
+            except UnexpectedAlertPresentException:
+                # 攔截 Selenium 丟出的預期外彈窗錯誤，按下確認並強制冷卻
+                try:
+                    driver.switch_to.alert.accept()
+                except:
+                    pass
+                time.sleep(5)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(3)
 
     except Exception as e:
         st.sidebar.error(f"三大法人資料抓取異常: {e}")
