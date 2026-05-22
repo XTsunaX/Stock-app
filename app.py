@@ -767,7 +767,7 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=5, show_spinner=False)
 def get_major_institutional_data(date_str):
     """從證交所 API 抓取三大法人買賣金額統計 (改用 Selenium 模擬真實瀏覽器以徹底繞過 TLS/WAF 阻擋)"""
     url = f"https://www.twse.com.tw/zh/exchangeReport/BFI82U?response=json&dayDate={date_str}"
