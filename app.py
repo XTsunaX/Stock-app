@@ -767,28 +767,78 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
+    """從證交所抓取三大法人買賣金額統計 (主方案：Selenium爬取HTML表格，備用方案：讀取CSV)"""
+    html_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=html"
+    csv_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=csv"
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
     try:
-        response = requests.get(url, timeout=5, verify=False)
-        data = response.json()
+        chrome_options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception:
+        driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         
-        if data.get("stat") != "OK":
-            return None
+        df = None
         
-        # 轉換為 DataFrame
-        df = pd.DataFrame(data["data"], columns=data["fields"])
+        # 主方案：嘗試直接爬取 HTML 表格
+        driver.get(html_url)
+        time.sleep(random.uniform(2.0, 4.0)) # 等待 Cloudflare 驗證與載入
+        page_html = driver.page_source
         
-        # 清理數據：移除千分號並轉為數字
-        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-        for col in cols_to_fix:
-            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+        try:
+            tables = pd.read_html(io.StringIO(page_html))
+            if tables:
+                df = tables[0]
+                # 處理證交所 HTML 表格可能產生的多層次標題 (MultiIndex)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(0)
+        except Exception:
+            pass
+
+        # 備用方案：若 HTML 失敗或無資料，改讀取 CSV 網址內容
+        if df is None or df.empty:
+            driver.get(csv_url)
+            time.sleep(random.uniform(2.0, 4.0))
+            from selenium.webdriver.common.by import By
+            csv_text = driver.find_element(By.TAG_NAME, "body").text
             
-        return df
+            if csv_text:
+                # 證交所 CSV 第一行為大標題需跳過，並濾除結尾的純文字說明
+                df_csv = pd.read_csv(io.StringIO(csv_text), skiprows=1)
+                df = df_csv.dropna(subset=['買進金額'])
+
+        # 資料清理與格式轉換
+        if df is not None and not df.empty:
+            cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+            for col in cols_to_fix:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            return df
+
     except Exception as e:
-        return None
+        st.sidebar.error(f"資料抓取異常: {e}")
+    finally:
+        if 'driver' in locals():
+            driver.quit()
+            
+    return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
