@@ -767,107 +767,28 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所網頁爬取三大法人買賣金額統計 (透過 Selenium 模擬真實瀏覽並直接解析網頁 HTML 表格元素)"""
-    from bs4 import BeautifulSoup
-    import re
-    
-    # 格式化日期為網頁查詢需要的格式 (YYYY/MM/DD)
-    formatted_date = f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:]}"
-    
-    # 直接前往三大法人買賣金額統計的歷史查詢網頁
-    main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
-
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
     try:
-        chrome_options.binary_location = "/usr/bin/chromium"
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
-        driver = webdriver.Chrome(options=chrome_options)
-
-    try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        })
+        response = requests.get(url, timeout=5, verify=False)
+        data = response.json()
         
-        # 1. 進入主網頁
-        driver.get(main_url)
-        time.sleep(random.uniform(4.0, 5.0))
+        if data.get("stat") != "OK":
+            return None
         
-        # 處理可能擋住網頁操作的 Alert 彈窗
-        try:
-            driver.switch_to.alert.accept()
-        except:
-            pass
-
-        # 2. 利用 JavaScript 動態修改網頁上的日期輸入框並觸發查詢
-        # 這樣可以避開直接對 API 發送請求時被 Cloudflare 抓到特徵的風險
-        script = f"""
-        document.querySelector('input[name="d"]').value = "{formatted_date}";
-        document.querySelector('.search button').click();
-        """
-        driver.execute_script(script)
-        time.sleep(random.uniform(3.0, 4.0)) # 等待非同步資料渲染完成
-
-        # 3. 直接撈取點擊查詢後的網頁 Source HTML
-        page_html = driver.page_source
-        soup = BeautifulSoup(page_html, 'html.parser')
+        # 轉換為 DataFrame
+        df = pd.DataFrame(data["data"], columns=data["fields"])
         
-        # 4. 尋找網頁上的資料表格 (證交所表格通常在 #table-container 或帶有 table_data 樣式)
-        table = soup.find('table')
-        if not table:
-            # 備用尋找邏輯
-            table = soup.find('div', {'id': 'table-container'}).find('table') if soup.find('div', {'id': 'table-container'}) else None
-
-        if table:
-            # 使用 pandas 直接解析該段乾淨的 HTML 表格字串
-            dfs = pd.read_html(io.StringIO(str(table)))
-            if dfs:
-                df = dfs[0]
-                
-                # 處理多層次標題
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.droplevel(0)
-                
-                # 清理欄位名稱中的空白
-                df.columns = [str(c).replace(' ', '').strip() for c in df.columns]
-                
-                # 確保欄位名稱符合介面預期
-                if '單位名稱' in df.columns and '買進金額' in df.columns:
-                    # 濾除說明的雜行，只保留主資料列
-                    df['單位名稱'] = df['單位名稱'].astype(str).str.replace(' ', '').str.strip()
-                    df = df[df['單位名稱'].str.contains('自營商|投信|外資|外陸資|合計', na=False)]
-                    
-                    # 數值型態清理
-                    cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-                    for col in cols_to_fix:
-                        if col in df.columns:
-                            df[col] = df[col].astype(str).str.replace(',', '').str.strip()
-                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-                            
-                    if not df.empty:
-                        return df
-
-    except Exception:
-        pass
-    finally:
-        if 'driver' in locals():
-            driver.quit()
+        # 清理數據：移除千分號並轉為數字
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
-    return None
-
-
+        return df
+    except Exception as e:
+        return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
@@ -2415,19 +2336,10 @@ with tab_db:
     
     with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
-        
-        # 調整預設日期邏輯：若是週六或週日，預設切回上週五
-        today_check = datetime.today()
-        if today_check.weekday() == 5:
-            default_date = today_check - timedelta(days=1)
-        elif today_check.weekday() == 6:
-            default_date = today_check - timedelta(days=2)
-        else:
-            default_date = today_check
-
-        selected_date = st.date_input("選擇日期", default_date)
+        selected_date = st.date_input("選擇日期", datetime.today())
         date_str = selected_date.strftime("%Y%m%d")
         
+        @st.cache_data(ttl=3600)
         df_inst = get_major_institutional_data(date_str)
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
