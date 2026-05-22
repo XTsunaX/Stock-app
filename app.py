@@ -769,26 +769,46 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
-    try:
-        response = requests.get(url, timeout=5, verify=False)
-        data = response.json()
-        
-        if data.get("stat") != "OK":
-            return None
-        
-        # 轉換為 DataFrame
-        df = pd.DataFrame(data["data"], columns=data["fields"])
-        
-        # 清理數據：移除千分號並轉為數字
-        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-        for col in cols_to_fix:
-            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+    """從證交所 API 抓取三大法人買賣金額統計 (加入反爬蟲防護與重試機制)"""
+    url = f"https://www.twse.com.tw/zh/exchangeReport/BFI82U?response=json&dayDate={date_str}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+    }
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            time.sleep(random.uniform(0.5, 1.5))
+            response = requests.get(url, headers=headers, timeout=10, verify=False)
             
-        return df
-    except Exception as e:
-        return None
+            if response.status_code in [403, 429]:
+                st.sidebar.warning(f"偵測到證交所頻率限制 (HTTP {response.status_code})，嘗試重新連線中...")
+                time.sleep(3)
+                continue
+                
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("stat") == "OK":
+                df = pd.DataFrame(data["data"], columns=data["fields"])
+                cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                for col in cols_to_fix:
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+                return df
+            else:
+                return None
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                st.sidebar.error(f"連線證交所失敗，已達最大重試次數。原因: {e}")
+                return None
+            time.sleep(2)
+    return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
@@ -2336,7 +2356,17 @@ with tab_db:
     
     with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
-        selected_date = st.date_input("選擇日期", datetime.today())
+        
+        # 調整預設日期邏輯：若是週六或週日，預設切回上週五
+        today_check = datetime.today()
+        if today_check.weekday() == 5:
+            default_date = today_check - timedelta(days=1)
+        elif today_check.weekday() == 6:
+            default_date = today_check - timedelta(days=2)
+        else:
+            default_date = today_check
+
+        selected_date = st.date_input("選擇日期", default_date)
         date_str = selected_date.strftime("%Y%m%d")
         
         df_inst = get_major_institutional_data(date_str)
