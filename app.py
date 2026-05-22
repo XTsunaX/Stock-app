@@ -767,46 +767,28 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (導入 Session 維持 Cookie)"""
-    # 回歸證交所新版 RWD API 端點
+    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
     url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
-    
-    # 使用 Session 來自動儲存與傳遞伺服器發放的 Cookie
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html",
-        "Connection": "keep-alive"
-    }
-    
     try:
-        # 步驟一：先訪問證交所前端頁面，建立合法的 Session 狀態
-        session.get("https://www.twse.com.tw/zh/trading/foreign/bfi82u.html", headers=headers, timeout=5, verify=False)
-        time.sleep(random.uniform(1.0, 2.5))  # 模擬人類閱讀網頁的停頓時間
+        response = requests.get(url, timeout=5, verify=False)
+        data = response.json()
         
-        # 步驟二：攜帶剛取得的 Cookie 去請求真實的資料 API
-        response = session.get(url, headers=headers, timeout=10, verify=False)
+        if data.get("stat") != "OK":
+            return None
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("stat") == "OK":
-                df = pd.DataFrame(data["data"], columns=data["fields"])
-                
-                cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-                for col in cols_to_fix:
-                    if col in df.columns:
-                        df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-                        
-                return df
-                
+        # 轉換為 DataFrame
+        df = pd.DataFrame(data["data"], columns=data["fields"])
+        
+        # 清理數據：移除千分號並轉為數字
+        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+        for col in cols_to_fix:
+            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            
+        return df
     except Exception as e:
-        st.sidebar.error(f"證交所連線異常: {e}")
-        
-    return None
+        return None
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
