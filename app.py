@@ -769,10 +769,33 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (主方案：Selenium爬取HTML表格，備用方案：讀取CSV)"""
-    html_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=html"
+    """從證交所抓取三大法人買賣金額統計 (Requests 抓取 CSV + Selenium 繞過防護抓取 HTML)"""
+    import io
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    
     csv_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=csv"
+    html_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=html"
 
+    # 方案一：使用 requests 直接爬取 CSV，避開 JSON API 防護
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        r = requests.get(csv_url, headers=headers, timeout=5, verify=False)
+        
+        # 證交所的 CSV 會包含 "買賣差額" 字眼，藉此確認無遭 Cloudflare 攔截
+        if r.status_code == 200 and "買賣差額" in r.text:
+            df = pd.read_csv(io.StringIO(r.text), skiprows=1)
+            df = df.dropna(subset=['買進金額'])
+            
+            for col in ['買進金額', '賣出金額', '買賣差額']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+            return df
+    except Exception:
+        pass
+
+    # 方案二：若 CSV 遭阻擋，啟動 Selenium 爬取 HTML 表格
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -795,45 +818,28 @@ def get_major_institutional_data(date_str):
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
         
-        df = None
-        
-        # 主方案：嘗試直接爬取 HTML 表格
         driver.get(html_url)
-        time.sleep(random.uniform(2.0, 4.0)) # 等待 Cloudflare 驗證與載入
-        page_html = driver.page_source
         
-        try:
-            tables = pd.read_html(io.StringIO(page_html))
-            if tables:
-                df = tables[0]
-                # 處理證交所 HTML 表格可能產生的多層次標題 (MultiIndex)
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.droplevel(0)
-        except Exception:
-            pass
-
-        # 備用方案：若 HTML 失敗或無資料，改讀取 CSV 網址內容
-        if df is None or df.empty:
-            driver.get(csv_url)
-            time.sleep(random.uniform(2.0, 4.0))
-            from selenium.webdriver.common.by import By
-            csv_text = driver.find_element(By.TAG_NAME, "body").text
-            
-            if csv_text:
-                # 證交所 CSV 第一行為大標題需跳過，並濾除結尾的純文字說明
-                df_csv = pd.read_csv(io.StringIO(csv_text), skiprows=1)
-                df = df_csv.dropna(subset=['買進金額'])
-
-        # 資料清理與格式轉換
-        if df is not None and not df.empty:
-            cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-            for col in cols_to_fix:
+        # 關鍵：強制等待直到出現 table 標籤，確保 Cloudflare 驗證畫面已通過
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.TAG_NAME, "table"))
+        )
+        
+        page_html = driver.page_source
+        tables = pd.read_html(io.StringIO(page_html))
+        
+        if tables:
+            df = tables[0]
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(0)
+                
+            for col in ['買進金額', '賣出金額', '買賣差額']:
                 if col in df.columns:
                     df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             return df
 
     except Exception as e:
-        st.sidebar.error(f"資料抓取異常: {e}")
+        st.sidebar.error(f"三大法人資料抓取異常: {e}")
     finally:
         if 'driver' in locals():
             driver.quit()
