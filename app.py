@@ -769,33 +769,15 @@ def fetch_and_parse_pdf(pdf_url):
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所抓取三大法人買賣金額統計 (Requests 抓取 CSV + Selenium 繞過防護抓取 HTML)"""
-    import io
+    """從證交所抓取三大法人買賣金額統計 (Selenium 進入主頁取得憑證後，再讀取 JSON)"""
+    import json
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     
-    csv_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=csv"
-    html_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=html"
+    main_url = "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"
+    json_url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
 
-    # 方案一：使用 requests 直接爬取 CSV，避開 JSON API 防護
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        r = requests.get(csv_url, headers=headers, timeout=5, verify=False)
-        
-        # 證交所的 CSV 會包含 "買賣差額" 字眼，藉此確認無遭 Cloudflare 攔截
-        if r.status_code == 200 and "買賣差額" in r.text:
-            df = pd.read_csv(io.StringIO(r.text), skiprows=1)
-            df = df.dropna(subset=['買進金額'])
-            
-            for col in ['買進金額', '賣出金額', '買賣差額']:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.replace(',', '').astype(float)
-            return df
-    except Exception:
-        pass
-
-    # 方案二：若 CSV 遭阻擋，啟動 Selenium 爬取 HTML 表格
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -804,7 +786,7 @@ def get_major_institutional_data(date_str):
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     try:
         chrome_options.binary_location = "/usr/bin/chromium"
@@ -818,22 +800,27 @@ def get_major_institutional_data(date_str):
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
         
-        driver.get(html_url)
+        # 1. 先訪問主頁，讓瀏覽器取得合法 Cookie 並自然通過 Cloudflare 防護
+        driver.get(main_url)
+        time.sleep(random.uniform(3.0, 5.0))
         
-        # 關鍵：強制等待直到出現 table 標籤，確保 Cloudflare 驗證畫面已通過
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.TAG_NAME, "table"))
+        # 2. 在同一個已驗證的視窗中，轉往 JSON API 端點
+        driver.get(json_url)
+        
+        # 3. 等待頁面 body 中出現預期的 JSON 關鍵字 (避免提早抓到空白或驗證中畫面)
+        WebDriverWait(driver, 10).until(
+            lambda d: "stat" in d.find_element(By.TAG_NAME, "body").text
         )
         
-        page_html = driver.page_source
-        tables = pd.read_html(io.StringIO(page_html))
+        page_text = driver.find_element(By.TAG_NAME, "body").text
         
-        if tables:
-            df = tables[0]
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.droplevel(0)
-                
-            for col in ['買進金額', '賣出金額', '買賣差額']:
+        # Chrome 在直接開啟 JSON 時，有時會將內容包在 <pre> 內，直接萃取文字並解析
+        data = json.loads(page_text)
+        
+        if data.get("stat") == "OK":
+            df = pd.DataFrame(data["data"], columns=data["fields"])
+            cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+            for col in cols_to_fix:
                 if col in df.columns:
                     df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             return df
