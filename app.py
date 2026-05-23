@@ -2336,7 +2336,17 @@ with tab_db:
     
     with sub_tab1:
         st.markdown("#### 📊 台股三大法人每日買賣超統計")
-        selected_date = st.date_input("選擇日期", datetime.today())
+        
+        # 調整預設日期邏輯：若是週六或週日，預設切回上週五
+        today_check = datetime.today()
+        if today_check.weekday() == 5:
+            default_date = today_check - timedelta(days=1)
+        elif today_check.weekday() == 6:
+            default_date = today_check - timedelta(days=2)
+        else:
+            default_date = today_check
+
+        selected_date = st.date_input("選擇日期", default_date)
         date_str = selected_date.strftime("%Y%m%d")
         
         df_inst = get_major_institutional_data(date_str)
