@@ -787,7 +787,7 @@ def get_major_institutional_data(date_str):
             df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
         return df
-   except Exception as e:
+    except Exception as e:
             # 拒絕回傳 None，透過拋出異常來阻止 Streamlit 將失敗狀態寫入快取
             raise RuntimeError(f"連線異常不寫入快取: {e}")
 
