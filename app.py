@@ -45,6 +45,42 @@ try:
     import shioaji as sj
 except ImportError:
     sj = None
+# ==========================================
+# 新增: 全域行事曆與權證判斷函數
+# ==========================================
+def get_holidays(year):
+    h = {}
+    if year == 2025:
+         h.update({
+             (1, 1): "元旦", (1, 27): "春節", (1, 28): "春節", (1, 29): "春節", (1, 30): "春節", (1, 31): "春節",
+             (2, 3): "春節", (2, 28): "228紀念日", (4, 3): "兒童節", (4, 4): "清明節",
+             (5, 1): "勞動節", (5, 30): "端午節", (10, 6): "中秋節", (10, 10): "國慶日"
+         })
+    if year == 2026:
+        h.update({
+            (1, 1): "元旦", (2, 11): "封關日", (2, 12): "市場無交易", (2, 13): "市場無交易",
+            (2, 14): "春節", (2, 15): "春節", (2, 16): "春節", (2, 17): "春節",
+            (2, 18): "春節", (2, 19): "春節", (2, 20): "春節", (2, 21): "春節", (2, 22): "春節",
+            (2, 27): "和平紀念日(補)", (2, 28): "和平紀念日",
+            (4, 3): "兒童節(補)", (4, 4): "兒童節", (4, 5): "清明節", (4, 6): "清明節(補)",
+            (5, 1): "勞動節", (6, 19): "端午節", (9, 25): "中秋節", (9, 28): "教師節",
+            (10, 9): "國慶日(補)", (10, 10): "國慶日", (10, 25): "光復節", (10, 26): "光復節(補)",
+            (12, 25): "行憲紀念日"
+        })
+    return h
+
+def is_market_closed_func(d_date):
+    if d_date.weekday() >= 5: return True
+    h_dict = get_holidays(d_date.year)
+    name = h_dict.get((d_date.month, d_date.day), "")
+    if name and name != "封關日": return True
+    return False
+
+def is_warrant(code):
+    c = str(code)
+    if c.startswith('00'): return False
+    return len(c) > 4
+
 
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
@@ -302,22 +338,24 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                        # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
+                       # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
                         if df.index[-1] < now_dt and rt_price > 0:
-                            if interval in ["1d", "1m", "5m", "15m", "60m"]:
-                                new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
-                                df = pd.concat([df, new_row])
+                            if not is_market_closed_func(now_dt.date()): # 新增: 排除假日異常
+                                if interval in ["1d", "1m", "5m", "15m", "60m"]:
+                                    new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                    df = pd.concat([df, new_row])
+                                else:
+                                    df.at[df.index[-1], 'Close'] = rt_price
+                                    df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                                    df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                    df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             else:
+                                # 假日不產生新K棒，僅更新最後一根
                                 df.at[df.index[-1], 'Close'] = rt_price
                                 df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
                                 df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
-                        else:
-                            df.at[df.index[-1], 'Close'] = rt_price
-                            df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                            df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                            if interval in ["1d", "1wk", "1mo"]:
-                                df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                                if interval in ["1d", "1wk", "1mo"]:
+                                    df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             
                         sj_snap_used = True
             except Exception:
@@ -359,7 +397,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     last_hist_date = pd.Timestamp(df.index[-1].date())
                     
                     if interval == "1d":
-                        if last_hist_date < today_date and now_tw.weekday() < 5:
+                        if last_hist_date < today_date and not is_market_closed_func(now_tw.date()):
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                             df = pd.concat([df, new_row])
                         else:
@@ -370,7 +408,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     elif interval in ["1m", "5m", "15m", "60m"]:
                         now_dt_naive = now_tw.replace(tzinfo=None)
                         # 判斷最後一根K棒時間，若落後即時時間則追加一根最新的，否則直接更新最後一根
-                        if df.index[-1] < now_dt_naive and rt_price > 0:
+                        if df.index[-1] < now_dt_naive and rt_price > 0 and not is_market_closed_func(now_tw.date()):
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
                             df = pd.concat([df, new_row])
                         else:
@@ -941,35 +979,37 @@ def save_config(font_size, limit_rows, auto_update, delay_sec, sj_key="", sj_sec
 
 def save_fibo_config():
     config = load_config()
-    config['fibo_tags'] = [
+    fibo_tags = [
         st.session_state.get('custom_tag_1', "台積電(2330)"), 
         st.session_state.get('custom_tag_2', "鴻海(2317)"), 
         st.session_state.get('custom_tag_3', "聯發科(2454)"), 
         st.session_state.get('custom_tag_4', "和椿(6215)"), 
         st.session_state.get('custom_tag_5', "晶彩科(3535)")
     ]
+    config['fibo_tags'] = fibo_tags
+    st.session_state.fibo_tags = fibo_tags
     if 'ma_w' in st.session_state:
         config['ma_width'] = st.session_state.ma_w
     try:
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
     except: pass
+    # 同步寫入 Google Sheets
+    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes, fibo_tags)
 
-def save_data_cache(df, ignored_set, candidates=[], saved_notes={}):
+def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=None):
+    if fibo_tags is None:
+        fibo_tags = st.session_state.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
     try:
         df_save = df.fillna("") 
-        data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes}
+        data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags}
         
-        # 1. 同時保留原先本機檔案的存取邏輯
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-        
-        # 2. 將分析資料同步備份到雲端 Google Sheets 達成永久保存
         if "gsheet_api_url" in st.secrets:
             json_str = json.dumps(data_to_save, ensure_ascii=False)
             requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
     except: pass
 
 def load_data_cache():
-    # 1. 優先嘗試從雲端永久儲存點撈回分析資料
     if "gsheet_api_url" in st.secrets:
         try:
             r = requests.get(st.secrets["gsheet_api_url"], timeout=5)
@@ -979,10 +1019,10 @@ def load_data_cache():
                 ignored = set(data.get('ignored_stocks', []))
                 candidates = data.get('all_candidates', [])
                 saved_notes = data.get('saved_notes', {}) 
-                return df, ignored, candidates, saved_notes
+                fibo_tags = data.get('fibo_tags', [])
+                return df, ignored, candidates, saved_notes, fibo_tags
         except: pass
 
-    # 2. 雲端失敗或未設定時的 Fallback 方案：讀取本機暫存
     if os.path.exists(DATA_CACHE_FILE):
         try:
             with open(DATA_CACHE_FILE, "r", encoding='utf-8') as f: data = json.load(f)
@@ -990,9 +1030,10 @@ def load_data_cache():
             ignored = set(data.get('ignored_stocks', []))
             candidates = data.get('all_candidates', [])
             saved_notes = data.get('saved_notes', {}) 
-            return df, ignored, candidates, saved_notes
-        except: return pd.DataFrame(), set(), [], {}
-    return pd.DataFrame(), set(), [], {}
+            fibo_tags = data.get('fibo_tags', [])
+            return df, ignored, candidates, saved_notes, fibo_tags
+        except: return pd.DataFrame(), set(), [], {}, []
+    return pd.DataFrame(), set(), [], {}, []
 
 def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
@@ -1031,11 +1072,12 @@ def save_search_cache(selected_items):
     except: pass
 
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored, cached_candidates, cached_notes = load_data_cache()
+    cached_df, cached_ignored, cached_candidates, cached_notes, cached_fibo_tags = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
     st.session_state.saved_notes = cached_notes
+    st.session_state.fibo_tags = cached_fibo_tags if cached_fibo_tags else load_config().get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
 
 if 'ignored_stocks' not in st.session_state: st.session_state.ignored_stocks = set()
 if 'all_candidates' not in st.session_state: st.session_state.all_candidates = []
@@ -1177,6 +1219,7 @@ with st.sidebar:
     current_font_size = st.slider("字體大小 (表格)", min_value=12, max_value=72, value=st.session_state.font_size, key='font_size_slider')
     st.session_state.font_size = current_font_size
     hide_non_stock = st.checkbox("隱藏非個股 (ETF/權證/債券)", value=True)
+    st.checkbox("查詢權證 (含圖表快速標籤)", value=False, key="allow_warrant_search") # 新增權證過濾開關
     show_3d_hilo = st.checkbox("近3日高低點 (戰略備註)", value=False, help="勾選後，將於戰略備註中加入前天、昨天、今天的最高與最低價 (僅顯示數值)")
     st.markdown("---")
     current_limit_rows = st.number_input("顯示筆數 (檔案/雲端)", min_value=1, value=st.session_state.limit_rows, key='limit_rows_input')
@@ -1666,7 +1709,11 @@ with tab1:
     col_search, col_file = st.columns([2, 1])
     with col_search:
         code_map, name_map = load_local_stock_names()
-        stock_options = [f"{code} {name}" for code, name in sorted(code_map.items())]
+        stock_options = []
+        for code, name in sorted(code_map.items()):
+            if not st.session_state.get('allow_warrant_search', False) and is_warrant(code):
+                continue
+            stock_options.append(f"{code} {name}")
         
         src_tab1, src_tab2 = st.tabs(["📂 本機", "☁️ 雲端"])
         with src_tab1:
@@ -2187,6 +2234,13 @@ with tab_fibo:
 
     with tab_fibo_chart:
         code_map_fibo, name_map_fibo = load_local_stock_names()
+        fibo_stock_options = []
+        for c, n in sorted(code_map_fibo.items()):
+            if not st.session_state.get('allow_warrant_search', False) and is_warrant(c):
+                continue
+            fibo_stock_options.append(f"{n}({c})")
+        # 下方 search_list 修改對應變數
+        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)", "微型台指期貨(TMF=F)"] + fibo_stock_options
 
         def set_fibo_search(val):
             st.session_state.fibo_search_input = val
@@ -2481,27 +2535,6 @@ with tab3:
     with col_next: st.button("▶️", on_click=change_month, args=(1,), width='stretch')
     with col_header: st.markdown(f"<div class='calendar-header'>{sel_year}/{sel_month:02}</div>", unsafe_allow_html=True)
 
-    def get_holidays(year):
-        h = {}
-        if year == 2025:
-             h.update({
-                 (1, 1): "元旦", (1, 27): "春節", (1, 28): "春節", (1, 29): "春節", (1, 30): "春節", (1, 31): "春節",
-                 (2, 3): "春節", (2, 28): "228紀念日", (4, 3): "兒童節", (4, 4): "清明節",
-                 (5, 1): "勞動節", (5, 30): "端午節", (10, 6): "中秋節", (10, 10): "國慶日"
-             })
-        if year == 2026:
-            h.update({
-                (1, 1): "元旦", (2, 11): "封關日", (2, 12): "市場無交易", (2, 13): "市場無交易",
-                (2, 14): "春節", (2, 15): "春節", (2, 16): "春節", (2, 17): "春節",
-                (2, 18): "春節", (2, 19): "春節", (2, 20): "春節", (2, 21): "春節", (2, 22): "春節",
-                (2, 27): "和平紀念日(補)", (2, 28): "和平紀念日",
-                (4, 3): "兒童節(補)", (4, 4): "兒童節", (4, 5): "清明節", (4, 6): "清明節(補)",
-                (5, 1): "勞動節", (6, 19): "端午節", (9, 25): "中秋節", (9, 28): "教師節",
-                (10, 9): "國慶日(補)", (10, 10): "國慶日", (10, 25): "光復節", (10, 26): "光復節(補)",
-                (12, 25): "行憲紀念日"
-            })
-        return h
-
     current_holidays = get_holidays(sel_year)
     def get_us_events(y, m):
         events = {}
@@ -2512,31 +2545,43 @@ with tab3:
         cal_temp = calendar.Calendar(firstweekday=6)
         month_days_list = list(cal_temp.itermonthdays2(y, m))
         
+        # (1) 美股固定休市日期
+        us_holidays = {
+            2024: [(1,1), (1,15), (2,19), (3,29), (5,27), (6,19), (7,4), (9,2), (11,28), (12,25)],
+            2025: [(1,1), (1,20), (2,17), (4,18), (5,26), (6,19), (7,4), (9,1), (11,27), (12,25)],
+            2026: [(1,1), (1,19), (2,16), (4,3), (5,25), (6,19), (7,3), (9,7), (11,26), (12,25)]
+        }
+        if y in us_holidays:
+            for hm, hd in us_holidays[y]:
+                if hm == m: add_evt(hd, "🇺🇸美股休市", "#B0BEC5")
+        
+        return events
+        
         # (2) 美國非農人數公布 (每個月第一個週五)
         for d, wd in month_days_list:
             if d != 0 and wd == 4:
                 add_evt(d, "美國非農(20:30/21:30)", "#00E5FF") # 亮藍色
                 break
                 
-        # (6) 四巫日 (3,6,9,12月 第三個週五)
+        # (3) 四巫日 (3,6,9,12月 第三個週五)
         if m in [3, 6, 9, 12]:
             fridays = [d for d, wd in month_days_list if d != 0 and wd == 4]
             if len(fridays) >= 3:
                 add_evt(fridays[2], "四巫日", "#FF00FF") # 洋紅色
                 
-        # (5) 13F報告 (通常在2,5,8,11月的14日或15日，以估算值為主)
+        # (4) 13F報告 (通常在2,5,8,11月的14日或15日，以估算值為主)
         if m == 2: add_evt(14, "13F報告", "#FFD700") # 金黃色
         elif m == 5: add_evt(15, "13F報告", "#FFD700")
         elif m == 8: add_evt(14, "13F報告", "#FFD700")
         elif m == 11: add_evt(14, "13F報告", "#FFD700")
         
-        # (3) MSCI季調 (2,5,8,11月最後一個交易日生效)
+        # (5) MSCI季調 (2,5,8,11月最後一個交易日生效)
         if m in [2, 5, 8, 11]:
             weekdays = [d for d, wd in month_days_list if d != 0 and wd < 5]
             if weekdays:
                 add_evt(weekdays[-1], "MSCI季調生效", "#FF9800") # 橘色
 
-        # (4) FOMC (台灣時間，大多為週四凌晨 02:00，整理2024-2026日期)
+        # (6) FOMC (台灣時間，大多為週四凌晨 02:00，整理2024-2026日期)
         fomc_dates = {
             2024: [(2,1), (3,21), (5,2), (6,13), (8,1), (9,19), (11,8), (12,19)],
             2025: [(1,30), (3,20), (5,8), (6,19), (7,31), (9,18), (10,30), (12,11)],
@@ -2546,7 +2591,7 @@ with tab3:
             for fm, fd in fomc_dates[y]:
                 if fm == m: add_evt(fd, "FOMC (02:00)", "#FF4500") # 橙紅色
                 
-        # (1) 美國CPI公布 (台灣時間 20:30 或 21:30，整理2024-2026日期)
+        # (7) 美國CPI公布 (台灣時間 20:30 或 21:30，整理2024-2026日期)
         cpi_dates = {
             2024: [(1,11), (2,13), (3,12), (4,10), (5,15), (6,12), (7,11), (8,14), (9,11), (10,10), (11,13), (12,11)],
             2025: [(1,15), (2,12), (3,12), (4,9), (5,14), (6,11), (7,16), (8,13), (9,10), (10,15), (11,12), (12,10)],
