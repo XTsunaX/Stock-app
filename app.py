@@ -767,28 +767,62 @@ def fetch_and_parse_pdf(pdf_url):
     except Exception as e:
         return {"ratio": "解析錯誤", "images": []}
 
-@st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=5, show_spinner=False)
 def get_major_institutional_data(date_str):
-    """從證交所 API 抓取三大法人買賣金額統計 (套用正確 API 結構)"""
+    """從證交所 API 抓取三大法人買賣金額統計 (導入真實標頭環境、安全延遲、重試與防錯誤快取機制)"""
     url = f"https://www.twse.com.tw/rwd/zh/fund/BFI82U?dayDate={date_str}&response=json"
-    try:
-        response = requests.get(url, timeout=5, verify=False)
-        data = response.json()
-        
-        if data.get("stat") != "OK":
-            return None
-        
-        # 轉換為 DataFrame
-        df = pd.DataFrame(data["data"], columns=data["fields"])
-        
-        # 清理數據：移除千分號並轉為數字
-        cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
-        for col in cols_to_fix:
-            df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Referer": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html",
+        "Cache-Control": "max-age=0",
+        "Connection": "keep-alive",
+        "sec-ch-ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "cookie": "_ga=GA1.1.1891406145.1768059776; _ga_J2HVMN6FVP=GS2.1.s1779443453$o20$g1$t1779445836$j60$l0$h0"
+    }
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 隨機安全延遲（1.0 ~ 2.5 秒），大幅降低雲端環境頻率限制機率
+            time.sleep(random.uniform(1.0, 2.5))
+            response = requests.get(url, headers=headers, timeout=10, verify=False)
             
-        return df
-    except Exception as e:
-        return None
+            if response.status_code in [403, 429]:
+                st.sidebar.warning(f"偵測到證交所頻率限制 (HTTP {response.status_code})，嘗試重新連線中...")
+                time.sleep(5)  # 遭遇限制時加長冷卻時間
+                continue
+                
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("stat") == "OK":
+                df = pd.DataFrame(data["data"], columns=data["fields"])
+                cols_to_fix = ['買進金額', '賣出金額', '買賣差額']
+                for col in cols_to_fix:
+                    if col in df.columns:
+                        df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+                return df
+            else:
+                # 查無資料（例如休假日）直接回傳 None，不需要拋出異常
+                return None
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                st.sidebar.error(f"連線證交所失敗，已達最大重試次數。原因: {e}")
+                # 核心防護：不 return None，透過拋出錯誤阻止 Streamlit 將「阻擋失敗」寫入快取中
+                raise RuntimeError("證交所連線異常或遭受阻擋，本次不寫入快取紀錄。")
+            time.sleep(3)
+            
+    raise RuntimeError("證交所讀取失敗，本次不寫入快取紀錄。")
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
@@ -2349,7 +2383,12 @@ with tab_db:
         selected_date = st.date_input("選擇日期", default_date)
         date_str = selected_date.strftime("%Y%m%d")
         
-        df_inst = get_major_institutional_data(date_str)
+        # 安全攔截：避免函數因阻擋拋出錯誤而導致主網頁畫面死當崩潰
+        try:
+            df_inst = get_major_institutional_data(date_str)
+        except Exception:
+            df_inst = None
+            
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
             
