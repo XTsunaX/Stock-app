@@ -787,8 +787,9 @@ def get_major_institutional_data(date_str):
             df[col] = df[col].astype(str).str.replace(',', '').astype(float)
             
         return df
-    except Exception as e:
-        return None
+   except Exception as e:
+            # 拒絕回傳 None，透過拋出異常來阻止 Streamlit 將失敗狀態寫入快取
+            raise RuntimeError(f"連線異常不寫入快取: {e}")
 
 def color_negative_positive(val):
     """定義表格文字顏色：正數紅、負數綠"""
@@ -2349,7 +2350,12 @@ with tab_db:
         selected_date = st.date_input("選擇日期", default_date)
         date_str = selected_date.strftime("%Y%m%d")
         
-        df_inst = get_major_institutional_data(date_str)
+        # 加入安全攔截，若發生錯誤則預設為 None
+        try:
+            df_inst = get_major_institutional_data(date_str)
+        except Exception:
+            df_inst = None
+            
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
             
