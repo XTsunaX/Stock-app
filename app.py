@@ -1405,18 +1405,18 @@ def recalculate_row(row, points_map):
             try: strat_values.append(float(fp))
             except: pass
             
-        if l_up is not None and abs(price - l_up) < 0.01: status = "🔴 漲停"
-        elif l_down is not None and abs(price - l_down) < 0.01: status = "🟢 跌停"
+        if l_up is not None and abs(price - l_up) < 0.01: status = "漲停"
+        elif l_down is not None and abs(price - l_down) < 0.01: status = "跌停"
         elif strat_values:
             max_val = max(strat_values)
             min_val = min(strat_values)
-            if price > max_val: status = "🔴 強"
-            elif price < min_val: status = "🟢 弱"
+            if price > max_val: status = "強"
+            elif price < min_val: status = "弱"
             else:
                 hit = False
                 for v in strat_values:
                     if abs(v - price) < 0.01: hit = True; break
-                if hit: status = "🟡 命中"
+                if hit: status = "命中"
         return status
     except: return status
 
@@ -1690,8 +1690,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     elif name_map_dict and code in name_map_dict: final_name = name_map_dict[code]
     else: final_name = code
 
-    light = "🔴" if "多" in strategy_note else ("🟢" if "空" in strategy_note else "⚪")
-    final_name_display = f"{light} {final_name}"
+    final_name_display = final_name
     has_futures = "✅" if futures_set and code in futures_set else ""
     
     return {
@@ -1910,8 +1909,9 @@ with tab1:
             new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
             df_display.at[i, "戰略備註"] = new_full_note
             df_display.at[i, "_auto_note"] = new_auto_note
-            light = "🔴" if "多" in new_full_note else ("🟢" if "空" in new_full_note else "⚪")
-            df_display.at[i, "名稱"] = f"{light} {row['名稱'].split(' ', 1)[-1]}"
+            # 將之前可能暫存於檔案中的圓點一併清除
+            clean_name = row['名稱'].replace('🔴 ', '').replace('🟢 ', '').replace('⚪ ', '')
+            df_display.at[i, "名稱"] = clean_name
 
         note_width_px = calculate_note_width(df_display['戰略備註'], current_font_size)
         df_display["移除"] = False
@@ -1934,19 +1934,42 @@ with tab1:
                 try:
                     p = float(df_display.at[i, "收盤價"])
                     chg = float(df_display.at[i, "漲跌幅"])
-                    color_icon = "🔴" if chg > 0 else ("🟢" if chg < 0 else "⚪")
-                    df_display.at[i, "收盤價"] = f"{color_icon} {fmt_price(p)}"
-                    df_display.at[i, "漲跌幅"] = f"{color_icon} {chg:+.2f}%"
+                    df_display.at[i, "收盤價"] = fmt_price(p)
+                    df_display.at[i, "漲跌幅"] = f"{chg:+.2f}%"
                 except:
                     df_display.at[i, "收盤價"] = fmt_price(df_display.at[i, "收盤價"])
-                    df_display.at[i, "漲跌幅"] = f"{float(df_display.at[i, '漲跌幅']):.2f}%"
+                    try: df_display.at[i, "漲跌幅"] = f"{float(df_display.at[i, '漲跌幅']):.2f}%"
+                    except: pass
 
         df_display = df_display.reset_index(drop=True)
         for col in input_cols:
              if col != "移除": df_display[col] = df_display[col].astype(str)
 
+        # 定義上色邏輯
+        def style_tab1_df(row):
+            styles = [''] * len(row)
+            note = str(row.get('戰略備註', ''))
+            name_c = 'color: #ff4b4b;' if "多" in note else ('color: #00e676;' if "空" in note else '')
+            
+            price_c = ''
+            try:
+                c_val = float(str(row.get('漲跌幅', '0')).replace('%', '').replace('+', ''))
+                price_c = 'color: #ff4b4b;' if c_val > 0 else ('color: #00e676;' if c_val < 0 else '')
+            except: pass
+            
+            st_val = str(row.get('狀態', ''))
+            status_c = 'color: #ff4b4b;' if st_val in ["漲停", "強"] else ('color: #00e676;' if st_val in ["跌停", "弱"] else ('color: #ffeb3b;' if st_val == "命中" else ''))
+            
+            for idx, col in enumerate(row.index):
+                if col == "名稱": styles[idx] = name_c
+                elif col in ["收盤價", "漲跌幅"]: styles[idx] = price_c
+                elif col == "狀態": styles[idx] = status_c
+            return styles
+            
+        styled_df = df_display[input_cols].style.apply(style_tab1_df, axis=1)
+
         edited_df = st.data_editor(
-            df_display[input_cols],
+            styled_df,
             column_config={
                 "移除": st.column_config.CheckboxColumn("刪除", width=40, help="勾選後刪除並自動遞補"),
                 "代號": st.column_config.TextColumn(disabled=True, width=50), 
