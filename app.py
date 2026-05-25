@@ -2553,7 +2553,7 @@ with tab3:
         }
         if y in us_holidays:
             for hm, hd in us_holidays[y]:
-                if hm == m: add_evt(hd, "🇺🇸美股休市", "#B0BEC5")
+                if hm == m: add_evt(hd, "美股休市", "#B0BEC5")
         
         return events
         
