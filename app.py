@@ -166,11 +166,16 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+       # 依據不同週期設定期貨的安全天數，確保各種週期都能獲取至少 60 根 K 線，且避免伺服器超載
         if is_future:
-            # Shioaji 期貨底層皆為 1分K，請求天數過長(如日K要求150天)會遭 Server 阻擋回傳空值(且照扣流量)
-            # 強制限制期貨最大一次抓取天數為 30 天，確保資料能成功回傳
-            actual_lookback = min(lookback_days, 30) 
+            if interval in ['1d', '1wk', '1mo']:
+                actual_lookback = min(lookback_days, 90)  # 90天日曆天，足夠涵蓋至少 60 個交易日的日K
+            elif interval == '60m':
+                actual_lookback = min(lookback_days, 15)  # 期貨一天含夜盤約近 20 根 60分K，15天非常充足
+            elif interval == '15m':
+                actual_lookback = min(lookback_days, 7)   # 期貨一天含夜盤約近 75 根 15分K
+            else:
+                actual_lookback = min(lookback_days, 5)   # 1分K與5分K一天有數百根，5天綽綽有餘
         else:
             actual_lookback = lookback_days
             
