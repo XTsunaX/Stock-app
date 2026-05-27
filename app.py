@@ -91,15 +91,13 @@ def get_active_future_contract(api, future_type):
     from datetime import datetime
     import streamlit as st
     try:
-        # 1. 取得分類
         category = getattr(api.Contracts.Futures, future_type, None)
         if not category:
             try: category = api.Contracts.Futures[future_type]
             except: pass
             
         if not category: 
-            # 💡 提示使用者可能需要更新套件
-            st.toast(f"⚠️ Shioaji 找不到 {future_type} 分類，請確認您的 shioaji 套件是否為最新版", icon="⚠️")
+            st.toast(f"⚠️ Shioaji 找不到 {future_type} 分類，請確認套件版本", icon="⚠️")
             return None
             
         tz_tw = pytz.timezone('Asia/Taipei')
@@ -116,7 +114,6 @@ def get_active_future_contract(api, future_type):
             try:
                 sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
                 dm = getattr(contract, 'delivery_month', '')
-                # 優先尋找精確的交割月合約
                 if sym and dm and isinstance(sym, str) and isinstance(dm, str):
                     if sym.startswith(future_type):
                         if len(dm) == 4: dm = "20" + dm # 容錯短交割月
@@ -126,27 +123,22 @@ def get_active_future_contract(api, future_type):
                 continue
         
         if contracts:
-            # 依照交割月份由小到大排序，取最近的當月期貨
             contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
             return contracts[0]
             
-        # 若真的找不到精確月份，最後才嘗試 R1 連續合約
         for contract in contract_list:
             sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
             if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
                 return contract
             
     except Exception as e:
-        st.toast(f"⚠️ 獲取合約失敗 ({future_type}): {e}", icon="⚠️")
-        
+        pass
     return None
 
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
-    import streamlit as st
     import time
     from datetime import datetime, timedelta
     import pytz
-    import pandas as pd
     
     try:
         contract = None
@@ -167,35 +159,27 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
             
-        # 依據不同週期設定期貨的安全天數，確保各種週期都能獲取至少 60 根 K 線，且避免伺服器超載
+        # 依據不同週期設定期貨的安全天數，避免伺服器超載回傳空值
         if is_future:
-            if interval in ['1d', '1wk', '1mo']:
-                actual_lookback = min(lookback_days, 180)  # 💡 放大至 180 天，避開過年長假抓不到資料的問題
-            elif interval == '60m':
-                actual_lookback = min(lookback_days, 30)
-            elif interval == '15m':
-                actual_lookback = min(lookback_days, 15)
-            else:
-                actual_lookback = min(lookback_days, 10)
+            if interval in ['1d', '1wk', '1mo']: actual_lookback = min(lookback_days, 180)
+            elif interval == '60m': actual_lookback = min(lookback_days, 30)
+            elif interval == '15m': actual_lookback = min(lookback_days, 15)
+            else: actual_lookback = min(lookback_days, 10)
         else:
             actual_lookback = lookback_days
 
-        # 2. 依照官方參數格式設定時間與分段抓取機制
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
-        
         kbars_df = pd.DataFrame()
         
-        # 期貨資料量龐大，以 15 天為一個請求單位分段抓取；個股以 60 天為單位
         chunk_days = 15 if is_future else 60
         total_days = actual_lookback
         current_end = now
         
-        # 3. 呼叫官方 api.kbars (分段循環，突破單次抓取上限，保證 K線齊全)
+        # 分段抓取機制
         while total_days > 0:
             fetch_days = min(chunk_days, total_days)
             current_start = current_end - timedelta(days=fetch_days)
-            
             s_str = current_start.strftime("%Y-%m-%d")
             e_str = current_end.strftime("%Y-%m-%d")
             
@@ -204,20 +188,44 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 if kb and hasattr(kb, 'ts') and len(kb.ts) > 0:
                     temp_df = pd.DataFrame({**kb})
                     temp_df['ts'] = pd.to_datetime(temp_df['ts'])
-                    # 過濾掉異常空值
                     temp_df = temp_df.dropna(subset=['Close'])
                     if not temp_df.empty:
                         kbars_df = pd.concat([kbars_df, temp_df])
-            except Exception as e:
+            except Exception:
                 pass
                 
             current_end = current_start - timedelta(days=1)
             total_days -= fetch_days
-            # 💡 延長延遲時間為 0.1秒，防止被 API Server 當作惡意攻擊而直接回傳空值(但照扣流量)
             time.sleep(0.1) 
             
         if kbars_df.empty:
             return pd.DataFrame()
+            
+        df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
+        
+        if df['ts'].dt.tz is not None:
+            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        df.set_index('ts', inplace=True)
+        
+        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
+
+        if interval == '1m': pass
+        elif interval in ['1d', '1wk', '1mo']:
+            if is_future: df.index = df.index + pd.Timedelta(hours=9)
+            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
+            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
+            else: df = df.resample('M').agg(agg_dict).dropna()
+            if is_future: df.index = df.index.normalize()
+        else:
+            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
+            if interval in resample_map:
+                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
+
+        return df
+    except Exception as e:
+        print(f"Shioaji fetch error for {code}: {e}")
+        return pd.DataFrame()
             
         # 4. 去除交界處可能重複的 K棒並轉換成 DataFrame 格式
         kbars_df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
