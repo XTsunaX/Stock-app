@@ -96,17 +96,15 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             try:
                 contract = getattr(api.Contracts.Futures.TXF, 'TXFR1', None)
-                if not contract:
-                    c_list = [c for c in api.Contracts.Futures.TXF if len(c.code) == 5 and c.code[-2:].isdigit()]
-                    if c_list: contract = sorted(c_list, key=lambda x: x.code)[0]
+                fallback_contracts = sorted([c for c in api.Contracts.Futures.TXF if c.code.startswith('TXF') and c.code[-2:].isdigit()], key=lambda x: getattr(x, 'delivery_month', '999999'))
+                if not contract and fallback_contracts: contract = fallback_contracts[0]
             except Exception: pass
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             try:
                 contract = getattr(api.Contracts.Futures.TMF, 'TMFR1', None)
-                if not contract:
-                    c_list = [c for c in api.Contracts.Futures.TMF if len(c.code) == 5 and c.code[-2:].isdigit()]
-                    if c_list: contract = sorted(c_list, key=lambda x: x.code)[0]
+                fallback_contracts = sorted([c for c in api.Contracts.Futures.TMF if c.code.startswith('TMF') and c.code[-2:].isdigit()], key=lambda x: getattr(x, 'delivery_month', '999999'))
+                if not contract and fallback_contracts: contract = fallback_contracts[0]
             except Exception: pass
             is_future = True
         else:
@@ -129,13 +127,16 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
 
         # 3. 呼叫官方 api.kbars 
         kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+        
+        # 4. 新增：若連續月合約抓不到資料(Shioaji偶發異常)，自動切換至近月合約重新抓取
+        if (not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0) and contract and contract.code.endswith('R1'):
+            if 'fallback_contracts' in locals() and fallback_contracts:
+                contract = fallback_contracts[0]
+                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
 
-        # 4. 依照官方文件轉換成 DataFrame 格式
+        # 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
-            
-        df = pd.DataFrame({**kbars})
-        df['ts'] = pd.to_datetime(df['ts'])
 
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
@@ -317,15 +318,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     try:
                         contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TXF, 'TXFR1', None)
                         if not contract_snap:
-                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if len(c.code) == 5 and c.code[-2:].isdigit()]
-                            if c_list: contract_snap = sorted(c_list, key=lambda x: x.code)[0]
+                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if c.code.startswith('TXF') and c.code[-2:].isdigit()]
+                            if c_list: contract_snap = sorted(c_list, key=lambda x: getattr(x, 'delivery_month', '999999'))[0]
                     except: pass
                 elif ticker == "TMF=F":
                     try:
                         contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TMF, 'TMFR1', None)
                         if not contract_snap:
-                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if len(c.code) == 5 and c.code[-2:].isdigit()]
-                            if c_list: contract_snap = sorted(c_list, key=lambda x: x.code)[0]
+                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if c.code.startswith('TMF') and c.code[-2:].isdigit()]
+                            if c_list: contract_snap = sorted(c_list, key=lambda x: getattr(x, 'delivery_month', '999999'))[0]
                     except: pass
                 
                 if contract_snap:
