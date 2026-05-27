@@ -92,17 +92,32 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         is_future = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
+            try:
+                contract = api.Contracts.Indices.TSE.TSE01
+            except Exception:
+                pass
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
             is_future = True
+            try:
+                contract = api.Contracts.Futures.TXF.TXFR1  
+            except Exception:
+                contract = next((c for c in api.Contracts.Futures if getattr(c, "code", "") == "TXFR1"), None)
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
             is_future = True
+            try:
+                contract = api.Contracts.Futures.TMF.TMFR1  
+            except Exception:
+                contract = next((c for c in api.Contracts.Futures if getattr(c, "code", "") == "TMFR1"), None)
+                if not contract:
+                    # 備用：尋找微台指近月合約
+                    tmf_contracts = [c for c in api.Contracts.Futures if getattr(c, "category", "") == "TMF" and getattr(c, "code", "").startswith("TMF")]
+                    if tmf_contracts:
+                        tmf_contracts.sort(key=lambda x: getattr(x, "delivery_date", "999999"))
+                        contract = tmf_contracts[0]
         else:
             try:
                 contract = api.Contracts.Stocks[code]
-            except:
+            except Exception:
                 pass
 
         if not contract:
@@ -302,14 +317,30 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             try:
                 contract_snap = None
                 if ticker.startswith("^TWII"):
-                    contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
+                    try:
+                        contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
+                    except Exception:
+                        pass
                 elif ticker == "TWF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                    try:
+                        contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                    except Exception:
+                        contract_snap = next((c for c in st.session_state.sj_api.Contracts.Futures if getattr(c, "code", "") == "TXFR1"), None)
                 elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                    try:
+                        contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                    except Exception:
+                        contract_snap = next((c for c in st.session_state.sj_api.Contracts.Futures if getattr(c, "code", "") == "TMFR1"), None)
+                        if not contract_snap:
+                            tmf_contracts = [c for c in st.session_state.sj_api.Contracts.Futures if getattr(c, "category", "") == "TMF" and getattr(c, "code", "").startswith("TMF")]
+                            if tmf_contracts:
+                                tmf_contracts.sort(key=lambda x: getattr(x, "delivery_date", "999999"))
+                                contract_snap = tmf_contracts[0]
                 else:
-                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
-                    except: pass
+                    try:
+                        contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except Exception:
+                        pass
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
