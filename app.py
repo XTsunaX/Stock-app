@@ -85,43 +85,27 @@ def is_warrant(code):
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
-def get_sj_future_candidates(api, prefix):
-    cands = []
-    try:
-        cat = getattr(api.Contracts.Futures, prefix, None)
-        if cat: cands.extend([c for c in cat if c.code.startswith(prefix)])
-    except: pass
-    if not cands:
-        try:
-            for cat in api.Contracts.Futures:
-                cands.extend([c for c in cat if c.code.startswith(prefix)])
-        except: pass
-    valid_cands = [c for c in cands if c.code == f"{prefix}R1" or (len(c.code) == 5 and c.code[-2:].isdigit())]
-    def sort_key(c): return "000000" if c.code.endswith('R1') else str(getattr(c, 'delivery_month', '999999'))
-    return sorted(list({c.code: c for c in valid_cands}.values()), key=sort_key)
-
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # 1. 依照官方文件取得連續期貨合約物件
         contract = None
         is_future = False
-        candidate_contracts = []
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = getattr(api.Contracts.Indices.TSE, 'TSE01', None)
+            contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+            contract = api.Contracts.Futures.TXF.TXFR1  
             is_future = True
-            candidate_contracts = get_sj_future_candidates(api, 'TXF')
-            if candidate_contracts: contract = candidate_contracts[0]
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+            contract = api.Contracts.Futures.TMF.TMFR1  
             is_future = True
-            candidate_contracts = get_sj_future_candidates(api, 'TMF')
-            if candidate_contracts: contract = candidate_contracts[0]
         else:
-            try: contract = api.Contracts.Stocks[code]
-            except: pass
+            try:
+                contract = api.Contracts.Stocks[code]
+            except:
+                pass
 
-        if not contract and not candidate_contracts:
+        if not contract:
             return pd.DataFrame()
 
         # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
@@ -133,26 +117,16 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-      # 3. 呼叫官方 api.kbars 
-        kbars = None
-        if is_future and candidate_contracts:
-            for cand_c in candidate_contracts:
-                try:
-                    temp_kbars = api.kbars(contract=cand_c, start=start_date, end=end_date)
-                    if temp_kbars and hasattr(temp_kbars, 'ts') and len(temp_kbars.ts) > 0:
-                        kbars = temp_kbars
-                        contract = cand_c  # 更新為實際抓到資料的合約
-                        break
-                except Exception:
-                    continue
-        else:
-            try: kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-            except: pass
+        # 3. 呼叫官方 api.kbars 
+        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
             
+        df = pd.DataFrame({**kbars})
+        df['ts'] = pd.to_datetime(df['ts'])
+
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -328,13 +302,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             try:
                 contract_snap = None
                 if ticker.startswith("^TWII"):
-                    contract_snap = getattr(st.session_state.sj_api.Contracts.Indices.TSE, 'TSE01', None)
+                    contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    cands = get_sj_future_candidates(st.session_state.sj_api, 'TXF')
-                    if cands: contract_snap = cands[0]
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    cands = get_sj_future_candidates(st.session_state.sj_api, 'TMF')
-                    if cands: contract_snap = cands[0]
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                else:
+                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except: pass
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
