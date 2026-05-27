@@ -90,30 +90,39 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 1. 依照官方文件取得連續期貨合約物件
         contract = None
         is_future = False
+        candidate_contracts = []
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
+            contract = getattr(api.Contracts.Indices.TSE, 'TSE01', None)
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            try:
-                contract = getattr(api.Contracts.Futures.TXF, 'TXFR1', None)
-                fallback_contracts = sorted([c for c in api.Contracts.Futures.TXF if c.code.startswith('TXF') and c.code[-2:].isdigit()], key=lambda x: getattr(x, 'delivery_month', '999999'))
-                if not contract and fallback_contracts: contract = fallback_contracts[0]
-            except Exception: pass
             is_future = True
+            try:
+                txf_cat = getattr(api.Contracts.Futures, 'TXF', None)
+                if txf_cat:
+                    candidate_contracts.append(getattr(txf_cat, 'TXFR1', None))
+                    c_list = [c for c in txf_cat if c.code.startswith('TXF') and c.code[-2:].isdigit()]
+                    c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
+                    candidate_contracts.extend(c_list)
+                candidate_contracts = [c for c in candidate_contracts if c is not None]
+                if candidate_contracts: contract = candidate_contracts[0]
+            except Exception: pass
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            try:
-                contract = getattr(api.Contracts.Futures.TMF, 'TMFR1', None)
-                fallback_contracts = sorted([c for c in api.Contracts.Futures.TMF if c.code.startswith('TMF') and c.code[-2:].isdigit()], key=lambda x: getattr(x, 'delivery_month', '999999'))
-                if not contract and fallback_contracts: contract = fallback_contracts[0]
-            except Exception: pass
             is_future = True
-        else:
             try:
-                contract = api.Contracts.Stocks[code]
-            except:
-                pass
+                tmf_cat = getattr(api.Contracts.Futures, 'TMF', None)
+                if tmf_cat:
+                    candidate_contracts.append(getattr(tmf_cat, 'TMFR1', None))
+                    c_list = [c for c in tmf_cat if c.code.startswith('TMF') and c.code[-2:].isdigit()]
+                    c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
+                    candidate_contracts.extend(c_list)
+                candidate_contracts = [c for c in candidate_contracts if c is not None]
+                if candidate_contracts: contract = candidate_contracts[0]
+            except Exception: pass
+        else:
+            try: contract = api.Contracts.Stocks[code]
+            except: pass
 
-        if not contract:
+        if not contract and not candidate_contracts:
             return pd.DataFrame()
 
         # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
@@ -125,19 +134,21 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars 
-        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-        
-        # 4. 新增：若連續月合約抓不到資料(Shioaji偶發異常)，自動切換至近月合約重新抓取
-        if (not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0) and contract and contract.code.endswith('R1'):
-            if 'fallback_contracts' in locals() and fallback_contracts:
-                contract = fallback_contracts[0]
-                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+       # 3. 呼叫官方 api.kbars 
+        kbars = None
+        if is_future and candidate_contracts:
+            # 依序嘗試合約，直到確實回傳有資料為止 (防範連續月無資料或異常)
+            for cand_c in candidate_contracts:
+                kbars = api.kbars(contract=cand_c, start=start_date, end=end_date)
+                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                    break
+        else:
+            kbars = api.kbars(contract=contract, start=start_date, end=end_date)
 
-        # 依照官方文件轉換成 DataFrame 格式
+        # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
-
+            
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -313,21 +324,26 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             try:
                 contract_snap = None
                 if ticker.startswith("^TWII"):
-                    contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
+                    contract_snap = getattr(st.session_state.sj_api.Contracts.Indices.TSE, 'TSE01', None)
                 elif ticker == "TWF=F":
                     try:
-                        contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TXF, 'TXFR1', None)
-                        if not contract_snap:
-                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if c.code.startswith('TXF') and c.code[-2:].isdigit()]
-                            if c_list: contract_snap = sorted(c_list, key=lambda x: getattr(x, 'delivery_month', '999999'))[0]
+                        txf_cat = getattr(st.session_state.sj_api.Contracts.Futures, 'TXF', None)
+                        if txf_cat:
+                            c_list = [c for c in txf_cat if c.code.startswith('TXF') and c.code[-2:].isdigit()]
+                            c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
+                            contract_snap = getattr(txf_cat, 'TXFR1', None)
+                            if not contract_snap and c_list: contract_snap = c_list[0]
                     except: pass
                 elif ticker == "TMF=F":
                     try:
-                        contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TMF, 'TMFR1', None)
-                        if not contract_snap:
-                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if c.code.startswith('TMF') and c.code[-2:].isdigit()]
-                            if c_list: contract_snap = sorted(c_list, key=lambda x: getattr(x, 'delivery_month', '999999'))[0]
+                        tmf_cat = getattr(st.session_state.sj_api.Contracts.Futures, 'TMF', None)
+                        if tmf_cat:
+                            c_list = [c for c in tmf_cat if c.code.startswith('TMF') and c.code[-2:].isdigit()]
+                            c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
+                            contract_snap = getattr(tmf_cat, 'TMFR1', None)
+                            if not contract_snap and c_list: contract_snap = c_list[0]
                     except: pass
+                else:
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
