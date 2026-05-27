@@ -86,54 +86,176 @@ def is_warrant(code):
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
 def get_active_future_contract(api, future_type):
-    """獲取期貨合約：暴力走訪所有期貨商品，尋找符合代號的當月合約，確保微台(TMF)絕對能抓到"""
+    """獲取期貨合約：優先獲取精確的當月合約(歷史K線最完整)，若無則退回連續合約"""
+    import pytz
+    from datetime import datetime
+    import streamlit as st
     try:
+        # 1. 取得分類
+        category = getattr(api.Contracts.Futures, future_type, None)
+        if not category:
+            try: category = api.Contracts.Futures[future_type]
+            except: pass
+            
+        if not category: 
+            # 💡 提示使用者可能需要更新套件
+            st.toast(f"⚠️ Shioaji 找不到 {future_type} 分類，請確認您的 shioaji 套件是否為最新版", icon="⚠️")
+            return None
+            
         tz_tw = pytz.timezone('Asia/Taipei')
         current_month = datetime.now(tz_tw).strftime("%Y%m")
         
         contracts = []
-        
-        # 暴力走訪所有期貨分類，無視底層屬性結構差異
-        for cat in api.Contracts.Futures:
-            cat_list = []
-            try: cat_list = list(cat)
+        contract_list = []
+        try: contract_list = list(category)
+        except:
+            if hasattr(category, '__dict__'):
+                contract_list = list(category.__dict__.values())
+                
+        for contract in contract_list:
+            try:
+                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
+                dm = getattr(contract, 'delivery_month', '')
+                # 優先尋找精確的交割月合約
+                if sym and dm and isinstance(sym, str) and isinstance(dm, str):
+                    if sym.startswith(future_type):
+                        if len(dm) == 4: dm = "20" + dm # 容錯短交割月
+                        if dm >= current_month:
+                            contracts.append(contract)
             except:
-                if hasattr(cat, '__dict__'): cat_list = list(cat.__dict__.values())
-            
-            for contract in cat_list:
-                try:
-                    sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-                    dm = getattr(contract, 'delivery_month', '')
-                    
-                    if sym and dm and isinstance(sym, str) and isinstance(dm, str):
-                        if sym.startswith(future_type):
-                            # 處理可能只有 4 碼的交割月 (如 2606 轉為 202606)
-                            if len(dm) == 4: dm = "20" + dm
-                            if dm >= current_month:
-                                contracts.append(contract)
-                except:
-                    continue
-                    
+                continue
+        
         if contracts:
             # 依照交割月份由小到大排序，取最近的當月期貨
             contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
             return contracts[0]
             
-        # 備用方案：尋找 R1 連續合約
-        for cat in api.Contracts.Futures:
-            cat_list = []
-            try: cat_list = list(cat)
-            except:
-                if hasattr(cat, '__dict__'): cat_list = list(cat.__dict__.values())
-            for contract in cat_list:
-                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-                if sym == f"{future_type}R1" or sym == f"{future_type}R":
-                    return contract
-                    
+        # 若真的找不到精確月份，最後才嘗試 R1 連續合約
+        for contract in contract_list:
+            sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
+            if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
+                return contract
+            
     except Exception as e:
-        print(f"獲取合約失敗 ({future_type}): {e}")
+        st.toast(f"⚠️ 獲取合約失敗 ({future_type}): {e}", icon="⚠️")
         
     return None
+
+def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
+    import streamlit as st
+    import time
+    from datetime import datetime, timedelta
+    import pytz
+    import pandas as pd
+    
+    try:
+        contract = None
+        is_future = False
+        
+        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
+            contract = api.Contracts.Indices.TSE.TSE01
+        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+            contract = get_active_future_contract(api, "TXF")
+            is_future = True
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+            contract = get_active_future_contract(api, "TMF")
+            is_future = True
+        else:
+            try: contract = api.Contracts.Stocks[code]
+            except: pass
+
+        if not contract:
+            return pd.DataFrame()
+            
+        # 依據不同週期設定期貨的安全天數，確保各種週期都能獲取至少 60 根 K 線，且避免伺服器超載
+        if is_future:
+            if interval in ['1d', '1wk', '1mo']:
+                actual_lookback = min(lookback_days, 180)  # 💡 放大至 180 天，避開過年長假抓不到資料的問題
+            elif interval == '60m':
+                actual_lookback = min(lookback_days, 30)
+            elif interval == '15m':
+                actual_lookback = min(lookback_days, 15)
+            else:
+                actual_lookback = min(lookback_days, 10)
+        else:
+            actual_lookback = lookback_days
+
+        # 2. 依照官方參數格式設定時間與分段抓取機制
+        tz_tw = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz_tw)
+        
+        kbars_df = pd.DataFrame()
+        
+        # 期貨資料量龐大，以 15 天為一個請求單位分段抓取；個股以 60 天為單位
+        chunk_days = 15 if is_future else 60
+        total_days = actual_lookback
+        current_end = now
+        
+        # 3. 呼叫官方 api.kbars (分段循環，突破單次抓取上限，保證 K線齊全)
+        while total_days > 0:
+            fetch_days = min(chunk_days, total_days)
+            current_start = current_end - timedelta(days=fetch_days)
+            
+            s_str = current_start.strftime("%Y-%m-%d")
+            e_str = current_end.strftime("%Y-%m-%d")
+            
+            try:
+                kb = api.kbars(contract=contract, start=s_str, end=e_str)
+                if kb and hasattr(kb, 'ts') and len(kb.ts) > 0:
+                    temp_df = pd.DataFrame({**kb})
+                    temp_df['ts'] = pd.to_datetime(temp_df['ts'])
+                    # 過濾掉異常空值
+                    temp_df = temp_df.dropna(subset=['Close'])
+                    if not temp_df.empty:
+                        kbars_df = pd.concat([kbars_df, temp_df])
+            except Exception as e:
+                pass
+                
+            current_end = current_start - timedelta(days=1)
+            total_days -= fetch_days
+            # 💡 延長延遲時間為 0.1秒，防止被 API Server 當作惡意攻擊而直接回傳空值(但照扣流量)
+            time.sleep(0.1) 
+            
+        if kbars_df.empty:
+            return pd.DataFrame()
+            
+        # 4. 去除交界處可能重複的 K棒並轉換成 DataFrame 格式
+        kbars_df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
+        df = kbars_df
+        
+        # 將時間設為 Index 並確保移除時區資訊以利畫圖
+        if df['ts'].dt.tz is not None:
+            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        
+        df.set_index('ts', inplace=True)
+        
+        # 確保擁有官方的開高低收量欄位
+        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
+
+        # 5. K棒週期重取樣
+        if interval == '1m':
+            pass
+        elif interval in ['1d', '1wk', '1mo']:
+            if is_future:
+                # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
+                df.index = df.index + pd.Timedelta(hours=9)
+                
+            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
+            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
+            else: df = df.resample('M').agg(agg_dict).dropna()
+            
+            if is_future:
+                df.index = df.index.normalize()
+        else:
+            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
+            if interval in resample_map:
+                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
+
+        return df
+    except Exception as e:
+        print(f"Shioaji fetch error for {code}: {e}")
+        return pd.DataFrame()
 
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
