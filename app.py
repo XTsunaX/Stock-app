@@ -112,7 +112,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         contract = None
         is_future = False
         
-       if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
+        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             contract = get_active_future_contract(api, "TXF")
