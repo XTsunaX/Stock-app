@@ -85,8 +85,8 @@ def is_warrant(code):
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
-def get_active_future_contract(api, future_type):
-    """獲取期貨合約：優先獲取精確的當月合約(歷史K線最完整)，若無則退回連續合約"""
+def get_active_future_contract(api, future_type, prefer_continuous=True):
+    """獲取期貨合約：歷史K線優先使用連續合約(R1)，快照則取當月合約"""
     import pytz
     from datetime import datetime
     import streamlit as st
@@ -100,16 +100,23 @@ def get_active_future_contract(api, future_type):
             st.toast(f"⚠️ Shioaji 找不到 {future_type} 分類，請確認套件版本", icon="⚠️")
             return None
             
-        tz_tw = pytz.timezone('Asia/Taipei')
-        current_month = datetime.now(tz_tw).strftime("%Y%m")
-        
-        contracts = []
         contract_list = []
         try: contract_list = list(category)
         except:
             if hasattr(category, '__dict__'):
                 contract_list = list(category.__dict__.values())
                 
+        # 若需要連續歷史資料，優先尋找 R1 連續合約
+        if prefer_continuous:
+            for contract in contract_list:
+                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
+                if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
+                    return contract
+                    
+        tz_tw = pytz.timezone('Asia/Taipei')
+        current_month = datetime.now(tz_tw).strftime("%Y%m")
+        
+        contracts = []
         for contract in contract_list:
             try:
                 sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
@@ -126,11 +133,13 @@ def get_active_future_contract(api, future_type):
             contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
             return contracts[0]
             
-        for contract in contract_list:
-            sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-            if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
-                return contract
-            
+        # 退回尋找連續合約 (防呆)
+        if not prefer_continuous:
+            for contract in contract_list:
+                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
+                if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
+                    return contract
+                    
     except Exception as e:
         pass
     return None
@@ -531,9 +540,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TXF")
+                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TXF", prefer_continuous=False)
                 elif ticker == "TMF=F":
-                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TMF")
+                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TMF", prefer_continuous=False)
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
