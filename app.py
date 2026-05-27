@@ -308,8 +308,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     st.warning(f"⚠️ {display_name} 需要登入永豐 Shioaji API 才能抓取期貨(日/夜盤)資料。")
                     return
 
-                import time
-                for attempt in range(3):
+        for attempt in range(3):
                 try:
                     stock_data = yf.Ticker(ticker)
                     df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
