@@ -86,9 +86,10 @@ def is_warrant(code):
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
 def get_active_future_contract(api, future_type):
-    """獲取期貨合約：優先使用近月連續合約(R1)，若無則自動搜尋當月合約"""
+    """獲取期貨合約：優先獲取精確的當月合約(歷史K線最完整)，若無則退回連續合約"""
+    import pytz
+    from datetime import datetime
     try:
-        # 1. 嘗試獲取該期貨對應的類別
         category = None
         try: category = getattr(api.Contracts.Futures, future_type)
         except: pass
@@ -99,31 +100,21 @@ def get_active_future_contract(api, future_type):
         if not category: 
             return None
             
-        # 2. 優先嘗試獲取連續合約 R1 (例如 TMFR1)
-        r1_name = f"{future_type}R1"
-        try:
-            if hasattr(category, r1_name): 
-                return getattr(category, r1_name)
-        except: pass
-            
-        # 3. 若無連續合約，自動搜尋當月合約
         tz_tw = pytz.timezone('Asia/Taipei')
         current_month = datetime.now(tz_tw).strftime("%Y%m")
         
         contracts = []
         contract_list = []
-        # 安全走訪合約清單
         try: contract_list = list(category)
         except:
             if hasattr(category, '__dict__'):
-                contract_list = category.__dict__.values()
+                contract_list = list(category.__dict__.values())
                 
         for contract in contract_list:
             try:
                 sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
                 dm = getattr(contract, 'delivery_month', '')
-                
-                # 移除長度限制，只要代碼相符且交割月 >= 本月即可
+                # 優先尋找精確的交割月合約 (例如 TMF202606)
                 if sym and dm and isinstance(sym, str) and isinstance(dm, str):
                     if sym.startswith(future_type) and len(dm) >= 6 and dm >= current_month:
                         contracts.append(contract)
@@ -134,6 +125,13 @@ def get_active_future_contract(api, future_type):
             # 依照交割月份由小到大排序，取最近的當月期貨
             contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
             return contracts[0]
+            
+        # 若真的找不到精確月份，最後才嘗試 R1 連續合約
+        r1_name = f"{future_type}R1"
+        try:
+            if hasattr(category, r1_name): 
+                return getattr(category, r1_name)
+        except: pass
             
     except Exception as e:
         print(f"獲取合約失敗 ({future_type}): {e}")
@@ -169,7 +167,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         end_date = now.strftime("%Y-%m-%d")
         
         # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
-        actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
+        if is_future:
+            # Shioaji 期貨底層皆為 1分K，請求天數過長(如日K要求150天)會遭 Server 阻擋回傳空值(且照扣流量)
+            # 強制限制期貨最大一次抓取天數為 30 天，確保資料能成功回傳
+            actual_lookback = min(lookback_days, 30) 
+        else:
+            actual_lookback = lookback_days
+            
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
         # 3. 呼叫官方 api.kbars 
