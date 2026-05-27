@@ -139,6 +139,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     import time
     from datetime import datetime, timedelta
     import pytz
+    import pandas as pd
     
     try:
         contract = None
@@ -200,6 +201,32 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
         if kbars_df.empty:
             return pd.DataFrame()
+            
+        df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
+        
+        if df['ts'].dt.tz is not None:
+            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+        df.set_index('ts', inplace=True)
+        
+        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
+
+        if interval == '1m': pass
+        elif interval in ['1d', '1wk', '1mo']:
+            if is_future: df.index = df.index + pd.Timedelta(hours=9)
+            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
+            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
+            else: df = df.resample('M').agg(agg_dict).dropna()
+            if is_future: df.index = df.index.normalize()
+        else:
+            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
+            if interval in resample_map:
+                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
+
+        return df
+    except Exception as e:
+        print(f"Shioaji fetch error for {code}: {e}")
+        return pd.DataFrame()
             
         df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
         
