@@ -87,41 +87,56 @@ def is_warrant(code):
 # ==========================================
 def get_active_future_contract(api, future_type):
     """獲取期貨合約：優先使用近月連續合約(R1)，若無則自動搜尋當月合約"""
-    import datetime
-    import pytz
-    
     try:
-        # 1. 取得該期貨對應的類別 (例如 api.Contracts.Futures.TMF)
-        category = getattr(api.Contracts.Futures, future_type, None)
-        if category is None:
+        # 1. 嘗試獲取該期貨對應的類別
+        category = None
+        try: category = getattr(api.Contracts.Futures, future_type)
+        except: pass
+        if not category:
+            try: category = api.Contracts.Futures[future_type]
+            except: pass
+            
+        if not category: 
             return None
             
         # 2. 優先嘗試獲取連續合約 R1 (例如 TMFR1)
         r1_name = f"{future_type}R1"
-        if hasattr(category, r1_name):
-            return getattr(category, r1_name)
+        try:
+            if hasattr(category, r1_name): 
+                return getattr(category, r1_name)
+        except: pass
             
-        # 3. 若無連續合約，自動搜尋當月合約 (例如 TMF202606)
-        contracts = []
+        # 3. 若無連續合約，自動搜尋當月合約
         tz_tw = pytz.timezone('Asia/Taipei')
-        current_month = datetime.datetime.now(tz_tw).strftime("%Y%m")
+        current_month = datetime.now(tz_tw).strftime("%Y%m")
         
+        contracts = []
+        contract_list = []
         # 安全走訪合約清單
-        for contract in category:
-            if hasattr(contract, 'symbol') and hasattr(contract, 'delivery_month'):
-                # 確認代碼長度為 9 (例如 TMF202606) 且是以 future_type 開頭
-                if len(contract.symbol) == 9 and contract.symbol.startswith(future_type):
-                    # 確認合約尚未過期 (交割月 >= 本月份)
-                    if contract.delivery_month >= current_month:
+        try: contract_list = list(category)
+        except:
+            if hasattr(category, '__dict__'):
+                contract_list = category.__dict__.values()
+                
+        for contract in contract_list:
+            try:
+                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
+                dm = getattr(contract, 'delivery_month', '')
+                
+                # 移除長度限制，只要代碼相符且交割月 >= 本月即可
+                if sym and dm and isinstance(sym, str) and isinstance(dm, str):
+                    if sym.startswith(future_type) and len(dm) >= 6 and dm >= current_month:
                         contracts.append(contract)
+            except:
+                continue
         
         if contracts:
             # 依照交割月份由小到大排序，取最近的當月期貨
-            contracts.sort(key=lambda c: c.delivery_month)
+            contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
             return contracts[0]
+            
     except Exception as e:
         print(f"獲取合約失敗 ({future_type}): {e}")
-        pass
         
     return None
 
