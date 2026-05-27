@@ -85,222 +85,6 @@ def is_warrant(code):
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
-def get_active_future_contract(api, future_type, prefer_continuous=True):
-    """獲取期貨合約：歷史K線優先使用連續合約(R1)，快照則取當月合約"""
-    import pytz
-    from datetime import datetime
-    import streamlit as st
-    try:
-        category = getattr(api.Contracts.Futures, future_type, None)
-        if not category:
-            try: category = api.Contracts.Futures[future_type]
-            except: pass
-            
-        if not category: 
-            st.toast(f"⚠️ Shioaji 找不到 {future_type} 分類，請確認套件版本", icon="⚠️")
-            return None
-            
-        contract_list = []
-        try: contract_list = list(category)
-        except:
-            if hasattr(category, '__dict__'):
-                contract_list = list(category.__dict__.values())
-                
-        # 若需要連續歷史資料，優先尋找 R1 連續合約
-        if prefer_continuous:
-            for contract in contract_list:
-                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-                if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
-                    return contract
-                    
-        tz_tw = pytz.timezone('Asia/Taipei')
-        current_month = datetime.now(tz_tw).strftime("%Y%m")
-        
-        contracts = []
-        for contract in contract_list:
-            try:
-                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-                dm = getattr(contract, 'delivery_month', '')
-                if sym and dm and isinstance(sym, str) and isinstance(dm, str):
-                    if sym.startswith(future_type):
-                        if len(dm) == 4: dm = "20" + dm # 容錯短交割月
-                        if dm >= current_month:
-                            contracts.append(contract)
-            except:
-                continue
-        
-        if contracts:
-            contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
-            return contracts[0]
-            
-        # 退回尋找連續合約 (防呆)
-        if not prefer_continuous:
-            for contract in contract_list:
-                sym = getattr(contract, 'symbol', getattr(contract, 'code', ''))
-                if sym in [f"{future_type}R1", f"{future_type}R", f"{future_type}M"]:
-                    return contract
-                    
-    except Exception as e:
-        pass
-    return None
-
-def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
-    import time
-    from datetime import datetime, timedelta
-    import pytz
-    import pandas as pd
-    
-    try:
-        contract = None
-        is_future = False
-        
-        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
-        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = get_active_future_contract(api, "TXF")
-            is_future = True
-        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = get_active_future_contract(api, "TMF")
-            is_future = True
-        else:
-            try: contract = api.Contracts.Stocks[code]
-            except: pass
-
-        if not contract:
-            return pd.DataFrame()
-            
-        # 依據不同週期設定期貨的安全天數，避免伺服器超載回傳空值
-        if is_future:
-            if interval in ['1d', '1wk', '1mo']: actual_lookback = min(lookback_days, 180)
-            elif interval == '60m': actual_lookback = min(lookback_days, 30)
-            elif interval == '15m': actual_lookback = min(lookback_days, 15)
-            else: actual_lookback = min(lookback_days, 10)
-        else:
-            actual_lookback = lookback_days
-
-        tz_tw = pytz.timezone('Asia/Taipei')
-        now = datetime.now(tz_tw)
-        kbars_df = pd.DataFrame()
-        
-        chunk_days = 15 if is_future else 60
-        total_days = actual_lookback
-        current_end = now
-        
-        # 分段抓取機制
-        while total_days > 0:
-            fetch_days = min(chunk_days, total_days)
-            current_start = current_end - timedelta(days=fetch_days)
-            s_str = current_start.strftime("%Y-%m-%d")
-            e_str = current_end.strftime("%Y-%m-%d")
-            
-            try:
-                kb = api.kbars(contract=contract, start=s_str, end=e_str)
-                if kb and hasattr(kb, 'ts') and len(kb.ts) > 0:
-                    temp_df = pd.DataFrame({**kb})
-                    temp_df['ts'] = pd.to_datetime(temp_df['ts'])
-                    temp_df = temp_df.dropna(subset=['Close'])
-                    if not temp_df.empty:
-                        kbars_df = pd.concat([kbars_df, temp_df])
-            except Exception:
-                pass
-                
-            current_end = current_start - timedelta(days=1)
-            total_days -= fetch_days
-            time.sleep(0.1) 
-            
-        if kbars_df.empty:
-            return pd.DataFrame()
-            
-        df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
-        
-        if df['ts'].dt.tz is not None:
-            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        df.set_index('ts', inplace=True)
-        
-        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-
-        if interval == '1m': pass
-        elif interval in ['1d', '1wk', '1mo']:
-            if is_future: df.index = df.index + pd.Timedelta(hours=9)
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            if is_future: df.index = df.index.normalize()
-        else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
-            if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
-
-        return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
-            
-        df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
-        
-        if df['ts'].dt.tz is not None:
-            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        df.set_index('ts', inplace=True)
-        
-        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-
-        if interval == '1m': pass
-        elif interval in ['1d', '1wk', '1mo']:
-            if is_future: df.index = df.index + pd.Timedelta(hours=9)
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            if is_future: df.index = df.index.normalize()
-        else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
-            if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
-
-        return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
-            
-        # 4. 去除交界處可能重複的 K棒並轉換成 DataFrame 格式
-        kbars_df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
-        df = kbars_df
-        
-        # 將時間設為 Index 並確保移除時區資訊以利畫圖
-        if df['ts'].dt.tz is not None:
-            df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        
-        df.set_index('ts', inplace=True)
-        
-        # 確保擁有官方的開高低收量欄位
-        agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-        agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
-
-        # 5. K棒週期重取樣
-        if interval == '1m':
-            pass
-        elif interval in ['1d', '1wk', '1mo']:
-            if is_future:
-                # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
-                df.index = df.index + pd.Timedelta(hours=9)
-                
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            
-            if is_future:
-                df.index = df.index.normalize()
-        else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
-            if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
-
-        return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
-
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # 1. 依照官方文件取得連續期貨合約物件
@@ -310,10 +94,10 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = get_active_future_contract(api, "TXF")
+            contract = api.Contracts.Futures.TXF.TXFR1  
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = get_active_future_contract(api, "TMF")
+            contract = api.Contracts.Futures.TMF.TMFR1  
             is_future = True
         else:
             try:
@@ -324,45 +108,25 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
 
-        # 2. 依照官方參數格式設定時間與分段抓取機制
+        # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
+        end_date = now.strftime("%Y-%m-%d")
         
-        kbars_df = pd.DataFrame()
-        
-        # 期貨資料量龐大，以 15 天為一個請求單位分段抓取；個股以 60 天為單位
-        chunk_days = 15 if is_future else 60
-        total_days = lookback_days
-        current_end = now
-        
-        # 3. 呼叫官方 api.kbars (分段循環，突破單次抓取上限，保證 60 根以上的 K線齊全)
-        while total_days > 0:
-            fetch_days = min(chunk_days, total_days)
-            current_start = current_end - timedelta(days=fetch_days)
-            
-            s_str = current_start.strftime("%Y-%m-%d")
-            e_str = current_end.strftime("%Y-%m-%d")
-            
-            try:
-                kb = api.kbars(contract=contract, start=s_str, end=e_str)
-                if kb and hasattr(kb, 'ts') and len(kb.ts) > 0:
-                    temp_df = pd.DataFrame({**kb})
-                    temp_df['ts'] = pd.to_datetime(temp_df['ts'])
-                    kbars_df = pd.concat([kbars_df, temp_df])
-            except:
-                pass
-                
-            current_end = current_start - timedelta(days=1) # 推進至前一個區段
-            total_days -= fetch_days
-            time.sleep(0.05) # 微幅延遲避免觸發 API 頻率限制
-            
-        if kbars_df.empty:
+        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+        actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
+        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
+
+        # 3. 呼叫官方 api.kbars 
+        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+
+        # 4. 依照官方文件轉換成 DataFrame 格式
+        if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
             
-        # 4. 去除交界處可能重複的 K棒並轉換成 DataFrame 格式
-        kbars_df = kbars_df.drop_duplicates(subset=['ts']).sort_values('ts').reset_index(drop=True)
-        df = kbars_df
-        
+        df = pd.DataFrame({**kbars})
+        df['ts'] = pd.to_datetime(df['ts'])
+
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -540,9 +304,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TXF", prefer_continuous=False)
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TMF", prefer_continuous=False)
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
