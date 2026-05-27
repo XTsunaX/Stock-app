@@ -304,12 +304,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
         if not sj_kbars_used:
-        if is_future_symbol:
-            st.warning(f"⚠️ {display_name} 需要登入永豐 Shioaji API 才能抓取期貨(日/夜盤)資料。")
-            return
+                if is_future_symbol:
+                    st.warning(f"⚠️ {display_name} 需要登入永豐 Shioaji API 才能抓取期貨(日/夜盤)資料。")
+                    return
 
-        import time
-        for attempt in range(3):
+                import time
+                for attempt in range(3):
                 try:
                     stock_data = yf.Ticker(ticker)
                     df = stock_data.history(interval=interval, period=period_map.get(interval, "max"))
