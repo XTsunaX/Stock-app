@@ -335,7 +335,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 elif ticker == "TMF=F":
                     cands = get_sj_future_candidates(st.session_state.sj_api, 'TMF')
                     if cands: contract_snap = cands[0]
-                else:
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
