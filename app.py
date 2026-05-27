@@ -94,10 +94,20 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
+            try:
+                contract = getattr(api.Contracts.Futures.TXF, 'TXFR1', None)
+                if not contract:
+                    c_list = [c for c in api.Contracts.Futures.TXF if len(c.code) == 5 and c.code[-2:].isdigit()]
+                    if c_list: contract = sorted(c_list, key=lambda x: x.code)[0]
+            except Exception: pass
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
+            try:
+                contract = getattr(api.Contracts.Futures.TMF, 'TMFR1', None)
+                if not contract:
+                    c_list = [c for c in api.Contracts.Futures.TMF if len(c.code) == 5 and c.code[-2:].isdigit()]
+                    if c_list: contract = sorted(c_list, key=lambda x: x.code)[0]
+            except Exception: pass
             is_future = True
         else:
             try:
@@ -304,11 +314,18 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                    try:
+                        contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TXF, 'TXFR1', None)
+                        if not contract_snap:
+                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TXF if len(c.code) == 5 and c.code[-2:].isdigit()]
+                            if c_list: contract_snap = sorted(c_list, key=lambda x: x.code)[0]
+                    except: pass
                 elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
-                else:
-                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    try:
+                        contract_snap = getattr(st.session_state.sj_api.Contracts.Futures.TMF, 'TMFR1', None)
+                        if not contract_snap:
+                            c_list = [c for c in st.session_state.sj_api.Contracts.Futures.TMF if len(c.code) == 5 and c.code[-2:].isdigit()]
+                            if c_list: contract_snap = sorted(c_list, key=lambda x: x.code)[0]
                     except: pass
                 
                 if contract_snap:
