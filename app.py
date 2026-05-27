@@ -87,23 +87,42 @@ def is_warrant(code):
 # ==========================================
 def get_active_future_contract(api, future_type):
     """獲取期貨合約：優先使用近月連續合約(R1)，若無則自動搜尋當月合約"""
+    import datetime
+    import pytz
+    
     try:
-        if future_type == "TXF":
-            if hasattr(api.Contracts.Futures.TXF, 'TXFR1'): return api.Contracts.Futures.TXF.TXFR1
-        elif future_type == "TMF":
-            if hasattr(api.Contracts.Futures.TMF, 'TMFR1'): return api.Contracts.Futures.TMF.TMFR1
-    except: pass
-
-    try:
-        # 若R1失敗，直接從類別中抓取當月合約
-        category = api.Contracts.Futures.TXF if future_type == "TXF" else api.Contracts.Futures.TMF
-        # 過濾出標準單月合約 (長度9，如 TXF202606)
-        contracts = [c for c in category if len(c.symbol) == 9 and c.symbol.startswith(future_type)]
+        # 1. 取得該期貨對應的類別 (例如 api.Contracts.Futures.TMF)
+        category = getattr(api.Contracts.Futures, future_type, None)
+        if category is None:
+            return None
+            
+        # 2. 優先嘗試獲取連續合約 R1 (例如 TMFR1)
+        r1_name = f"{future_type}R1"
+        if hasattr(category, r1_name):
+            return getattr(category, r1_name)
+            
+        # 3. 若無連續合約，自動搜尋當月合約 (例如 TMF202606)
+        contracts = []
+        tz_tw = pytz.timezone('Asia/Taipei')
+        current_month = datetime.datetime.now(tz_tw).strftime("%Y%m")
+        
+        # 安全走訪合約清單
+        for contract in category:
+            if hasattr(contract, 'symbol') and hasattr(contract, 'delivery_month'):
+                # 確認代碼長度為 9 (例如 TMF202606) 且是以 future_type 開頭
+                if len(contract.symbol) == 9 and contract.symbol.startswith(future_type):
+                    # 確認合約尚未過期 (交割月 >= 本月份)
+                    if contract.delivery_month >= current_month:
+                        contracts.append(contract)
+        
         if contracts:
-            # 依據到期月份排序，取最接近的當月合約
+            # 依照交割月份由小到大排序，取最近的當月期貨
             contracts.sort(key=lambda c: c.delivery_month)
             return contracts[0]
-    except: pass
+    except Exception as e:
+        print(f"獲取合約失敗 ({future_type}): {e}")
+        pass
+        
     return None
 
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
