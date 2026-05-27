@@ -343,7 +343,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             contract_snap = getattr(tmf_cat, 'TMFR1', None)
                             if not contract_snap and c_list: contract_snap = c_list[0]
                     except: pass
-                else:
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
