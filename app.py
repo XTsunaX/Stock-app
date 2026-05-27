@@ -85,19 +85,40 @@ def is_warrant(code):
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
+def get_active_future_contract(api, future_type):
+    """獲取期貨合約：優先使用近月連續合約(R1)，若無則自動搜尋當月合約"""
+    try:
+        if future_type == "TXF":
+            if hasattr(api.Contracts.Futures.TXF, 'TXFR1'): return api.Contracts.Futures.TXF.TXFR1
+        elif future_type == "TMF":
+            if hasattr(api.Contracts.Futures.TMF, 'TMFR1'): return api.Contracts.Futures.TMF.TMFR1
+    except: pass
+
+    try:
+        # 若R1失敗，直接從類別中抓取當月合約
+        category = api.Contracts.Futures.TXF if future_type == "TXF" else api.Contracts.Futures.TMF
+        # 過濾出標準單月合約 (長度9，如 TXF202606)
+        contracts = [c for c in category if len(c.symbol) == 9 and c.symbol.startswith(future_type)]
+        if contracts:
+            # 依據到期月份排序，取最接近的當月合約
+            contracts.sort(key=lambda c: c.delivery_month)
+            return contracts[0]
+    except: pass
+    return None
+
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # 1. 依照官方文件取得連續期貨合約物件
         contract = None
         is_future = False
         
-        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
+       if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
+            contract = get_active_future_contract(api, "TXF")
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
+            contract = get_active_future_contract(api, "TMF")
             is_future = True
         else:
             try:
@@ -304,9 +325,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TXF")
                 elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                    contract_snap = get_active_future_contract(st.session_state.sj_api, "TMF")
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
