@@ -327,7 +327,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
-               if ticker.startswith("^TWII"):
+                 if ticker.startswith("^TWII"):
                     contract_snap = getattr(st.session_state.sj_api.Contracts.Indices.TSE, 'TSE01', None)
                 elif ticker == "TWF=F":
                     cands = get_sj_future_candidates(st.session_state.sj_api, 'TXF')
