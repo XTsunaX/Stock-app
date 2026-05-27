@@ -85,6 +85,21 @@ def is_warrant(code):
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
+def get_sj_future_candidates(api, prefix):
+    cands = []
+    try:
+        cat = getattr(api.Contracts.Futures, prefix, None)
+        if cat: cands.extend([c for c in cat if c.code.startswith(prefix)])
+    except: pass
+    if not cands:
+        try:
+            for cat in api.Contracts.Futures:
+                cands.extend([c for c in cat if c.code.startswith(prefix)])
+        except: pass
+    valid_cands = [c for c in cands if c.code == f"{prefix}R1" or (len(c.code) == 5 and c.code[-2:].isdigit())]
+    def sort_key(c): return "000000" if c.code.endswith('R1') else str(getattr(c, 'delivery_month', '999999'))
+    return sorted(list({c.code: c for c in valid_cands}.values()), key=sort_key)
+
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # 1. 依照官方文件取得連續期貨合約物件
@@ -96,28 +111,12 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             contract = getattr(api.Contracts.Indices.TSE, 'TSE01', None)
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             is_future = True
-            try:
-                txf_cat = getattr(api.Contracts.Futures, 'TXF', None)
-                if txf_cat:
-                    candidate_contracts.append(getattr(txf_cat, 'TXFR1', None))
-                    c_list = [c for c in txf_cat if c.code.startswith('TXF') and c.code[-2:].isdigit()]
-                    c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
-                    candidate_contracts.extend(c_list)
-                candidate_contracts = [c for c in candidate_contracts if c is not None]
-                if candidate_contracts: contract = candidate_contracts[0]
-            except Exception: pass
+            candidate_contracts = get_sj_future_candidates(api, 'TXF')
+            if candidate_contracts: contract = candidate_contracts[0]
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             is_future = True
-            try:
-                tmf_cat = getattr(api.Contracts.Futures, 'TMF', None)
-                if tmf_cat:
-                    candidate_contracts.append(getattr(tmf_cat, 'TMFR1', None))
-                    c_list = [c for c in tmf_cat if c.code.startswith('TMF') and c.code[-2:].isdigit()]
-                    c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
-                    candidate_contracts.extend(c_list)
-                candidate_contracts = [c for c in candidate_contracts if c is not None]
-                if candidate_contracts: contract = candidate_contracts[0]
-            except Exception: pass
+            candidate_contracts = get_sj_future_candidates(api, 'TMF')
+            if candidate_contracts: contract = candidate_contracts[0]
         else:
             try: contract = api.Contracts.Stocks[code]
             except: pass
@@ -134,16 +133,21 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-       # 3. 呼叫官方 api.kbars 
+      # 3. 呼叫官方 api.kbars 
         kbars = None
         if is_future and candidate_contracts:
-            # 依序嘗試合約，直到確實回傳有資料為止 (防範連續月無資料或異常)
             for cand_c in candidate_contracts:
-                kbars = api.kbars(contract=cand_c, start=start_date, end=end_date)
-                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
-                    break
+                try:
+                    temp_kbars = api.kbars(contract=cand_c, start=start_date, end=end_date)
+                    if temp_kbars and hasattr(temp_kbars, 'ts') and len(temp_kbars.ts) > 0:
+                        kbars = temp_kbars
+                        contract = cand_c  # 更新為實際抓到資料的合約
+                        break
+                except Exception:
+                    continue
         else:
-            kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+            try: kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+            except: pass
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
@@ -323,26 +327,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         if st.session_state.get('sj_logged_in', False) and not df.empty:
             try:
                 contract_snap = None
-                if ticker.startswith("^TWII"):
+               if ticker.startswith("^TWII"):
                     contract_snap = getattr(st.session_state.sj_api.Contracts.Indices.TSE, 'TSE01', None)
                 elif ticker == "TWF=F":
-                    try:
-                        txf_cat = getattr(st.session_state.sj_api.Contracts.Futures, 'TXF', None)
-                        if txf_cat:
-                            c_list = [c for c in txf_cat if c.code.startswith('TXF') and c.code[-2:].isdigit()]
-                            c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
-                            contract_snap = getattr(txf_cat, 'TXFR1', None)
-                            if not contract_snap and c_list: contract_snap = c_list[0]
-                    except: pass
+                    cands = get_sj_future_candidates(st.session_state.sj_api, 'TXF')
+                    if cands: contract_snap = cands[0]
                 elif ticker == "TMF=F":
-                    try:
-                        tmf_cat = getattr(st.session_state.sj_api.Contracts.Futures, 'TMF', None)
-                        if tmf_cat:
-                            c_list = [c for c in tmf_cat if c.code.startswith('TMF') and c.code[-2:].isdigit()]
-                            c_list.sort(key=lambda x: getattr(x, 'delivery_month', '999999'))
-                            contract_snap = getattr(tmf_cat, 'TMFR1', None)
-                            if not contract_snap and c_list: contract_snap = c_list[0]
-                    except: pass
+                    cands = get_sj_future_candidates(st.session_state.sj_api, 'TMF')
+                    if cands: contract_snap = cands[0]
+            else:
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
