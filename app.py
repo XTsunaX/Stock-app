@@ -114,7 +114,12 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         end_date = now.strftime("%Y-%m-%d")
         
         # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
-        actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
+        if is_future:
+            # 針對期貨日/週/月K 限制最大請求天數 (約80天可涵蓋預設的60根交易日K線)，避免 API 筆數過多回傳空值
+            actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
+        else:
+            actual_lookback = lookback_days
+            
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
         # 3. 呼叫官方 api.kbars 
