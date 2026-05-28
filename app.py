@@ -343,11 +343,7 @@ ticker = ticker_code if (
     or "=" in ticker_code
     or is_future_symbol
 ) else f"{ticker_code}.TW"
-
-    ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
-    period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "2y", "1wk": "2y", "1mo": "5y"}
-    is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
-    
+  
     try:
         df = pd.DataFrame()
         raw_code = ticker_code.split('.')[0]
