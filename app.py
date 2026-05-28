@@ -81,7 +81,57 @@ def is_warrant(code):
     if c.startswith('00'): return False
     return len(c) > 4
 
+# 期貨月碼：1~12 月對應 A~L（例如 2026/05 -> E6）
+FUTURE_MONTH_LETTERS = {
+    1: "A", 2: "B", 3: "C", 4: "D",
+    5: "E", 6: "F", 7: "G", 8: "H",
+    9: "I", 10: "J", 11: "K", 12: "L",
+}
 
+def _add_month(year: int, month: int, step: int = 0):
+    month += step
+    year += (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    return year, month
+
+def _future_month_code(base: str, year: int, month: int) -> str:
+    return f"{base}{FUTURE_MONTH_LETTERS[month]}{str(year)[-1]}"
+
+def resolve_future_contract(api, future_base: str):
+    """
+    future_base: TXF / TMF
+    1) 先試近月連續合約 R1 / R2
+    2) 再試當月、下月的實際交割月合約
+    """
+    tz_tw = pytz.timezone("Asia/Taipei")
+    now = datetime.now(tz_tw)
+
+    candidates = [
+        f"{future_base}R1",
+        f"{future_base}R2",
+    ]
+
+    for step in (0, 1):
+        y, m = _add_month(now.year, now.month, step)
+        candidates.append(_future_month_code(future_base, y, m))
+
+    tried = set()
+    for code in candidates:
+        if code in tried:
+            continue
+        tried.add(code)
+
+        try:
+            return api.Contracts.Futures[code]
+        except Exception:
+            pass
+
+        try:
+            return getattr(getattr(api.Contracts.Futures, future_base), code)
+        except Exception:
+            pass
+
+    return None
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
@@ -90,20 +140,28 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 1. 依照官方文件取得連續期貨合約物件
         contract = None
         is_future = False
-        
+
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
-        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
+
+        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"] or str(code).startswith("TXF"):
+            contract = resolve_future_contract(api, "TXF")
             is_future = True
-        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
+
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"] or str(code).startswith("TMF"):
+            contract = resolve_future_contract(api, "TMF")
             is_future = True
+
         else:
             try:
-                contract = api.Contracts.Stocks[code]
-            except:
-                pass
+                # 直接支援月合約碼，例如 TXFE6 / TMFF6
+                contract = api.Contracts.Futures[code]
+                is_future = True
+            except Exception:
+                try:
+                    contract = api.Contracts.Stocks[code]
+                except Exception:
+                    pass
 
         if not contract:
             return pd.DataFrame()
@@ -112,27 +170,27 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
-        
+
         # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         actual_lookback = min(lookback_days, 5) if is_future and interval in ['1m', '5m', '15m', '60m'] else lookback_days
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars 
+        # 3. 呼叫官方 api.kbars
         kbars = api.kbars(contract=contract, start=start_date, end=end_date)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
-            
+
         df = pd.DataFrame({**kbars})
         df['ts'] = pd.to_datetime(df['ts'])
 
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-        
+
         df.set_index('ts', inplace=True)
-        
+
         # 確保擁有官方的開高低收量欄位
         agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
         agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
@@ -140,23 +198,29 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 5. K棒週期重取樣
         if interval == '1m':
             pass
+
         elif interval in ['1d', '1wk', '1mo']:
             if is_future:
                 # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
                 df.index = df.index + pd.Timedelta(hours=9)
-                
-            if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
-            elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
-            else: df = df.resample('M').agg(agg_dict).dropna()
-            
+
+            if interval == '1d':
+                df = df.resample('D').agg(agg_dict).dropna()
+            elif interval == '1wk':
+                df = df.resample('W-MON').agg(agg_dict).dropna()
+            else:
+                df = df.resample('M').agg(agg_dict).dropna()
+
             if is_future:
                 df.index = df.index.normalize()
+
         else:
             resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
+
     except Exception as e:
         print(f"Shioaji fetch error for {code}: {e}")
         return pd.DataFrame()
@@ -191,7 +255,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     display_name = raw_input
 
     # 針對大盤與期貨的特例處理 (支援含有"全"字的自訂輸入)
-    if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
+    # 支援直接輸入 TXF202606 / TMF202606
+    future_month_match = re.fullmatch(r"(TXF|TMF)(\d{6})", raw_input.upper())
+    if future_month_match:
+        future_base, yyyymm = future_month_match.groups()
+        yyyy = int(yyyymm[:4])
+        mm = int(yyyymm[4:6])
+        ticker_code = _future_month_code(future_base, yyyy, mm)
+        display_name = f"{raw_input}({ticker_code})"
+    elif raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]: # 原本的 if 改為 elif
         ticker_code = "^TWII"
         display_name = "加權指數(^TWII)"
     elif raw_input in ["TWF=F", "台指期貨", "台指", "小型台指", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
@@ -225,9 +297,26 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 else:
                     ticker_code = raw_input
 
-    ticker = ticker_code if (ticker_code.endswith(".TW") or ticker_code.endswith(".TWO") or ticker_code.startswith("^") or "=" in ticker_code) else f"{ticker_code}.TW"
+    is_future_symbol = (
+        ticker_code.startswith(("TXF", "TMF"))
+        or raw_input in [
+            "TWF=F", "台指期貨", "TXF", "台指",
+            "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)",
+            "TMF=F", "微型台指期貨", "TMF", "微台", "微型台指",
+            "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"
+        ]
+    )
+
+    ticker = ticker_code if (
+        ticker_code.endswith(".TW")
+        or ticker_code.endswith(".TWO")
+        or ticker_code.startswith("^")
+        or "=" in ticker_code
+        or is_future_symbol
+    ) else f"{ticker_code}.TW"
+
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "2y", "1wk": "2y", "1mo": "5y"}
-    is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
+    is_index = ticker.startswith('^') or ticker.startswith('TXF') or ticker.startswith('TMF') or 'TWF' in ticker or 'TMF' in ticker or '=' in ticker
     
     try:
         df = pd.DataFrame()
@@ -250,7 +339,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     sj_kbars_used = True
 
         # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
+        # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
         if not sj_kbars_used:
+            if is_future_symbol:
+                st.warning(f"⚠️ {display_name} 需要登入永豐 Shioaji API 才能抓取期貨(日/夜盤)資料。")
+                return
+
             import time
             for attempt in range(3):
                 try:
@@ -303,13 +397,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 contract_snap = None
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
-                elif ticker == "TWF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
-                elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                elif ticker == "TWF=F" or ticker.startswith("TXF"):
+                    contract_snap = resolve_future_contract(st.session_state.sj_api, "TXF")
+                elif ticker == "TMF=F" or ticker.startswith("TMF"):
+                    contract_snap = resolve_future_contract(st.session_state.sj_api, "TMF")
                 else:
-                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
-                    except: pass
+                    try:
+                        contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except:
+                        pass
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
