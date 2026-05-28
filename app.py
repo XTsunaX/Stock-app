@@ -260,14 +260,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     future_month_match = re.fullmatch(r"(TXF|TMF)(\d{6})", raw_input.upper())
 
     if future_month_match:
-    future_base, yyyymm = future_month_match.groups()
-
-    yyyy = int(yyyymm[:4])
-    mm = int(yyyymm[4:6])
-
-    ticker_code = _future_month_code(future_base, yyyy, mm)
-
-    display_name = f"{raw_input}({ticker_code})"
+        future_base, yyyymm = future_month_match.groups()
+    
+        yyyy = int(yyyymm[:4])
+        mm = int(yyyymm[4:6])
+    
+        ticker_code = _future_month_code(future_base, yyyy, mm)
+    
+        display_name = f"{raw_input}({ticker_code})"
 
     # 針對大盤與期貨的特例處理 (支援含有"全"字的自訂輸入)
     if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
