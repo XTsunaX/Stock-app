@@ -344,7 +344,7 @@ ticker = ticker_code if (
     or is_future_symbol
 ) else f"{ticker_code}.TW"
   
-    try:
+        try:
         df = pd.DataFrame()
         raw_code = ticker_code.split('.')[0]
         sj_kbars_used = False
