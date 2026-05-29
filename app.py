@@ -1274,18 +1274,32 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
     
-    # 觸發爬蟲的按鈕
-    if st.button("📥 抓取 Goodinfo 週轉率排行", help="需等待網頁載入約15秒", width='stretch'):
+   def perform_goodinfo_fetch():
         with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
                 # 🟢 變更：同時將 DataFrame 存入 session_state 供戰略室直接讀取
                 st.session_state['goodinfo_df'] = df_goodinfo.astype(str)
                 st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False).encode('utf-8-sig')
-                
+                st.session_state['goodinfo_fetch_failed'] = False
                 st.success("💡 抓取成功並已載入暫存！\n\n若要分析此數據，請確保主畫面「未上傳檔案」且「未輸入雲端連結」，直接點擊主畫面的『🚀 執行分析』即可。")
             else:
+                st.session_state['goodinfo_fetch_failed'] = True
                 st.error("抓取失敗或查無資料，請稍後再試。")
+
+    # 觸發爬蟲的按鈕
+    if st.button("📥 抓取 Goodinfo 週轉率排行", help="需等待網頁載入約15秒", width='stretch'):
+        perform_goodinfo_fetch()
+        
+    if st.session_state.get('goodinfo_fetch_failed', False):
+        col_retry, col_link = st.columns(2)
+        with col_retry:
+            if st.button("🔄 重新抓取", key="retry_goodinfo_btn"):
+                perform_goodinfo_fetch()
+                st.rerun()
+        with col_link:
+            goodinfo_url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
+            st.link_button("🌐 直接連結", goodinfo_url)
                 
     # 保留原有的下載按鈕
     if 'goodinfo_csv' in st.session_state:
@@ -2582,8 +2596,6 @@ with tab3:
         if y in us_holidays:
             for hm, hd in us_holidays[y]:
                 if hm == m: add_evt(hd, "美股休市", "#B0BEC5")
-        
-        return events
         
         # (2) 美國非農人數公布 (每個月第一個週五)
         for d, wd in month_days_list:
