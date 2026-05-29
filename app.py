@@ -1274,7 +1274,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔗 外部資源")
     
-   def perform_goodinfo_fetch():
+def perform_goodinfo_fetch():
         with st.spinner("正在抓取最新資料，請稍候約 15 秒..."):
             df_goodinfo = fetch_goodinfo_data()
             if df_goodinfo is not None and not df_goodinfo.empty:
