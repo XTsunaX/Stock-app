@@ -1092,7 +1092,7 @@ if 'url_history' not in st.session_state: st.session_state.url_history = load_ur
 if 'cloud_url_input' not in st.session_state: st.session_state.cloud_url_input = st.session_state.url_history[0] if st.session_state.url_history else ""
 if 'search_multiselect' not in st.session_state: st.session_state.search_multiselect = load_search_cache()
 if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
-if 'futures_list' not in st.session_state: st.session_state.futures_list = set()
+if 'futures_list' not in st.session_state: st.session_state.futures_list = {}
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
@@ -1318,12 +1318,28 @@ def fetch_futures_list():
     try:
         url = "https://www.taifex.com.tw/cht/2/stockLists"
         dfs = pd.read_html(url)
+        futures_dict = {}
         if dfs:
             for df in dfs:
-                if '證券代號' in df.columns: return set(df['證券代號'].astype(str).str.strip().tolist())
-                if 'Stock Code' in df.columns: return set(df['Stock Code'].astype(str).str.strip().tolist())
+                # 攤平並整理欄位名稱
+                df_cols = [str(c).replace('\n', '').replace(' ', '') for c in df.columns]
+                df.columns = df_cols
+                
+                code_col = next((c for c in df.columns if '證券代號' in c or 'StockCode' in c), None)
+                if code_col:
+                    small_col = next((c for c in df.columns if '小' in c or 'Small' in c), None)
+                    for _, row in df.iterrows():
+                        code = str(row[code_col]).strip()
+                        if pd.isna(code) or not code: continue
+                        is_small = False
+                        if small_col and pd.notna(row[small_col]):
+                            val = str(row[small_col]).strip()
+                            if val and val not in ['-', 'nan', 'NaN']:
+                                is_small = True
+                        futures_dict[code] = "✅(小)" if is_small else "✅"
+                    return futures_dict
     except: pass
-    return set()
+    return {}
 
 def get_tick_size(price):
     try: price = float(price)
@@ -1710,12 +1726,13 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     else: final_name = code
 
     final_name_display = final_name
-    has_futures = "✅" if futures_set and code in futures_set else ""
+    # 兼容字典與舊版集合的判定
+    has_futures = futures_set.get(code, "") if isinstance(futures_set, dict) else ("✅" if futures_set and code in futures_set else "")
     
     return {
         "代號": code, "名稱": final_name_display, "收盤價": round(live_base_price, 2), "漲跌幅": live_pct_change, "期貨": has_futures, 
-        "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None, "獲利目標": target_price, "防守停損": stop_price,   
-        "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note 
+        "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None,   
+        "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note, "_ma5": ma5 if 'ma5' in locals() else None
     }
 
 # ==========================================
@@ -1937,11 +1954,34 @@ with tab1:
         points_map = df_display.set_index('代號')['_points'].to_dict() if '_points' in df_display.columns else {}
         auto_notes_dict = df_display.set_index('代號')['_auto_note'].to_dict() if '_auto_note' in df_display.columns else {}
 
-        input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "當日漲停價", "當日跌停價", "+3%", "-3%", "收盤價", "漲跌幅", "期貨"]
+        # 進行自訂價價差與5日線價差計算
+        if "自訂價價差" not in df_display.columns: df_display["自訂價價差"] = None
+        if "5日線價差" not in df_display.columns: df_display["5日線價差"] = None
+        
+        for i, row in df_display.iterrows():
+            ma5_val = row.get('_ma5')
+            if pd.isna(ma5_val):
+                for p in row.get('_points', []):
+                    if p.get('tag') in ['多', '空', '平']:
+                        ma5_val = p.get('val')
+                        break
+            
+            if pd.notna(ma5_val):
+                c_price = row.get('自訂價(可修)')
+                if pd.notna(c_price) and str(c_price).strip() != "":
+                    try: df_display.at[i, '自訂價價差'] = round(float(c_price) - float(ma5_val), 2)
+                    except: pass
+                    
+                close_p = row.get('收盤價')
+                if pd.notna(close_p) and str(close_p).strip() != "":
+                    try: df_display.at[i, '5日線價差'] = round(float(close_p) - float(ma5_val), 2)
+                    except: pass
+
+        input_cols = ["移除", "代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "自訂價價差", "5日線價差", "當日漲停價", "當日跌停價", "收盤價", "漲跌幅", "期貨"]
         for col in input_cols:
             if col not in df_display.columns: df_display[col] = None
 
-        cols_to_fmt = ["當日漲停價", "當日跌停價", "+3%", "-3%", "自訂價(可修)"]
+        cols_to_fmt = ["當日漲停價", "當日跌停價", "自訂價(可修)", "自訂價價差", "5日線價差"]
         for c in cols_to_fmt:
             if c in df_display.columns: df_display[c] = df_display[c].apply(fmt_price)
 
@@ -1983,6 +2023,14 @@ with tab1:
                 if col == "名稱": styles[idx] = name_c
                 elif col in ["收盤價", "漲跌幅"]: styles[idx] = price_c
                 elif col == "狀態": styles[idx] = status_c
+                elif col in ["自訂價價差", "5日線價差"]:
+                    val = row[col]
+                    try:
+                        f_val = float(val)
+                        if f_val > 0: styles[idx] = 'color: #ff4b4b;'
+                        elif f_val < 0: styles[idx] = 'color: #00e676;'
+                        else: styles[idx] = 'color: white;'
+                    except: pass
             return styles
             
         styled_df = df_display[input_cols].style.apply(style_tab1_df, axis=1)
@@ -1995,12 +2043,12 @@ with tab1:
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.TextColumn(disabled=True, width="small"),
-                "期貨": st.column_config.TextColumn(disabled=True, width=40), 
+                "期貨": st.column_config.TextColumn(disabled=True, width=60), 
                 "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60), 
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
-                "+3%": st.column_config.TextColumn(width="small", disabled=True),
-                "-3%": st.column_config.TextColumn(width="small", disabled=True),
+                "自訂價價差": st.column_config.TextColumn(width=70, disabled=True),
+                "5日線價差": st.column_config.TextColumn(width=70, disabled=True),
                 "狀態": st.column_config.TextColumn(width=60, disabled=True),
                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px, disabled=False),
             },
