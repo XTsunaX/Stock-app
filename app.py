@@ -1838,9 +1838,9 @@ with tab1:
                 
         except Exception as e: st.error(f"讀取失敗: {e}")
         if search_selection:
-            for item in search_selection:
+            for i, item in enumerate(search_selection):
                 parts = item.split(' ', 1)
-                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', 9999))
+                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', i))
 
         if not df_up.empty:
             df_up.columns = df_up.columns.astype(str).str.strip()
@@ -1908,7 +1908,17 @@ with tab1:
                     data['_source'] = t_source
                     data['_order'] = t_extra
                     data['_source_rank'] = 1 if t_source == 'upload' else 2
-                    existing_data[t_code] = data
+                    
+                    # 檢查是否已存在資料，若存在則依據來源優先權判斷是否覆蓋
+                    if t_code in existing_data:
+                        if existing_data[t_code]['_source'] == 'upload' and t_source == 'search':
+                            pass  # 已有在顯示筆數內的檔案資料，忽略查詢資料的覆蓋，保留檔案排序
+                        elif existing_data[t_code]['_source'] == 'search' and t_source == 'upload':
+                            existing_data[t_code] = data  # 檔案資料優先權高，覆蓋掉原先寫入的查詢資料
+                        else:
+                            existing_data[t_code] = data
+                    else:
+                        existing_data[t_code] = data
                 # 每個單一股票任務結束後即時主動回收
                 del data
         
