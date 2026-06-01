@@ -345,7 +345,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             
                        # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
                         if df.index[-1] < now_dt and rt_price > 0:
-                            if not is_market_closed_func(now_dt.date()): # 新增: 排除假日異常
+                            # 新增：未開盤時間攔截，防止重覆產生K線
+                            is_before_open = False
+                            current_time = datetime.now(tz_tw).time()
+                            if ticker in ["TWF=F", "TMF=F"]:
+                                if current_time < dt_time(8, 45): is_before_open = True
+                            else:
+                                if current_time < dt_time(9, 0): is_before_open = True
+
+                            if not is_before_open and not is_market_closed_func(now_dt.date()): # 新增: 排除假日與未開盤異常
                                 if interval in ["1d", "1m", "5m", "15m", "60m"]:
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
                                     df = pd.concat([df, new_row])
@@ -397,12 +405,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = float(stock.low[-1])
                         rt_vol = float(stock.capacity[-1]) / 1000 
 
-                if rt_price is not None:
+                if rt_price not in [None, 0]:
                     if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                     last_hist_date = pd.Timestamp(df.index[-1].date())
                     
+                    # 新增：未開盤時間攔截，防止重覆產生K線
+                    current_time = datetime.now(tz_tw).time()
+                    is_before_open = current_time < dt_time(9, 0)
+                    
                     if interval == "1d":
-                        if last_hist_date < today_date and not is_market_closed_func(now_tw.date()):
+                        if last_hist_date < today_date and not is_market_closed_func(now_tw.date()) and not is_before_open:
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                             df = pd.concat([df, new_row])
                         else:
@@ -591,6 +603,18 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         color = "#ff4b4b" if chg > 0 else ("#00e676" if chg < 0 else "white")
         sign = "+" if chg > 0 else ""
 
+        # 定義各自與昨日參考價對比的顏色函數
+        def get_ohlc_color(val, ref):
+            if val > ref: return "#ff4b4b"     # 紅漲
+            elif val < ref: return "#00e676"   # 綠跌
+            return "white"                     # 平盤
+
+        color_op = get_ohlc_color(op, ref_prev_close)
+        color_hi = get_ohlc_color(hi, ref_prev_close)
+        color_lo = get_ohlc_color(lo, ref_prev_close)
+        color_cl = get_ohlc_color(cl, ref_prev_close)
+        color_main = color_cl  # 主名稱與總漲跌幅與收盤價顏色保持一致
+
         if is_index:
             if ticker == '^TWII':
                 if vol == 0 or pd.isna(vol):
@@ -610,15 +634,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
         disp_title = display_name.replace('(^TWII)', '(TSE)') if ticker == '^TWII' else display_name
         
-        # 標題針對個股名稱及所有數值套用顏色
+        # 標題改為各自獨立套用顏色
         title_html = (
-            f"<span style='color:{color};'>{disp_title}{ticker_suffix}</span> - {interval_name} {date_str} "
-            f"開 <span style='color:{color};'>{op:.2f}</span> "
-            f"高 <span style='color:{color};'>{hi:.2f}</span> "
-            f"低 <span style='color:{color};'>{lo:.2f}</span> "
-            f"收 <span style='color:{color};'>{cl:.2f}</span>{price_unit} "
+            f"<span style='color:{color_main};'>{disp_title}{ticker_suffix}</span> - {interval_name} {date_str} "
+            f"開 <span style='color:{color_op};'>{op:.2f}</span> "
+            f"高 <span style='color:{color_hi};'>{hi:.2f}</span> "
+            f"低 <span style='color:{color_lo};'>{lo:.2f}</span> "
+            f"收 <span style='color:{color_cl};'>{cl:.2f}</span>{price_unit} "
             f"量 {vol_num}{vol_unit} "
-            f"<span style='color:{color};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
+            f"<span style='color:{color_main};'>{sign}{chg:.2f}({sign}{pct_chg:.2f}%)</span>"
         )
     except Exception:
         title_html = f"{display_name}{ticker_suffix} - {interval_name}"
@@ -1098,14 +1122,19 @@ if 'futures_list' not in st.session_state: st.session_state.futures_list = {}
 saved_config = load_config()
 fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
 
+# 優先採用從 Google Sheets 載入回來的雲端快取標籤紀錄
+fibo_tags_source = st.session_state.get('fibo_tags', fibo_tags)
+if not fibo_tags_source or len(fibo_tags_source) < 5:
+    fibo_tags_source = fibo_tags
+
 if 'fibo_search_input' not in st.session_state: st.session_state.fibo_search_input = ""
 if 'fibo_trigger_search' not in st.session_state: st.session_state.fibo_trigger_search = False
 
-if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = fibo_tags[0] if len(fibo_tags)>0 else "台積電(2330)"
-if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = fibo_tags[1] if len(fibo_tags)>1 else "鴻海(2317)"
-if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = fibo_tags[2] if len(fibo_tags)>2 else "聯發科(2454)"
-if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = fibo_tags[3] if len(fibo_tags)>3 else "創威(6530)"
-if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_tags[4] if len(fibo_tags)>4 else "晶彩科(3535)"
+if 'custom_tag_1' not in st.session_state: st.session_state.custom_tag_1 = fibo_tags_source[0] if len(fibo_tags_source)>0 else "台積電(2330)"
+if 'custom_tag_2' not in st.session_state: st.session_state.custom_tag_2 = fibo_tags_source[1] if len(fibo_tags_source)>1 else "鴻海(2317)"
+if 'custom_tag_3' not in st.session_state: st.session_state.custom_tag_3 = fibo_tags_source[2] if len(fibo_tags_source)>2 else "聯發科(2454)"
+if 'custom_tag_4' not in st.session_state: st.session_state.custom_tag_4 = fibo_tags_source[3] if len(fibo_tags_source)>3 else "和椿(6215)"
+if 'custom_tag_5' not in st.session_state: st.session_state.custom_tag_5 = fibo_tags_source[4] if len(fibo_tags_source)>4 else "晶彩科(3535)"
 
 if 'ma_w' not in st.session_state: st.session_state.ma_w = saved_config.get('ma_width', 1.5)
 
