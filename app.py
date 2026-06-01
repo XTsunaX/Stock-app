@@ -2635,11 +2635,13 @@ with tab_db:
             st.session_state.disposal_refresh_idx += 1
             st.rerun()
             
+        # 將計數器加入網址參數，藉由改變網址強制 iframe 重新載入
+        refresh_url = f"https://cmfaren.github.io/dispositionforecast/?t={st.session_state.disposal_refresh_idx}"
+        
         components.iframe(
-            "https://cmfaren.github.io/dispositionforecast/", 
+            refresh_url, 
             height=800, 
-            scrolling=True, 
-            key=f"disposal_iframe_{st.session_state.disposal_refresh_idx}"
+            scrolling=True
         )
 
 with tab3:
