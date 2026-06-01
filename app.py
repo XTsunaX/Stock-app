@@ -2402,10 +2402,9 @@ with tab_fibo:
                 if i < len(tag_cols):
                     tag_cols[i].button(label, on_click=set_fibo_search, args=(val,), width='stretch', key=f"btn_fibo_{i}")
 
-        fibo_stock_options = [f"{n}({c})" for c, n in sorted(code_map_fibo.items())]
+        # 移除重複且未過濾的賦值，直接取得當前搜尋框的預設索引值
         current_val = st.session_state.fibo_search_input
         default_index = None
-        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)", "微型台指期貨(TMF=F)"] + fibo_stock_options
         
         if current_val:
             for i, opt in enumerate(search_list):
@@ -2626,7 +2625,22 @@ with tab_db:
 
     with sub_tab3:
         st.markdown("#### 🚨 處置股預測與公告")
-        components.iframe("https://cmfaren.github.io/dispositionforecast/", height=800, scrolling=True)
+        
+        # 初始化處置股獨立重整計數器
+        if 'disposal_refresh_idx' not in st.session_state:
+            st.session_state.disposal_refresh_idx = 0
+            
+        # 新增重新整理按鈕
+        if st.button("🔄 重新整理處置股", key="btn_refresh_disposal"):
+            st.session_state.disposal_refresh_idx += 1
+            st.rerun()
+            
+        components.iframe(
+            "https://cmfaren.github.io/dispositionforecast/", 
+            height=800, 
+            scrolling=True, 
+            key=f"disposal_iframe_{st.session_state.disposal_refresh_idx}"
+        )
 
 with tab3:
     def change_month(delta):
@@ -2674,15 +2688,28 @@ with tab3:
         cal_temp = calendar.Calendar(firstweekday=6)
         month_days_list = list(cal_temp.itermonthdays2(y, m))
         
-        # (1) 美股固定休市日期
-        us_holidays = {
-            2024: [(1,1), (1,15), (2,19), (3,29), (5,27), (6,19), (7,4), (9,2), (11,28), (12,25)],
-            2025: [(1,1), (1,20), (2,17), (4,18), (5,26), (6,19), (7,4), (9,1), (11,27), (12,25)],
-            2026: [(1,1), (1,19), (2,16), (4,3), (5,25), (6,19), (7,3), (9,7), (11,26), (12,25)]
+        # (1) 美股固定休市日期與節日對照表
+        us_holiday_names = {
+            2024: {
+                (1,1): "元旦", (1,15): "馬丁路德金紀念日", (2,19): "總統日", (3,29): "耶穌受難日", 
+                (5,27): "陣亡將士紀念日", (6,19): "六月節", (7,4): "獨立紀念日", (9,2): "勞動節", 
+                (11,28): "感恩節", (12,25): "聖誕節"
+            },
+            2025: {
+                (1,1): "元旦", (1,20): "馬丁路德金紀念日", (2,17): "總統日", (4,18): "耶穌受難日", 
+                (5,26): "陣亡將士紀念日", (6,19): "六月節", (7,4): "獨立紀念日", (9,1): "勞動節", 
+                (11,27): "感恩節", (12,25): "聖誕節"
+            },
+            2026: {
+                (1,1): "元旦", (1,19): "馬丁路德金紀念日", (2,16): "總統日", (4,3): "耶穌受難日", 
+                (5,25): "陣亡將士紀念日", (6,19): "六月節", (7,3): "獨立紀念日", (9,7): "勞動節", 
+                (11,26): "感恩節", (12,25): "聖誕節"
+            }
         }
-        if y in us_holidays:
-            for hm, hd in us_holidays[y]:
-                if hm == m: add_evt(hd, "美股休市", "#B0BEC5")
+        if y in us_holiday_names:
+            for (hm, hd), name in us_holiday_names[y].items():
+                if hm == m: 
+                    add_evt(hd, f"美股{name}休市", "#B0BEC5")
         
         # (2) 美國非農人數公布 (每個月第一個週五)
         for d, wd in month_days_list:
