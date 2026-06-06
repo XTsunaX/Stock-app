@@ -15,7 +15,6 @@ from decimal import Decimal, ROUND_HALF_UP
 import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading  # 新增：用於執行緒安全鎖
 import calendar
 import random
 import gc
@@ -35,9 +34,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# 初始化 Shioaji 執行緒鎖
-shioaji_lock = threading.Lock()
 
 # 引入 yahoo_fin 與 shioaji
 try:
@@ -87,57 +83,54 @@ def is_warrant(code):
 
 
 # ==========================================
-# 永豐 API (Shioaji) 擷取核心（修正：加入執行緒安全鎖）
-# ==========================================
-# ==========================================
-# 永豐 API (Shioaji) 擷取核心（修正：加入執行緒安全鎖）
+# 永豐 API (Shioaji) 擷取核心
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
-    # 使用 lock 確保同一時間只有一個執行緒能向永豐 API 發送請求
-    with shioaji_lock:
-        try:
-            contract = None
-            is_future = False
-            
-            if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-                contract = api.Contracts.Indices.TSE.TSE01
-            elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-                contract = api.Contracts.Futures.TXF.TXFR1  
-                is_future = True
-            elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-                contract = api.Contracts.Futures.TMF.TMFR1  
-                is_future = True
-            else:
-                try:
-                    contract = api.Contracts.Stocks[code]
-                except:
-                    pass
+    try:
+        # 1. 依照官方文件取得連續期貨合約物件
+        contract = None
+        is_future = False
+        
+        if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
+            contract = api.Contracts.Indices.TSE.TSE01
+        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+            contract = api.Contracts.Futures.TXF.TXFR1  
+            is_future = True
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+            contract = api.Contracts.Futures.TMF.TMFR1  
+            is_future = True
+        else:
+            try:
+                contract = api.Contracts.Stocks[code]
+            except:
+                pass
 
-            if not contract:
-                return pd.DataFrame()
-
-            tz_tw = pytz.timezone('Asia/Taipei')
-            now = datetime.now(tz_tw)
-            end_date = now.strftime("%Y-%m-%d")
-            
-            if is_future:
-                actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
-            else:
-                actual_lookback = lookback_days
-                
-            start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
-
-            kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-
-            if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
-                return pd.DataFrame()
-                
-            df = pd.DataFrame({**kbars})
-            df['ts'] = pd.to_datetime(df['ts'])
-            return df
-        except Exception as e:
-            st.error(f"Shioaji 讀取錯誤 ({code}): {str(e)}")
+        if not contract:
             return pd.DataFrame()
+
+        # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
+        tz_tw = pytz.timezone('Asia/Taipei')
+        now = datetime.now(tz_tw)
+        end_date = now.strftime("%Y-%m-%d")
+        
+        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+        if is_future:
+            # 針對期貨日/週/月K 限制最大請求天數 (約80天可涵蓋預設的60根交易日K線)，避免 API 筆數過多回傳空值
+            actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
+        else:
+            actual_lookback = lookback_days
+            
+        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
+
+        # 3. 呼叫官方 api.kbars 
+        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+
+        # 4. 依照官方文件轉換成 DataFrame 格式
+        if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame({**kbars})
+        df['ts'] = pd.to_datetime(df['ts'])
 
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
@@ -169,6 +162,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
+    except Exception as e:
+        print(f"Shioaji fetch error for {code}: {e}")
+        return pd.DataFrame()
 
 # ==========================================
 # 費波計算核心函數
@@ -792,7 +788,7 @@ def get_report_list():
 
 @st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
-    """下載、解析數值並將 PDF 轉為圖片供直接預覽 (修正版)"""
+    """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         if not pdf_url.lower().endswith('.pdf'):
@@ -807,12 +803,8 @@ def fetch_and_parse_pdf(pdf_url):
                     break
 
         response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
-        if response.status_code != 200:
-            return {"ratio": "解析錯誤", "images": []}
-            
         pdf_bytes = response.content
         
-        # 1. 使用 pdfplumber 提取文字中的多空比
         text = ""
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
@@ -821,17 +813,18 @@ def fetch_and_parse_pdf(pdf_url):
         ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
         ratio = ratio_match.group(1) if ratio_match else "N/A"
         
-        # 2. 使用 fitz 擷取圖片 (套用安全的上下文管理器)
         images = []
         try:
-            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-                for page_num in range(len(doc)):
-                    page = doc.load_page(page_num)
-                    pix = page.get_pixmap(dpi=100) # 維持原本的低解析度省記憶體
-                    img_data = pix.tobytes("png")
-                    img = Image.open(io.BytesIO(img_data))
-                    images.append(img)
-        except Exception:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            for page in doc:
+                pix = page.get_pixmap(dpi=100) # 調降解析度，大幅降低記憶體消耗
+                img_bytes = io.BytesIO(pix.tobytes("png"))
+                img = Image.open(img_bytes)
+                img.load() # 確保圖片已載入，避免檔案關閉後遺失資料
+                images.append(img)
+                img_bytes.close() # 關閉 BytesIO 釋放資源
+            doc.close()  # 釋放底層記憶體
+        except Exception as e:
             pass
             
         return {
@@ -893,15 +886,8 @@ def get_tw_stocker_data(direction):
         pass
     return pd.DataFrame()
 
-# ==========================================
-# 網路爬蟲加入快取，避免切換分頁時卡死
-# ==========================================
-# (此處保留您原有的 fetch_fubon_html, get_report_list, fetch_and_parse_pdf 等函數)
-
-@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_goodinfo_data():
     url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
-    
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -913,15 +899,10 @@ def fetch_goodinfo_data():
     chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
-    # 針對 Streamlit 雲端 Linux 環境與本機開發環境作自動判斷
-    if os.path.exists('/usr/bin/chromium'):
-        chrome_options.binary_location = "/usr/bin/chromium"
-        service = Service("/usr/bin/chromedriver")
-    else:
-        service = Service(ChromeDriverManager().install())
+    chrome_options.binary_location = "/usr/bin/chromium"
 
-    driver = None
     try:
+        service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -964,11 +945,10 @@ def fetch_goodinfo_data():
                 target_df.columns = [str(c).replace(' ', '').strip() for c in target_df.columns]
             return target_df
     except Exception as e:
-        # 避免將 st.error 寫入快取，改用 print 記錄於後端 logs
-        print(f"Goodinfo 抓取發生異常: {e}")
+        st.error(f"系統發生異常: {e}")
         return None
     finally:
-        if driver is not None:
+        if 'driver' in locals():
             driver.quit()
     return None
 
