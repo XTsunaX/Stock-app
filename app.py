@@ -897,7 +897,7 @@ def get_tw_stocker_data(direction):
 # 新增/修改：Goodinfo 爬蟲優化（引入快取與 Linux 環境適配）
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner="正在從 Goodinfo 獲取籌碼資料...")
-def fetch_goodinfo_data(code):
+def fetch_goodinfo_data():
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
@@ -926,6 +926,7 @@ def fetch_goodinfo_data(code):
         return {"status": "success", "html_content": str(soup)} # 範例回傳，請對接您原本的資料結構
     except Exception as e:
         return {"status": "error", "message": str(e)}
+        pass
     finally:
         driver.quit()
 
