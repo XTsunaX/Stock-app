@@ -894,41 +894,83 @@ def get_tw_stocker_data(direction):
     return pd.DataFrame()
 
 # ==========================================
-# 新增/修改：Goodinfo 爬蟲優化（引入快取與 Linux 環境適配）
+# 網路爬蟲加入快取，避免切換分頁時卡死
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner="正在從 Goodinfo 獲取籌碼資料...")
+# (此處保留您原有的 fetch_fubon_html, get_report_list, fetch_and_parse_pdf 等函數)
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_goodinfo_data():
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    url = "https://goodinfo.tw/tw/StockList.asp?RPT_TIME=&MARKET_CAT=%E7%86%B1%E9%96%80%E6%8E%92%E8%A1%8C&INDUSTRY_CAT=%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%28%E7%95%B6%E6%97%A5%29%40%40%E7%B4%AF%E8%A8%88%E6%88%90%E4%BA%A4%E9%87%8F%E9%80%B1%E8%BD%89%E7%8E%87%40%40%E7%95%B6%E6%97%A5"
     
-    # 檢查是否在 Streamlit 雲端 Linux 環境，若是則指向系統 chromium
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920x1080")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
+    # 針對 Streamlit 雲端 Linux 環境與本機開發環境作自動判斷
     if os.path.exists('/usr/bin/chromium'):
-        options.binary_location = '/usr/bin/chromium'
-        service = Service('/usr/bin/chromedriver')
+        chrome_options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
     else:
-        # 在本地 Windows/Mac 開發環境時自動下載
         service = Service(ChromeDriverManager().install())
-        
-    driver = webdriver.Chrome(service=service, options=options)
-    
+
+    driver = None
     try:
-        url = f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={code}"
-        driver.get(url)
-        # 由於加上了 Streamlit 快取，這 15 秒一小時內只會執行一次，大幅提升使用者體驗
-        time.sleep(15) 
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        # ... 保留您原有的 BeautifulSoup 解析與資料回傳邏輯 ...
-        return {"status": "success", "html_content": str(soup)} # 範例回傳，請對接您原本的資料結構
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
+            """
+        })
+        
+        driver.get(url)
+        time.sleep(15) # 等待動態表格載入
+        
+        html = driver.page_source
+        
+        import io
+        tables = pd.read_html(io.StringIO(html))
+        
+        target_df = None
+        for df in tables:
+            if df.shape[0] > 10 and df.shape[1] > 5:
+                if target_df is None or (df.shape[0] * df.shape[1] > target_df.shape[0] * target_df.shape[1]):
+                    target_df = df
+                    
+        if target_df is not None:
+            if isinstance(target_df.columns, pd.MultiIndex):
+                new_columns = []
+                for col in target_df.columns:
+                    cleaned_parts = []
+                    for item in col:
+                        # 加上 .replace(' ', '') 移除所有空白字元
+                        item_str = str(item).replace(' ', '').strip()
+                        if item_str and not item_str.startswith('Unnamed'):
+                            if not cleaned_parts or cleaned_parts[-1] != item_str:
+                                cleaned_parts.append(item_str)
+                    new_columns.append('_'.join(cleaned_parts))
+                target_df.columns = new_columns
+            else:
+                # 預防若表格非多層欄位，也一併移除空白
+                target_df.columns = [str(c).replace(' ', '').strip() for c in target_df.columns]
+            return target_df
     except Exception as e:
-        return {"status": "error", "message": str(e)}
-        pass
+        # 避免將 st.error 寫入快取，改用 print 記錄於後端 logs
+        print(f"Goodinfo 抓取發生異常: {e}")
+        return None
     finally:
-        driver.quit()
+        if driver is not None:
+            driver.quit()
+    return None
 
 # ==========================================
 # 0. 頁面設定與初始化
