@@ -792,27 +792,54 @@ def get_report_list():
 
 @st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
+    """下載、解析數值並將 PDF 轉為圖片供直接預覽 (修正版)"""
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        response = requests.get(pdf_url, verify=False, timeout=15)
+        if not pdf_url.lower().endswith('.pdf'):
+            r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
+            soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
+            for tag in soup_inner.find_all(['a', 'iframe']):
+                link = tag.get('href') or tag.get('src')
+                if link and link.lower().endswith('.pdf'):
+                    pdf_url = link
+                    if not pdf_url.startswith('http'):
+                        pdf_url = "https://www.spf.com.tw" + pdf_url
+                    break
+
+        response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
         if response.status_code != 200:
-            return None
-        
+            return {"ratio": "解析錯誤", "images": []}
+            
         pdf_bytes = response.content
         
-        # 使用 context manager (with) 確保 PDF 關閉，即使解析中途出錯也能釋放記憶體
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            images = []
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                img_data = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_data))
-                images.append(img)
-                
-        return images
+        # 1. 使用 pdfplumber 提取文字中的多空比
+        text = ""
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text += page.extract_text() or ""
+            
+        ratio_match = re.search(r"散戶小台多空比[:：]\s*([-+]?[\d\.]+)%", text)
+        ratio = ratio_match.group(1) if ratio_match else "N/A"
+        
+        # 2. 使用 fitz 擷取圖片 (套用安全的上下文管理器)
+        images = []
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(dpi=100) # 維持原本的低解析度省記憶體
+                    img_data = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_data))
+                    images.append(img)
+        except Exception:
+            pass
+            
+        return {
+            "ratio": ratio,
+            "images": images
+        }
     except Exception as e:
-        st.error(f"PDF 解析失敗: {str(e)}")
-        return None
+        return {"ratio": "解析錯誤", "images": []}
 
 @st.cache_data(ttl=1800, max_entries=2, show_spinner=False)
 def get_major_institutional_data(date_str):
