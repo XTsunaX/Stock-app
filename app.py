@@ -792,27 +792,13 @@ def get_report_list():
 
 @st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def fetch_and_parse_pdf(pdf_url):
-    """下載、解析數值並將 PDF 轉為圖片供直接預覽"""
-    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        if not pdf_url.lower().endswith('.pdf'):
-            r_inner = requests.get(pdf_url, headers=headers, timeout=10, verify=False)
-            soup_inner = BeautifulSoup(r_inner.text, 'html.parser')
-            for tag in soup_inner.find_all(['a', 'iframe']):
-                link = tag.get('href') or tag.get('src')
-                if link and link.lower().endswith('.pdf'):
-                    pdf_url = link
-                    if not pdf_url.startswith('http'):
-                        pdf_url = "https://www.spf.com.tw" + pdf_url
-                    break
-
-        response = requests.get(pdf_url, headers=headers, timeout=15, verify=False)
+        response = requests.get(pdf_url, verify=False, timeout=15)
         if response.status_code != 200:
             return None
         
         pdf_bytes = response.content
         
-        text = ""
         # 使用 context manager (with) 確保 PDF 關閉，即使解析中途出錯也能釋放記憶體
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             images = []
