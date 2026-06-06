@@ -169,9 +169,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
-    except Exception as e:
-        print(f"Shioaji fetch error for {code}: {e}")
-        return pd.DataFrame()
 
 # ==========================================
 # 費波計算核心函數
