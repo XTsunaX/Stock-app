@@ -1539,14 +1539,14 @@ def generate_note_from_points(points, manual_note, show_3d):
         return f"{auto_note}{manual_note}", auto_note
     return auto_note, auto_note
 
-def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None):
+def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, saved_notes_dict=None, name_map_dict=None, sj_logged_in=False, sj_api=None):
     code = str(code).strip()
     hist = pd.DataFrame()
     source_used = "none"
     
     # 優先使用永豐 API 擷取昨日/歷史日 K 線資料
-    if st.session_state.get('sj_logged_in', False):
-        sj_df = fetch_shioaji_data(st.session_state.sj_api, code, interval='1d', lookback_days=40)
+    if sj_logged_in and sj_api is not None:
+        sj_df = fetch_shioaji_data(sj_api, code, interval='1d', lookback_days=40)
         if not sj_df.empty:
             hist = sj_df
             source_used = "shioaji"
@@ -1909,9 +1909,9 @@ with tab1:
         notes_copy = dict(st.session_state.saved_notes)
         code_map_copy, _ = load_local_stock_names()
 
-        def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map):
+        def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj):
             time.sleep(random.uniform(0.5, 1.5))
-            try: return (t_code, t_source, t_extra, fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map))
+            try: return (t_code, t_source, t_extra, fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj))
             except Exception: return (t_code, t_source, t_extra, None)
 
         tasks_to_run = []
@@ -1923,8 +1923,12 @@ with tab1:
             if source == 'upload': upload_current += 1
             seen.add((code, source))
 
+        # 提前在主執行緒取出 session_state
+        sj_logged_in_flag = st.session_state.get('sj_logged_in', False)
+        sj_api_obj = st.session_state.get('sj_api', None)
+
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy): t for t in tasks_to_run}
+            future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy, sj_logged_in_flag, sj_api_obj): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
             
@@ -2117,7 +2121,7 @@ with tab1:
                              c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
                              if c_source != 'upload' or c_code in st.session_state.ignored_stocks or c_code in existing_codes: continue
                              
-                             data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
+                             data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
                              if data:
                                  data.update({'_source': c_source, '_order': c_extra, '_source_rank': 1})
                                  st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
@@ -2177,7 +2181,7 @@ with tab1:
                     for cand in st.session_state.all_candidates:
                          c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
                          if c_source != 'upload' or c_code in st.session_state.ignored_stocks or c_code in existing_codes: continue
-                         data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy)
+                         data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
                          if data:
                              data.update({'_source': c_source, '_order': c_extra, '_source_rank': 1})
                              st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
