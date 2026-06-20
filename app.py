@@ -2470,7 +2470,7 @@ with tab_fibo:
         # 新增：判斷是否為期貨或大盤，若是則加入 60分、15分、5分選項
         is_index_or_future = "加權指數" in final_target or "^TWII" in final_target or "TWF=F" in final_target or "TMF=F" in final_target or "期貨" in final_target
         if is_index_or_future:
-            interval_options = {"1d": "日", "1wk": "週", "1mo": "月", "60m": "60分", "15m": "15分", "5m": "5分"}
+            interval_options = {"5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月" }
             
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
         except: default_radio_idx = 0 
