@@ -113,44 +113,17 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 避免期貨分K因連假導致無資料或過長遭 API 截斷
+        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         if is_future:
-            if interval in ['1d', '1wk', '1mo']:
-                actual_lookback = min(lookback_days, 150)
-            elif interval == '60m':
-                actual_lookback = max(lookback_days, 20)  # 確保至少20天以避開長假
-            elif interval == '15m':
-                actual_lookback = max(lookback_days, 15)  
-            elif interval == '5m':
-                actual_lookback = max(lookback_days, 10)  
-            else:
-                actual_lookback = max(lookback_days, 5)
+            # 針對期貨日/週/月K 限制最大請求天數 (約80天可涵蓋預設的60根交易日K線)，避免 API 筆數過多回傳空值
+            actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
         else:
-            if interval in ['1d', '1wk', '1mo']:
-                actual_lookback = lookback_days
-            else:
-                actual_lookback = min(lookback_days, 20)
-                
-        # 3. 呼叫官方 api.kbars (加入智慧重試機制)
-        kbars = None
-        current_lookback = actual_lookback
-        
-        for attempt in range(4): 
-            try:
-                start_date = (now - timedelta(days=current_lookback)).strftime("%Y-%m-%d")
-                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-                
-                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
-                    break
-                
-                # 若抓不到資料(遇到長假無交易)，擴大天數往前找
-                current_lookback += 5
-                time.sleep(0.3)
-            except Exception:
-                # 若發生異常(請求過大被擋或逾時)，縮小天數
-                if current_lookback > 5:
-                    current_lookback -= 3
-                time.sleep(0.5)
+            actual_lookback = lookback_days
+            
+        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
+
+        # 3. 呼叫官方 api.kbars 
+        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
@@ -158,10 +131,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
         df = pd.DataFrame({**kbars})
         df['ts'] = pd.to_datetime(df['ts'])
-        
-        # [關鍵修正]: 強制轉換大小寫，防止 shioaji 回傳小寫導致 agg_dict 抓不到欄位而變空值
-        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -276,11 +245,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
             # 增加日/週/月K的支援天數，確保各週期都能由 Shioaji 取得精確資料
-            if 'TWF' in ticker or 'TMF' in ticker:
-                # 期貨交易時間長 (每天約19小時)，分K筆數極多，大幅縮小請求天數避免 API 斷線
-                days_needed = {"1m": 2, "5m": 3, "15m": 6, "60m": 10, "1d": 150, "1wk": 730, "1mo": 1825}
-            else:
-                days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
+            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
@@ -2501,12 +2466,6 @@ with tab_fibo:
 
         st.write("---")
         interval_options = {"1d": "日", "1wk": "週", "1mo": "月"}
-        
-        # 修正：判斷是否為期貨或大盤，依序加入 5分、15分、60分、日、週、月選項
-        is_index_or_future = "加權指數" in final_target or "^TWII" in final_target or "TWF=F" in final_target or "TMF=F" in final_target or "期貨" in final_target
-        if is_index_or_future:
-            interval_options = {"5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
-            
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
         except: default_radio_idx = 0 
 
