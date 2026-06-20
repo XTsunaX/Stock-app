@@ -1229,11 +1229,26 @@ with st.sidebar:
             except:
                 pass
 
-            if st.button("登出", key="btn_logout_sj"):
-                st.session_state.sj_logged_in = False
-                try: st.session_state.sj_api.logout()
-                except: pass
-                st.rerun()
+            col_logout, col_relogin = st.columns(2)
+            with col_logout:
+                if st.button("登出", key="btn_logout_sj", use_container_width=True):
+                    st.session_state.sj_logged_in = False
+                    try: st.session_state.sj_api.logout()
+                    except: pass
+                    st.rerun()
+            with col_relogin:
+                if st.button("快速重新登入", key="btn_relogin_sj", use_container_width=True):
+                    try:
+                        st.session_state.sj_api.logout()
+                        time.sleep(0.5)  # 給予一點緩衝時間確保連線確實斷開
+                        st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
+                        st.session_state.sj_logged_in = True
+                        st.success("✅ 重新登入成功！")
+                        time.sleep(0.5)
+                    except Exception as e:
+                        st.error(f"❌ 重新登入失敗: {e}")
+                        st.session_state.sj_logged_in = False
+                    st.rerun()
         else:
             sj_api_key = st.text_input("API Key", type="password", value=st.session_state.sj_key, key="input_sj_key")
             sj_secret = st.text_input("Secret Key", type="password", value=st.session_state.sj_secret, key="input_sj_secret")
