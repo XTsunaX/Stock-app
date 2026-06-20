@@ -113,18 +113,26 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
+       # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         if is_future:
-            # 針對期貨日/週/月K 限制最大請求天數 (約80天可涵蓋預設的60根交易日K線)，避免 API 筆數過多回傳空值
-            actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
+            # 修正：將日/週/月K的最大限制放寬至 150 天，確保扣除春節或長假後仍有充足交易日（大於60根K棒）
+            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
         else:
             actual_lookback = lookback_days
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars 
-        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-
+        # 3. 呼叫官方 api.kbars (加入輕量重試防護，解決首次載入偶發性空值、需手動重新整理的問題)
+        kbars = None
+        for attempt in range(3):
+            try:
+                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                    break
+                time.sleep(0.2)
+            except Exception:
+                time.sleep(0.3)
+        
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
             return pd.DataFrame()
