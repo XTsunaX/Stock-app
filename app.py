@@ -124,14 +124,14 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
 
         # 3. 呼叫官方 api.kbars (加入輕量重試防護，解決首次載入偶發性空值、需手動重新整理的問題)
         kbars = None
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 kbars = api.kbars(contract=contract, start=start_date, end=end_date)
                 if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
                     break
-                time.sleep(0.2)
+                time.sleep(0.5)
             except Exception:
-                time.sleep(0.3)
+                time.sleep(1.0)
         
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
