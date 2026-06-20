@@ -118,19 +118,25 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 150)
             elif interval == '60m':
-                actual_lookback = 5   # 大幅下修：5天即可涵蓋約 75 根 60分K (期貨交易時間長)
+                actual_lookback = min(lookback_days, 10)  # 假日緩衝，最多10天即可涵蓋足夠 60m
             elif interval == '15m':
-                actual_lookback = 3   # 大幅下修：3天即可涵蓋近 180 根 15分K
+                actual_lookback = min(lookback_days, 5)   # 假日緩衝，最多5天
+            elif interval == '5m':
+                actual_lookback = min(lookback_days, 3)   # 假日緩衝，最多3天
             else:
-                actual_lookback = 2   # 大幅下修：2天即可涵蓋近 360 根 5分K
+                actual_lookback = 2
         else:
-            actual_lookback = lookback_days
-            
-        # 3. 呼叫官方 api.kbars (加入遞減重試機制與間隔，防止太頻繁或資料過大導致失敗)
+            if interval in ['1d', '1wk', '1mo']:
+                actual_lookback = lookback_days
+            else:
+                actual_lookback = min(lookback_days, 20)  # 限制非期貨的分K天數
+                
+        # 3. 呼叫官方 api.kbars (加入動態遞減與漸進式休眠，防止頻繁或資料過大導致失敗)
         kbars = None
         current_lookback = actual_lookback
         
-        for attempt in range(4): # 增加至4次重試
+        # 增加至5次重試，每次失敗遞減天數並加長等待時間
+        for attempt in range(5): 
             try:
                 start_date = (now - timedelta(days=current_lookback)).strftime("%Y-%m-%d")
                 kbars = api.kbars(contract=contract, start=start_date, end=end_date)
@@ -138,14 +144,18 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
                     break
                 
-                # 若抓不到資料(可能單次請求太大被擋)，針對期貨遞減天數
-                if is_future and current_lookback > 1:
-                    current_lookback = max(1, current_lookback - 1)
-                time.sleep(0.5)
+                # 若抓不到資料(單次請求太大被擋)，針對期貨嚴格遞減天數
+                if current_lookback > 3:
+                    current_lookback -= 2
+                elif current_lookback > 1:
+                    current_lookback -= 1
+                time.sleep(0.5 + attempt * 0.2) # 逐漸拉長等待時間避免頻繁請求
             except Exception:
-                if is_future and current_lookback > 1:
-                    current_lookback = max(1, current_lookback - 1)
-                time.sleep(1.0)
+                if current_lookback > 3:
+                    current_lookback -= 2
+                elif current_lookback > 1:
+                    current_lookback -= 1
+                time.sleep(1.0 + attempt * 0.5)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
@@ -268,7 +278,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
             # 增加日/週/月K的支援天數，確保各週期都能由 Shioaji 取得精確資料
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
+            if 'TWF' in ticker or 'TMF' in ticker:
+                # 期貨交易時間長 (每天約19小時)，分K筆數極多，大幅縮小請求天數避免 API 斷線
+                days_needed = {"1m": 2, "5m": 3, "15m": 6, "60m": 10, "1d": 150, "1wk": 730, "1mo": 1825}
+            else:
+                days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
+                
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
