@@ -455,23 +455,30 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if ma_flags['20']: df['MA20'] = df['Close'].rolling(window=20).mean()
     if ma_flags['60']: df['MA60'] = df['Close'].rolling(window=60).mean()
 
-    # 裁切近期 K 棒
-    df_subset = df.tail(lookback).copy()
-    df_subset = df_subset.dropna(subset=['High', 'Low'])
+    # 裁切近期 K 棒，加入 60 -> 45 -> 30 的回落機制
+    lookbacks_to_try = [60, 45, 30] if lookback == 60 else [lookback]
     
-    if df_subset.empty:
-        st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
-        return
+    df_subset = pd.DataFrame()
+    for lb in lookbacks_to_try:
+        temp_subset = df.tail(lb).copy()
+        temp_subset = temp_subset.dropna(subset=['High', 'Low'])
+        if not temp_subset.empty:
+            h = float(temp_subset['High'].max())
+            l = float(temp_subset['Low'].min())
+            if h != l:
+                df_subset = temp_subset
+                high_60 = h
+                low_60 = l
+                break
 
-    try:
-        high_60 = float(df_subset['High'].max())
-        low_60 = float(df_subset['Low'].min())
-        if high_60 == low_60:
+    if df_subset.empty:
+        temp_subset = df.tail(lookback).copy().dropna(subset=['High', 'Low'])
+        if temp_subset.empty:
+            st.error(f"該股票 ({ticker}, {interval}) 的近期 K 線資料不完整或為空。")
+            return
+        else:
             st.warning(f"該股票 ({ticker}, {interval}) 近期高低點相同，無法畫出波段比例。")
             return
-    except Exception as e:
-        st.error(f"計算高低點時發生錯誤：{e}")
-        return
 
     diff = high_60 - low_60
     ratios = [-2.618, -2.0, -1.618, -1.0, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0, 2.618]
@@ -1968,6 +1975,16 @@ with tab1:
         gc.collect()
 
     if not st.session_state.stock_data.empty:
+        # 新增：當限制筆數減少時，自動隱藏多餘的檔案上傳資料
+        df_check = st.session_state.stock_data
+        if '_source' in df_check.columns:
+            upload_mask = df_check['_source'] == 'upload'
+            if upload_mask.sum() > st.session_state.limit_rows:
+                keep_upload = df_check[upload_mask].head(st.session_state.limit_rows)
+                keep_other = df_check[~upload_mask]
+                st.session_state.stock_data = pd.concat([keep_upload, keep_other]).sort_values(by=['_source_rank', '_order'] if '_source_rank' in df_check.columns else None)
+                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+
         df_all = st.session_state.stock_data.copy()
         if '_source' not in df_all.columns: df_all['_source'] = 'upload'
         df_all = df_all.rename(columns={"漲停價": "當日漲停價", "跌停價": "當日跌停價", "獲利目標": "+3%", "防守停損": "-3%"})
@@ -2449,6 +2466,12 @@ with tab_fibo:
 
         st.write("---")
         interval_options = {"1d": "日", "1wk": "週", "1mo": "月"}
+        
+        # 新增：判斷是否為期貨或大盤，若是則加入 60分、15分、5分選項
+        is_index_or_future = "加權指數" in final_target or "^TWII" in final_target or "TWF=F" in final_target or "TMF=F" in final_target or "期貨" in final_target
+        if is_index_or_future:
+            interval_options = {"1d": "日", "1wk": "週", "1mo": "月", "60m": "60分", "15m": "15分", "5m": "5分"}
+            
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
         except: default_radio_idx = 0 
 
