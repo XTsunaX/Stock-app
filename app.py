@@ -118,26 +118,34 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 150)
             elif interval == '60m':
-                actual_lookback = 15 # 確保 60分K 有足夠的歷史資料
+                actual_lookback = 5   # 大幅下修：5天即可涵蓋約 75 根 60分K (期貨交易時間長)
             elif interval == '15m':
-                actual_lookback = 7
+                actual_lookback = 3   # 大幅下修：3天即可涵蓋近 180 根 15分K
             else:
-                actual_lookback = 5 # 5m, 1m
+                actual_lookback = 2   # 大幅下修：2天即可涵蓋近 360 根 5分K
         else:
             actual_lookback = lookback_days
             
-        start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
-
-        # 3. 呼叫官方 api.kbars (加入重試機制與間隔，防止太頻繁請求導致失敗)
+        # 3. 呼叫官方 api.kbars (加入遞減重試機制與間隔，防止太頻繁或資料過大導致失敗)
         kbars = None
-        for attempt in range(3):
+        current_lookback = actual_lookback
+        
+        for attempt in range(4): # 增加至4次重試
             try:
+                start_date = (now - timedelta(days=current_lookback)).strftime("%Y-%m-%d")
                 kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+                
                 if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
                     break
-                time.sleep(0.3)
-            except Exception:
+                
+                # 若抓不到資料(可能單次請求太大被擋)，針對期貨遞減天數
+                if is_future and current_lookback > 1:
+                    current_lookback = max(1, current_lookback - 1)
                 time.sleep(0.5)
+            except Exception:
+                if is_future and current_lookback > 1:
+                    current_lookback = max(1, current_lookback - 1)
+                time.sleep(1.0)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
