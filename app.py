@@ -115,24 +115,22 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
       # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         if is_future:
-            # 修正：大幅縮小期貨分K請求天數至 2 天，避免資料量過大導致 API 扣除流量卻回傳空值
-            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 2)
+            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 1
         else:
-            # 修正：個股分K也限制最高 3 天以加快抓取速度
-            actual_lookback = min(lookback_days, 365) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 3)
+            actual_lookback = min(lookback_days, 365) if interval in ['1d', '1wk', '1mo'] else 2
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars (減少重試次數與等待時間，加快整體抓取速度)
+        # 3. 呼叫官方 api.kbars (減少單次請求負載並優化重試機制)
         kbars = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 kbars = api.kbars(contract=contract, start=start_date, end=end_date)
                 if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
                     break
-                time.sleep(0.1)
+                time.sleep(0.5)
             except Exception:
-                pass
+                time.sleep(1.0)
         
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
@@ -1237,21 +1235,24 @@ with st.sidebar:
                     try: st.session_state.sj_api.logout()
                     except: pass
                     st.rerun()
-                # 預留顯示訊息的空間，確保對齊在登出欄位下方
-                msg_placeholder = st.empty()
-                
             with col_relogin:
-                if st.button("快速重新登入", key="btn_relogin_sj", use_container_width=True):
-                    try:
-                        st.session_state.sj_api.logout()
-                        time.sleep(0.2)
-                        st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
-                        st.session_state.sj_logged_in = True
-                        msg_placeholder.success("✅ 重新登入成功！")
-                        time.sleep(0.5)
-                    except Exception as e:
-                        msg_placeholder.error(f"❌ 重新登入失敗: {e}")
-                        st.session_state.sj_logged_in = False
+                relogin_clicked = st.button("快速重新登入", key="btn_relogin_sj", use_container_width=True)
+                
+            # 將訊息顯示區塊放在 columns 之外，寬度即可橫跨延伸至兩個按鈕下方
+            msg_placeholder = st.empty()
+            
+            if relogin_clicked:
+                try:
+                    st.session_state.sj_api.logout()
+                    time.sleep(0.5)  # 給予一點緩衝時間確保連線確實斷開
+                    st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
+                    st.session_state.sj_logged_in = True
+                    msg_placeholder.success("✅ 重新登入成功！")
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    msg_placeholder.error(f"❌ 重新登入失敗: {e}")
+                    st.session_state.sj_logged_in = False
                     st.rerun()
         else:
             sj_api_key = st.text_input("API Key", type="password", value=st.session_state.sj_key, key="input_sj_key")
