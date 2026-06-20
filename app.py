@@ -115,15 +115,29 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         if is_future:
-            # 針對期貨日/週/月K 限制最大請求天數 (約80天可涵蓋預設的60根交易日K線)，避免 API 筆數過多回傳空值
-            actual_lookback = min(lookback_days, 80) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 5)
+            if interval in ['1d', '1wk', '1mo']:
+                actual_lookback = min(lookback_days, 150)
+            elif interval == '60m':
+                actual_lookback = 15 # 確保 60分K 有足夠的歷史資料
+            elif interval == '15m':
+                actual_lookback = 7
+            else:
+                actual_lookback = 5 # 5m, 1m
         else:
             actual_lookback = lookback_days
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars 
-        kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+        # 3. 呼叫官方 api.kbars (加入重試機制與間隔，防止太頻繁請求導致失敗)
+        kbars = None
+        for attempt in range(3):
+            try:
+                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                    break
+                time.sleep(0.3)
+            except Exception:
+                time.sleep(0.5)
 
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
@@ -2467,10 +2481,10 @@ with tab_fibo:
         st.write("---")
         interval_options = {"1d": "日", "1wk": "週", "1mo": "月"}
         
-        # 新增：判斷是否為期貨或大盤，若是則加入 60分、15分、5分選項
+        # 修正：判斷是否為期貨或大盤，依序加入 5分、15分、60分、日、週、月選項
         is_index_or_future = "加權指數" in final_target or "^TWII" in final_target or "TWF=F" in final_target or "TMF=F" in final_target or "期貨" in final_target
         if is_index_or_future:
-            interval_options = {"5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月" }
+            interval_options = {"5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
             
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
         except: default_radio_idx = 0 
