@@ -154,7 +154,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
       # 避免期貨因請求天數過長遭 API 截斷，強制改為抓取 45 天
         if is_future:
-            actual_lookback = min(lookback_days, 45)
+            actual_lookback = min(lookback_days, 60)
         else:
             actual_lookback = min(lookback_days, 60) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
