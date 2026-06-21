@@ -154,10 +154,10 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 150 天
         if is_future:
-            actual_lookback = min(lookback_days, 150)
+            actual_lookback = min(lookback_days, 60)
         else:
-            # 個股日/週/月K改為抓取 180 天，短週期分K維持最高 10 天以防流量過載
-            actual_lookback = min(lookback_days, 180) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
+            # 要取得 90 根日K，日曆天數約需 130~150 天，此處放寬上限至 150
+            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
@@ -298,10 +298,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 df = cnyes_df
                 cnyes_used = True
 
-        # 優先使用永豐 API 獲取盤中即時 K 線
+       # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False) and not cnyes_used:
-            # 大幅調降 Shioaji 支援天數，避免流量異常與截斷
-            days_needed = {"1m": 2, "5m": 5, "15m": 10, "60m": 15, "1d": 60, "1wk": 180, "1mo": 365}
+            # 確保日K能抓到足夠天數 (150個日曆天約大於 90 根 K 棒)
+            days_needed = {"1m": 2, "5m": 5, "15m": 10, "60m": 15, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
