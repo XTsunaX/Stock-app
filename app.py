@@ -81,6 +81,45 @@ def is_warrant(code):
     if c.startswith('00'): return False
     return len(c) > 4
 
+def is_warrant(code):
+    c = str(code)
+    if c.startswith('00'): return False
+    return len(c) > 4
+
+# ==========================================
+# 備援資料：鉅亨網期貨 K 棒擷取 (排除 YF/FinMind)
+# ==========================================
+def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
+    try:
+        if code in ["TWF=F", "台指期貨", "TXF", "台指(全)", "台指期(全)", "台指期貨(全)"]: cnyes_symbol = "TWS:TX"
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]: cnyes_symbol = "TWS:MTX"
+        else: return pd.DataFrame()
+
+        res_map = {"1m": "1", "5m": "5", "15m": "15", "60m": "60", "1d": "D", "1wk": "W", "1mo": "M"}
+        res = res_map.get(interval, "D")
+        
+        now_ts = int(time.time())
+        start_ts = now_ts - (int(lookback_days) * 86400 * 1.5)
+        
+        url = f"https://ws.cnyes.com/charting/api/v1/history?symbol={cnyes_symbol}&resolution={res}&from={int(start_ts)}&to={now_ts}"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        
+        if data.get('s') == 'ok':
+            df = pd.DataFrame({
+                'ts': pd.to_datetime(data['t'], unit='s'),
+                'Open': data['o'],
+                'High': data['h'],
+                'Low': data['l'],
+                'Close': data['c'],
+                'Volume': data['v']
+            })
+            df['ts'] = df['ts'] + pd.Timedelta(hours=8)
+            df.set_index('ts', inplace=True)
+            return df
+    except Exception as e:
+        print(f"CNYES fetch error for {code}: {e}")
+    return pd.DataFrame()
 
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
@@ -115,9 +154,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
       # 避免期貨分K因請求天數過長遭 API 截斷，依照週期縮小單次請求天數
         if is_future:
-            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 1
+            actual_lookback = min(lookback_days, 15) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 3)
         else:
-            actual_lookback = min(lookback_days, 365) if interval in ['1d', '1wk', '1mo'] else 2
+            actual_lookback = min(lookback_days, 60) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
@@ -240,19 +279,28 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     period_map = {"1m": "7d", "5m": "30d", "15m": "60d", "60m": "730d", "1d": "2y", "1wk": "2y", "1mo": "5y"}
     is_index = ticker.startswith('^') or 'TWF' in ticker or 'TMF' in ticker
     
-    try:
+   try:
         df = pd.DataFrame()
         raw_code = ticker_code.split('.')[0]
         sj_kbars_used = False
         sj_snap_used = False
+        cnyes_used = False
         
         twstock_used = False
         explicit_ref_prev_close = None  # 新增變數以儲存正確昨日參考價
         
+        # 期貨備援：使用鉅亨網擷取期貨歷史資料 (速度快且不消耗永豐流量)
+        if raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+            days_req = 60 if interval in ["1m", "5m", "15m", "60m"] else 365
+            cnyes_df = fetch_cnyes_futures_data(raw_code, interval=interval, lookback_days=days_req)
+            if not cnyes_df.empty:
+                df = cnyes_df
+                cnyes_used = True
+
         # 優先使用永豐 API 獲取盤中即時 K 線
-        if st.session_state.get('sj_logged_in', False):
-            # 增加日/週/月K的支援天數，確保各週期都能由 Shioaji 取得精確資料
-            days_needed = {"1m": 3, "5m": 7, "15m": 15, "60m": 45, "1d": 150, "1wk": 730, "1mo": 1825}
+        if st.session_state.get('sj_logged_in', False) and not cnyes_used:
+            # 大幅調降 Shioaji 支援天數，避免流量異常與截斷
+            days_needed = {"1m": 2, "5m": 5, "15m": 10, "60m": 15, "1d": 60, "1wk": 180, "1mo": 365}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
@@ -262,7 +310,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     sj_kbars_used = True
 
         # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
-        if not sj_kbars_used:
+        if not sj_kbars_used and not cnyes_used:
             import time
             for attempt in range(3):
                 try:
@@ -300,9 +348,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         else:
                             break
 
-            # 期貨異常保護 (移除自動替換加權指數邏輯)
+           # 期貨異常保護 (移除自動替換加權指數邏輯)
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
-                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。請確保已登入永豐 Shioaji API 以獲取完整的期貨(日/夜盤)數據。")
+                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。請確保網路連線正常或稍後再試。")
                 return
                 
             # 將 YF 的個股成交量 (股) 統一轉換為 (張)
@@ -688,6 +736,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     
     if sj_kbars_used:
         data_source_text = "永豐 Shioaji API (即時K線)"
+    elif cnyes_used:
+        data_source_text = "鉅亨網 API + 永豐即時快照" if sj_snap_used else "鉅亨網 API (期貨資料)"
     elif sj_snap_used:
         data_source_text = "YF歷史 + 永豐即時快照"
     elif twstock_used:
