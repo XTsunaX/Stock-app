@@ -152,11 +152,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-      # 避免期貨因請求天數過長遭 API 截斷，強制改為抓取 45 天
-        if is_future:
+        # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 60 天
+        if is_future or interval in ['1d', '1wk', '1mo']:
+            # 備註：若期貨需要看分K (1m, 5m)，60 天的資料量仍偏大。若未來發現分K讀取卡頓，可單獨把期貨的分K天數調降至 15 天。
             actual_lookback = min(lookback_days, 60)
         else:
-            actual_lookback = min(lookback_days, 60) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
+            # 個股的分K線 (1m, 5m...) 強制縮短為最高 10 天，避免 API 流量過載
+            actual_lookback = min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
