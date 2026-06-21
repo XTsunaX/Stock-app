@@ -152,12 +152,12 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 90 天
+        # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 150 天
         if is_future:
-            actual_lookback = min(lookback_days, 90)
+            actual_lookback = min(lookback_days, 150)
         else:
-            # 個股日/週/月K改為抓取 150 天，短週期分K維持最高 10 天以防流量過載
-            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
+            # 個股日/週/月K改為抓取 180 天，短週期分K維持最高 10 天以防流量過載
+            actual_lookback = min(lookback_days, 180) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
