@@ -91,50 +91,52 @@ def is_warrant(code):
 # ==========================================
 def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
     try:
-        if code in ["TWF=F", "台指期貨", "TXF", "台指(全)", "台指期(全)", "台指期貨(全)"]: cnyes_symbol = "TWS:TX"
-        elif code in ["TMF=F", "微型台指期貨", "TMF", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]: cnyes_symbol = "TWS:MTX"
-        else: return pd.DataFrame()
+        # 準備多組可能的代號，以防 API 代號變更導致讀不到
+        if code in ["TWF=F", "台指期貨", "TXF", "台指(全)", "台指期(全)", "台指期貨(全)"]: 
+            cnyes_symbols = ["TWS:TXI", "TWS:TX", "TWS:TXF", "TWS:FITX"]
+        elif code in ["TMF=F", "微型台指期貨", "TMF", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]: 
+            cnyes_symbols = ["TWS:TMI", "TWS:MTX", "TWS:TMF", "TWS:FIMTX"]
+        else: 
+            return pd.DataFrame()
 
         res_map = {"1m": "1", "5m": "5", "15m": "15", "60m": "60", "1d": "D", "1wk": "W", "1mo": "M"}
         res = res_map.get(interval, "D")
         
         now_ts = int(time.time())
-        # 將回推時間係數放大，確保取得足夠的K棒數量
         start_ts = now_ts - (int(lookback_days) * 86400 * 2.0)
         
-        url = f"https://ws.cnyes.com/charting/api/v1/history?symbol={cnyes_symbol}&resolution={res}&from={int(start_ts)}&to={now_ts}"
-        
-        # 新增：偽裝成正常瀏覽器請求，避免被伺服器阻擋
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json'
         }
         
-        # 新增：3次重試機制
-        for attempt in range(3):
-            try:
-                r = requests.get(url, headers=headers, timeout=10, verify=False)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get('s') == 'ok':
-                        df = pd.DataFrame({
-                            'ts': pd.to_datetime(data['t'], unit='s'),
-                            'Open': data['o'],
-                            'High': data['h'],
-                            'Low': data['l'],
-                            'Close': data['c'],
-                            'Volume': data['v']
-                        })
-                        df['ts'] = df['ts'] + pd.Timedelta(hours=8)
-                        df.set_index('ts', inplace=True)
-                        return df
-                time.sleep(1) # 若失敗，等待 1 秒後重試
-            except Exception as e:
-                time.sleep(1)
-                
+        # 遍歷代號，只要有一個成功抓到資料就回傳
+        for sym in cnyes_symbols:
+            url = f"https://ws.cnyes.com/charting/api/v1/history?symbol={sym}&resolution={res}&from={int(start_ts)}&to={now_ts}"
+            for attempt in range(2):
+                try:
+                    r = requests.get(url, headers=headers, timeout=5, verify=False)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if data.get('s') == 'ok':
+                            df = pd.DataFrame({
+                                'ts': pd.to_datetime(data['t'], unit='s'),
+                                'Open': data['o'],
+                                'High': data['h'],
+                                'Low': data['l'],
+                                'Close': data['c'],
+                                'Volume': data['v']
+                            })
+                            df['ts'] = df['ts'] + pd.Timedelta(hours=8)
+                            df.set_index('ts', inplace=True)
+                            return df
+                    time.sleep(0.5)
+                except:
+                    time.sleep(0.5)
     except Exception as e:
         print(f"CNYES fetch error for {code}: {e}")
     return pd.DataFrame()
+    
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
@@ -166,31 +168,70 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 150 天
+        # 避免期貨因請求天數過長遭 API 截斷，進行分段或調整天數
         if is_future:
-            actual_lookback = min(lookback_days, 60)
+            # 期貨放寬到 90 天 (搭配下方的分段抓取，可確保抓到足夠的K棒且絕對不會 timeout)
+            actual_lookback = min(lookback_days, 90)
         else:
-            # 要取得 90 根日K，日曆天數約需 130~150 天，此處放寬上限至 150
+            # 個股日/週/月K改為抓取 150 天 (扣除假日後約等於 90 根K棒)
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars (減少單次請求負載並優化重試機制)
-        kbars = None
-        for attempt in range(3):
-            try:
-                kbars = api.kbars(contract=contract, start=start_date, end=end_date)
-                if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
-                    break
-                time.sleep(0.5)
-            except Exception:
-                time.sleep(1.0)
+        # 3. 呼叫官方 api.kbars (加入期貨「分段抓取」機制，徹底解決 Timeout)
+        kbars_dict = None
+        
+        if is_future and actual_lookback > 15:
+            # 每 15 天為一個區間分批抓取，最後合併
+            all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
+            curr_end = now
+            chunks = []
+            
+            while curr_end > now - timedelta(days=actual_lookback):
+                curr_start = curr_end - timedelta(days=15)
+                chunks.append((curr_start, curr_end))
+                curr_end = curr_start - timedelta(days=1)
+            
+            for c_start, c_end in reversed(chunks):
+                s_str = c_start.strftime("%Y-%m-%d")
+                e_str = c_end.strftime("%Y-%m-%d")
+                for attempt in range(3):
+                    try:
+                        k = api.kbars(contract=contract, start=s_str, end=e_str)
+                        if k and hasattr(k, 'ts') and len(k.ts) > 0:
+                            all_ts.extend(k.ts)
+                            all_open.extend(k.Open)
+                            all_high.extend(k.High)
+                            all_low.extend(k.Low)
+                            all_close.extend(k.Close)
+                            all_vol.extend(k.Volume)
+                            break
+                        time.sleep(0.5)
+                    except:
+                        time.sleep(0.5)
+            
+            if all_ts:
+                kbars_dict = {
+                    'ts': all_ts, 'Open': all_open, 'High': all_high,
+                    'Low': all_low, 'Close': all_close, 'Volume': all_vol
+                }
+        else:
+            # 個股或短天數期貨，維持單次抓取
+            for attempt in range(3):
+                try:
+                    kbars = api.kbars(contract=contract, start=start_date, end=end_date)
+                    if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                        kbars_dict = {**kbars}
+                        break
+                    time.sleep(0.5)
+                except Exception:
+                    time.sleep(1.0)
         
         # 4. 依照官方文件轉換成 DataFrame 格式
-        if not kbars or not hasattr(kbars, 'ts') or len(kbars.ts) == 0:
+        if not kbars_dict:
             return pd.DataFrame()
             
-        df = pd.DataFrame({**kbars})
+        df = pd.DataFrame(kbars_dict)
         df['ts'] = pd.to_datetime(df['ts'])
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
