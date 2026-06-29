@@ -154,7 +154,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         # 判斷擷取天數：若是期貨，或週期為日/週/月K，最高抓取 150 天
         if is_future:
-            actual_lookback = min(lookback_days, 60)
+            actual_lookback = min(lookback_days, 50)
         else:
             # 要取得 90 根日K，日曆天數約需 130~150 天，此處放寬上限至 150
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
