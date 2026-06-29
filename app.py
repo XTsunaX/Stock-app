@@ -99,28 +99,42 @@ def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
         res = res_map.get(interval, "D")
         
         now_ts = int(time.time())
-        start_ts = now_ts - (int(lookback_days) * 86400 * 1.5)
+        # 將回推時間係數放大，確保取得足夠的K棒數量
+        start_ts = now_ts - (int(lookback_days) * 86400 * 2.0)
         
         url = f"https://ws.cnyes.com/charting/api/v1/history?symbol={cnyes_symbol}&resolution={res}&from={int(start_ts)}&to={now_ts}"
-        r = requests.get(url, timeout=5)
-        data = r.json()
         
-        if data.get('s') == 'ok':
-            df = pd.DataFrame({
-                'ts': pd.to_datetime(data['t'], unit='s'),
-                'Open': data['o'],
-                'High': data['h'],
-                'Low': data['l'],
-                'Close': data['c'],
-                'Volume': data['v']
-            })
-            df['ts'] = df['ts'] + pd.Timedelta(hours=8)
-            df.set_index('ts', inplace=True)
-            return df
+        # 新增：偽裝成正常瀏覽器請求，避免被伺服器阻擋
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json'
+        }
+        
+        # 新增：3次重試機制
+        for attempt in range(3):
+            try:
+                r = requests.get(url, headers=headers, timeout=10, verify=False)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get('s') == 'ok':
+                        df = pd.DataFrame({
+                            'ts': pd.to_datetime(data['t'], unit='s'),
+                            'Open': data['o'],
+                            'High': data['h'],
+                            'Low': data['l'],
+                            'Close': data['c'],
+                            'Volume': data['v']
+                        })
+                        df['ts'] = df['ts'] + pd.Timedelta(hours=8)
+                        df.set_index('ts', inplace=True)
+                        return df
+                time.sleep(1) # 若失敗，等待 1 秒後重試
+            except Exception as e:
+                time.sleep(1)
+                
     except Exception as e:
         print(f"CNYES fetch error for {code}: {e}")
     return pd.DataFrame()
-
 # ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
