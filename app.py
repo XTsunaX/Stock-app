@@ -87,59 +87,6 @@ def is_warrant(code):
     return len(c) > 4
 
 # ==========================================
-# 備援資料：鉅亨網期貨 K 棒擷取 (排除 YF/FinMind)
-# ==========================================
-def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
-    try:
-        # 準備多組可能的代號，以防 API 代號變更導致讀不到
-        if code in ["TWF=F", "台指期貨", "TXF", "台指(全)", "台指期(全)", "台指期貨(全)"]: 
-            cnyes_symbols = ["TWF:TXF", "TWS:TXI", "TWS:TX", "TWS:TXF", "TWS:FITX"]
-        elif code in ["TMF=F", "微型台指期貨", "TMF", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]: 
-            cnyes_symbols = ["TWF:MXF", "TWS:TMI", "TWS:MTX", "TWS:TMF", "TWS:FIMTX"]
-        elif code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            cnyes_symbols = ["TWS:TSE01"]
-        else: 
-            return pd.DataFrame()
-
-        res_map = {"1m": "1", "5m": "5", "15m": "15", "60m": "60", "1d": "D", "1wk": "W", "1mo": "M"}
-        res = res_map.get(interval, "D")
-        
-        now_ts = int(time.time())
-        start_ts = now_ts - (int(lookback_days) * 86400 * 2.0)
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json'
-        }
-        
-        # 遍歷代號，只要有一個成功抓到資料就回傳
-        for sym in cnyes_symbols:
-            url = f"https://ws.cnyes.com/charting/api/v1/history?symbol={sym}&resolution={res}&from={int(start_ts)}&to={now_ts}"
-            for attempt in range(2):
-                try:
-                    r = requests.get(url, headers=headers, timeout=5, verify=False)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get('s') == 'ok':
-                            df = pd.DataFrame({
-                                'ts': pd.to_datetime(data['t'], unit='s'),
-                                'Open': data['o'],
-                                'High': data['h'],
-                                'Low': data['l'],
-                                'Close': data['c'],
-                                'Volume': data['v']
-                            })
-                            df['ts'] = df['ts'] + pd.Timedelta(hours=8)
-                            df.set_index('ts', inplace=True)
-                            return df
-                    time.sleep(0.5)
-                except:
-                    time.sleep(0.5)
-    except Exception as e:
-        print(f"CNYES fetch error for {code}: {e}")
-    return pd.DataFrame()
-    
-# ==========================================
 # 永豐 API (Shioaji) 擷取核心
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
@@ -385,16 +332,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         raw_code = ticker_code.split('.')[0]
         sj_kbars_used = False
         sj_snap_used = False
-        cnyes_used = False
         
         twstock_used = False
-        explicit_ref_prev_close = None  # 新增變數以儲存正確昨日參考價
+        explicit_ref_prev_close = None
         
-       # 1. 優先使用永豐 API 獲取盤中即時 K 線 (將永豐移至最前，解決高低點與券商誤差)
+        # 1. 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            # 極度縮小短週期天數，期貨一天交易19小時，僅需極短天數即滿足 60 根 K 棒
             days_needed = {"1m": 3, "5m": 3, "15m": 5, "60m": 12, "1d": 150, "1wk": 730, "1mo": 1825}
-                
             if interval in days_needed:
                 req_days = days_needed[interval]
                 sj_df = fetch_shioaji_data(st.session_state.sj_api, raw_code, interval=interval, lookback_days=req_days)
@@ -402,16 +346,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     df = sj_df
                     sj_kbars_used = True
 
-        # 2. 若永豐未登入或沒抓到，期貨才退回使用鉅亨網備援
-        if not sj_kbars_used and raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)", "^TWII", "加權指數", "TSE"]:
-            days_req = 60 if interval in ["1m", "5m", "15m", "60m"] else 365
-            cnyes_df = fetch_cnyes_futures_data(raw_code, interval=interval, lookback_days=days_req)
-            if not cnyes_df.empty:
-                df = cnyes_df
-                cnyes_used = True
-
-        # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
-        if not sj_kbars_used and not cnyes_used:
+        # 若永豐未登入、沒抓到，直接退回使用 yfinance (已移除 cnyes 判斷)
+        if not sj_kbars_used:
             import time
             for attempt in range(3):
                 try:
@@ -913,8 +849,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     
     if sj_kbars_used:
         data_source_text = "永豐 Shioaji API (即時K線)"
-    elif cnyes_used:
-        data_source_text = "鉅亨網 API + 永豐即時快照" if sj_snap_used else "鉅亨網 API (期貨資料)"
     elif sj_snap_used:
         data_source_text = "YF歷史 + 永豐即時快照"
     elif twstock_used:
