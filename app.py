@@ -152,13 +152,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         is_index = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-                is_future = True
-                contract = api.Contracts.Futures.TXF.TXFR1
+                elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+                    is_future = True
+                    contract = api.Contracts.Futures.TXF.TXFR1
 
-            elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-                is_future = True
-                contract = api.Contracts.Futures.TMF.TMFR1
+                elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+                    is_future = True
+                    contract = api.Contracts.Futures.TMF.TMFR1
         else:
             try:
                 contract = api.Contracts.Stocks[code]
