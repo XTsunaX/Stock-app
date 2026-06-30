@@ -295,6 +295,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 # 避免整點邊界那1分鐘被誤分到隔壁區間，導致高低點對不上券商軟體
                 df = df.copy()
                 df.index = df.index - pd.Timedelta(minutes=1)
+                st.session_state['sj_raw_1m_debug'] = df.copy()
                 if interval == '60m' and is_future:
                     # 期貨日盤開盤時間08:45非整點，預設resample以整點切K會跟券商軟體(以08:45為起點)對不齊
                     # 故日盤、夜盤分開切，日盤校正45分鐘offset、夜盤(15:00整點)維持預設即可
@@ -511,6 +512,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                     is_before_open = True
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
+                            st.session_state['sj_snap_debug'] = {
+                                '現在時間': str(current_time), 'now_dt': str(now_dt),
+                                'is_before_open': is_before_open,
+                                'rt_price(快照價)': rt_price, 'rt_open': rt_open, 'rt_high': rt_high, 'rt_low': rt_low,
+                                '更新前最後一根K棒時間': str(df.index[-1]),
+                            }
 
                             if not is_before_open and not is_market_closed_func(now_dt.date()): # 新增: 排除假日與未開盤異常
                                 if interval == "1d":
@@ -617,7 +624,17 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
         return
-
+    
+    with st.expander("🔍 除錯：永豐原始1分K資料 (校正時間後)", expanded=False):
+        raw_1m = st.session_state.get('sj_raw_1m_debug')
+        if raw_1m is not None and not raw_1m.empty:
+            st.dataframe(raw_1m)
+        else:
+            st.write("目前無原始1分K資料（可能不是永豐資料來源）")
+            
+    with st.expander("🔍 除錯：永豐即時快照狀態", expanded=False):
+        st.write(st.session_state.get('sj_snap_debug', '尚無資料（可能未觸發快照更新）'))
+    
     # 計算均線
     if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
     if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
