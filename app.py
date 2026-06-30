@@ -245,6 +245,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         # 4. 依照官方文件轉換成 DataFrame 格式
         if not kbars_dict:
+            st.session_state['sj_last_error'] = f"contract={getattr(contract, 'code', contract)} 期間內查無K棒（API回傳0筆，非例外錯誤）"
             return pd.DataFrame()
             
         df = pd.DataFrame(kbars_dict)
@@ -282,6 +283,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         return df
     except Exception as e:
         print(f"Shioaji fetch error for {code}: {e}")
+        st.session_state['sj_last_error'] = f"{type(e).__name__}: {e}"
         return pd.DataFrame()
 
 # ==========================================
@@ -424,7 +426,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
            # 期貨異常保護 (移除自動替換加權指數邏輯)
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
                 sj_status = "已登入" if st.session_state.get('sj_logged_in', False) else "未登入"
-                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。診斷：鉅亨網備援={'成功' if cnyes_used else '失敗'}；永豐API={sj_status}（{'有取得資料' if sj_kbars_used else '沒取得資料'}）。請確保網路連線正常或稍後再試。")
+                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。診斷：鉅亨網備援={'成功' if cnyes_used else '失敗'}；永豐API={sj_status}（{'有取得資料' if sj_kbars_used else '沒取得資料'}）；永豐詳細錯誤：{st.session_state.get('sj_last_error', '無')}。請確保網路連線正常或稍後再試。")
                 return
                 
             # 將 YF 的個股成交量 (股) 統一轉換為 (張)
