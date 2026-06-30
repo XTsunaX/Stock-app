@@ -145,9 +145,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 1. 依照官方文件取得連續期貨合約物件
         contract = None
         is_future = False
+        is_index = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
             contract = api.Contracts.Indices.TSE.TSE01
+            is_index = True
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             contract = api.Contracts.Futures.TXF.TXFR1  
             is_future = True
@@ -168,20 +170,18 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 避免期貨因請求天數過長遭 API 截斷，進行分段或調整天數
-        if is_future:
-            # 期貨放寬到 90 天 (搭配下方的分段抓取，可確保抓到足夠的K棒且絕對不會 timeout)
+        # 針對期貨與加權指數，統一放寬天數以利分K運算，其餘個股維持邏輯
+        if is_future or is_index:
             actual_lookback = min(lookback_days, 90)
         else:
-            # 個股日/週/月K改為抓取 150 天 (扣除假日後約等於 90 根K棒)
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars (加入期貨「分段抓取」機制，徹底解決 Timeout)
+        # 3. 呼叫官方 api.kbars (針對期貨/大盤加入分段抓取機制，解決短週期 Timeout 失敗)
         kbars_dict = None
         
-        if is_future and actual_lookback > 15:
+        if (is_future or is_index) and actual_lookback > 15:
             # 每 15 天為一個區間分批抓取，最後合併
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
@@ -189,6 +189,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
             while curr_end > now - timedelta(days=actual_lookback):
                 curr_start = curr_end - timedelta(days=15)
+                if curr_start < now - timedelta(days=actual_lookback):
+                    curr_start = now - timedelta(days=actual_lookback)
                 chunks.append((curr_start, curr_end))
                 curr_end = curr_start - timedelta(days=1)
             
@@ -216,7 +218,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                     'Low': all_low, 'Close': all_close, 'Volume': all_vol
                 }
         else:
-            # 個股或短天數期貨，維持單次抓取
+            # 個股或短天數，維持單次抓取
             for attempt in range(3):
                 try:
                     kbars = api.kbars(contract=contract, start=start_date, end=end_date)
@@ -233,6 +235,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
         df = pd.DataFrame(kbars_dict)
         df['ts'] = pd.to_datetime(df['ts'])
+        
         # 將時間設為 Index 並確保移除時區資訊以利畫圖
         if df['ts'].dt.tz is not None:
             df['ts'] = df['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
@@ -354,9 +357,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 cnyes_used = True
 
        # 優先使用永豐 API 獲取盤中即時 K 線
-        if st.session_state.get('sj_logged_in', False) and not cnyes_used:
-            # 確保日K能抓到足夠天數 (150個日曆天約大於 90 根 K 棒)
-            days_needed = {"1m": 2, "5m": 5, "15m": 10, "60m": 15, "1d": 150, "1wk": 730, "1mo": 1825}
+        if st.session_state.get('sj_logged_in', False):
+            # 放寬短週期 K 線的天數，配合分段抓取確保 60 根以上的資料量
+            days_needed = {"5m": 15, "15m": 30, "60m": 60, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
@@ -2599,7 +2602,7 @@ with tab_fibo:
         ma_flags = {'5': s_ma5, '10': s_ma10, '20': s_ma20, '60': s_ma60}
 
         st.write("---")
-        interval_options = {"1d": "日", "1wk": "週", "1mo": "月"}
+        interval_options = {"5m": "5分", "15m": "15分", "60m": "60分", "1d": "日", "1wk": "週", "1mo": "月"}
         try: default_radio_idx = list(interval_options.keys()).index(st.session_state.fibo_interval)
         except: default_radio_idx = 0 
 
