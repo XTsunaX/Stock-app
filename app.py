@@ -143,7 +143,7 @@ def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
         # ==========================================
-        # 1. 強化版：精準取得期貨「近月合約」與大盤物件
+        # 1. 暴力破解版：強迫取得「近月合約」物件
         # ==========================================
         contract = None
         is_future = False
@@ -155,21 +155,21 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             is_future = True
             if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TXF.TXFR1  # 日K以上使用連續合約
+                contract = api.Contracts.Futures.TXF.TXFR1
             else:
-                # 分K嚴格篩選真正的「近月合約」(排除價差合約 '/' 與連續合約 'R')
-                valid_contracts = [c for c in api.Contracts.Futures.TXF if c.delivery_month and '/' not in c.code and 'R' not in c.code]
-                valid_contracts.sort(key=lambda c: c.delivery_month)
+                # 改用 .symbol 判斷，徹底排除包含 'R' (連續) 與 '/' (價差) 的合約
+                valid_contracts = [c for c in api.Contracts.Futures.TXF if 'R' not in c.symbol and '/' not in c.symbol]
+                # 依賴交割月份排序，確保拿到的絕對是這個月的合約 (例如 TXF07)
+                valid_contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
                 contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TXF.TXFR1
                 
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             is_future = True
             if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TMF.TMFR1  # 日K以上使用連續合約
+                contract = api.Contracts.Futures.TMF.TMFR1
             else:
-                # 分K嚴格篩選真正的「近月合約」
-                valid_contracts = [c for c in api.Contracts.Futures.TMF if c.delivery_month and '/' not in c.code and 'R' not in c.code]
-                valid_contracts.sort(key=lambda c: c.delivery_month)
+                valid_contracts = [c for c in api.Contracts.Futures.TMF if 'R' not in c.symbol and '/' not in c.symbol]
+                valid_contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
                 contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TMF.TMFR1
         else:
             try:
@@ -181,7 +181,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             return pd.DataFrame()
 
         # ==========================================
-        # 2. 精準控制日曆天數 (跨越週末，但絕不超載)
+        # 2. 終極測試：把天數壓到最小極限值
         # ==========================================
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
@@ -191,13 +191,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 90)
             elif interval == '60m':
-                actual_lookback = 8  # 8 個日曆天，保證跨越週末，且資料量遠低於 Timeout 門檻
+                actual_lookback = 3  # 測試用：只抓 3 天
             elif interval == '15m':
-                actual_lookback = 5  # 5 個日曆天
+                actual_lookback = 2  # 測試用：只抓 2 天
             elif interval == '5m':
-                actual_lookback = 4  # 4 個日曆天
+                actual_lookback = 1  # 測試用：只抓 1 天 (只要 1 天能出圖，就代表合約抓對了)
             else:
-                actual_lookback = 4
+                actual_lookback = 1
         else:
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 5
             
