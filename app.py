@@ -358,8 +358,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
        # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            # 放寬短週期 K 線的天數，配合分段抓取確保 60 根以上的資料量
-            days_needed = {"5m": 15, "15m": 30, "60m": 60, "1d": 150, "1wk": 730, "1mo": 1825}
+            # 大幅縮小短週期天數，期貨一天交易19小時，極短天數即可滿足60根K棒的需求，避免 API 逾時
+            days_needed = {"5m": 2, "15m": 4, "60m": 10, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
