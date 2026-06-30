@@ -193,11 +193,11 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 90)
             elif interval == '60m':
-                actual_lookback = 3  # 測試用：只抓 3 天
+                actual_lookback = min(lookback_days, 12)
             elif interval == '15m':
-                actual_lookback = 2  # 測試用：只抓 2 天
+                actual_lookback = min(lookback_days, 5)
             elif interval == '5m':
-                actual_lookback = 1  # 測試用：只抓 1 天 (只要 1 天能出圖，就代表合約抓對了)
+                actual_lookback = min(lookback_days, 3)
             else:
                 actual_lookback = 1
         else:
