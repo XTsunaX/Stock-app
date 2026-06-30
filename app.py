@@ -466,9 +466,21 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if ticker.startswith("^TWII"):
                     contract_snap = st.session_state.sj_api.Contracts.Indices.TSE.TSE01
                 elif ticker == "TWF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
+                    try:
+                        contract_snap = min(
+                            [c for c in st.session_state.sj_api.Contracts.Futures.TXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code],
+                            key=lambda c: c.delivery_date
+                        )
+                    except (ValueError, AttributeError):
+                        contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.MXF.MXFR1
+                    try:
+                        contract_snap = min(
+                            [c for c in st.session_state.sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code],
+                            key=lambda c: c.delivery_date
+                        )
+                    except (ValueError, AttributeError):
+                        contract_snap = st.session_state.sj_api.Contracts.Futures.MXF.MXFR1
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
@@ -485,7 +497,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         
                         # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得，支援期貨反推)
                         try:
-                            if hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
+                            if ticker.startswith("^TWII"):
+                                pass  # 指數合約沒有參考價/跌停價欄位，交給後面用「實際每日收盤資料」計算昨收
+                            elif hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
                             elif hasattr(contract_snap, 'limit_down') and contract_snap.limit_down > 0:
                                 # 期貨無 reference 屬性，利用跌停價(10%)反推精確昨日結算價
