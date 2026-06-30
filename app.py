@@ -151,10 +151,22 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             contract = api.Contracts.Indices.TSE.TSE01
             is_index = True
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            contract = api.Contracts.Futures.TXF.TXFR1  
+            if interval in ['1d', '1wk', '1mo']:
+                contract = api.Contracts.Futures.TXF.TXFR1  # 日K以上用連續合約
+            else:
+                # 分K必須用「近月合約」，過濾掉連續合約 (R1/R2)
+                contracts = [c for c in api.Contracts.Futures.TXF if not c.code.endswith('R1') and not c.code.endswith('R2')]
+                contracts.sort(key=lambda x: x.delivery_month)
+                contract = contracts[0] if contracts else api.Contracts.Futures.TXF.TXFR1
             is_future = True
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            contract = api.Contracts.Futures.TMF.TMFR1  
+            if interval in ['1d', '1wk', '1mo']:
+                contract = api.Contracts.Futures.TMF.TMFR1  # 日K以上用連續合約
+            else:
+                # 分K必須用「近月合約」，過濾掉連續合約 (R1/R2)
+                contracts = [c for c in api.Contracts.Futures.TMF if not c.code.endswith('R1') and not c.code.endswith('R2')]
+                contracts.sort(key=lambda x: x.delivery_month)
+                contract = contracts[0] if contracts else api.Contracts.Futures.TMF.TMFR1
             is_future = True
         else:
             try:
@@ -175,8 +187,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 90)
             else:
-                # 關鍵修正：期貨 5分/15分/60分 強制只抓 3 天 (足以跨越週末且包含數百根K棒，絕對不會 Timeout)
-                actual_lookback = 3
+                # 放寬為 6 天，確保 60分K 能湊滿 60 根資料，且依然能避開永豐的 Timeout
+                actual_lookback = 6
         else:
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 5
             
