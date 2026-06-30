@@ -291,6 +291,10 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         else:
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
+                # 永豐1分K時間戳記是「結束時間」而非「起始時間」，先校正回起始時間再resample，
+                # 避免整點邊界那1分鐘被誤分到隔壁區間，導致高低點對不上券商軟體
+                df = df.copy()
+                df.index = df.index - pd.Timedelta(minutes=1)
                 if interval == '60m' and is_future:
                     # 期貨日盤開盤時間08:45非整點，預設resample以整點切K會跟券商軟體(以08:45為起點)對不齊
                     # 故日盤、夜盤分開切，日盤校正45分鐘offset、夜盤(15:00整點)維持預設即可
@@ -501,7 +505,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             is_before_open = False
                             current_time = datetime.now(tz_tw).time()
                             if ticker in ["TWF=F", "TMF=F"]:
-                                if current_time < dt_time(8, 45): is_before_open = True
+                                # 排除「未開盤前」與「日盤收盤(13:45)~夜盤開盤(15:00)」這兩段無交易空窗，
+                                # 此時快照只會回傳日盤收盤價的扁平數值(開高低收同一數字、量0)，不可拿來更新K棒
+                                if current_time < dt_time(8, 45) or dt_time(13, 45) <= current_time < dt_time(15, 0):
+                                    is_before_open = True
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
 
@@ -666,15 +673,25 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     else:
         fig = go.Figure()
 
-    kline_trace = go.Candlestick(
-        x=x_strings, open=df_subset['Open'], high=df_subset['High'],
-        low=df_subset['Low'], close=df_subset['Close'], name="K線",
-        increasing=dict(line=dict(color='#ff4b4b'), fillcolor='#ff4b4b'),
-        decreasing=dict(line=dict(color='#00e676'), fillcolor='#00e676')
-    )
-    
-    if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
-    else: fig.add_trace(kline_trace)
+    # Plotly 的 Candlestick 只支援漲跌兩色，收盤=開盤會被強制當作漲(紅)；
+    # 改用三條trace疊加(各自只保留該類別資料、其餘設NaN)，正確呈現紅漲/綠跌/白平盤
+    up_mask = df_subset['Close'] > df_subset['Open']
+    down_mask = df_subset['Close'] < df_subset['Open']
+    flat_mask = df_subset['Close'] == df_subset['Open']
+
+    def _masked(col, mask):
+        return df_subset[col].where(mask)
+
+    for mask, color, show_legend in [(up_mask, '#ff4b4b', True), (down_mask, '#00e676', False), (flat_mask, '#ffffff', False)]:
+        kline_trace = go.Candlestick(
+            x=x_strings, open=_masked('Open', mask), high=_masked('High', mask),
+            low=_masked('Low', mask), close=_masked('Close', mask), name="K線",
+            increasing=dict(line=dict(color=color), fillcolor=color),
+            decreasing=dict(line=dict(color=color), fillcolor=color),
+            showlegend=show_legend
+        )
+        if show_vol and 'Volume' in df_subset.columns: fig.add_trace(kline_trace, row=1, col=1)
+        else: fig.add_trace(kline_trace)
 
     # 繪製均線
     ma_settings = {
@@ -691,7 +708,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
     # 繪製成交量
     if show_vol and 'Volume' in df_subset.columns:
-        colors = ['#ff4b4b' if close >= open else '#00e676' for close, open in zip(df_subset['Close'], df_subset['Open'])]
+        colors = ['#ff4b4b' if close > open else ('#00e676' if close < open else '#ffffff') for close, open in zip(df_subset['Close'], df_subset['Open'])]
         vol_trace = go.Bar(x=x_strings, y=df_subset['Volume'], name="成交量", marker_color=colors)
         fig.add_trace(vol_trace, row=2, col=1)
 
