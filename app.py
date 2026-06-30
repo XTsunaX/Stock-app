@@ -159,7 +159,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             contract = api.Contracts.Futures.TXF.TXFR1
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             is_future = True
-            contract = api.Contracts.Futures.TMF.TMFR1
+            contract = api.Contracts.Futures.MXF.MXFR1
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -439,7 +439,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 elif ticker == "TWF=F":
                     contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.MXF.MXFR1
                 else:
                     try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
                     except: pass
