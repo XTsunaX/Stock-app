@@ -500,7 +500,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                       if rt_price > 0:
+                        if rt_price > 0:
                             # 新增：未開盤前 / 期貨日盤收盤(13:45)~夜盤開盤(15:00)空窗 攔截
                             is_before_open = False
                             current_time = datetime.now(tz_tw).time()
