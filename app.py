@@ -152,27 +152,13 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         is_index = False
         
         if code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
-            contract = api.Contracts.Indices.TSE.TSE01
-            is_index = True
-        elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+            elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
             is_future = True
-            if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TXF.TXFR1
-            else:
-                # 改用 .symbol 判斷，徹底排除包含 'R' (連續) 與 '/' (價差) 的合約
-                valid_contracts = [c for c in api.Contracts.Futures.TXF if 'R' not in c.symbol and '/' not in c.symbol]
-                # 依賴交割月份排序，確保拿到的絕對是這個月的合約 (例如 TXF07)
-                valid_contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
-                contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TXF.TXFR1
-                
+            contract = api.Contracts.Futures.TXF.TXFR1
+
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             is_future = True
-            if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TMF.TMFR1
-            else:
-                valid_contracts = [c for c in api.Contracts.Futures.TMF if 'R' not in c.symbol and '/' not in c.symbol]
-                valid_contracts.sort(key=lambda c: getattr(c, 'delivery_month', '999999'))
-                contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TMF.TMFR1
+            contract = api.Contracts.Futures.TMF.TMFR1
         else:
             try:
                 contract = api.Contracts.Stocks[code]
