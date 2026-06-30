@@ -142,7 +142,9 @@ def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
 # ==========================================
 def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
     try:
-        # 1. 依照官方文件取得連續期貨合約物件
+        # ==========================================
+        # 1. 強化版：精準取得期貨「近月合約」與大盤物件
+        # ==========================================
         contract = None
         is_future = False
         is_index = False
@@ -151,23 +153,24 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             contract = api.Contracts.Indices.TSE.TSE01
             is_index = True
         elif code in ["TWF=F", "台指期貨", "TXF", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
-            if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TXF.TXFR1  # 日K以上用連續合約
-            else:
-                # 分K必須用「近月合約」，過濾掉連續合約 (R1/R2)
-                contracts = [c for c in api.Contracts.Futures.TXF if not c.code.endswith('R1') and not c.code.endswith('R2')]
-                contracts.sort(key=lambda x: x.delivery_month)
-                contract = contracts[0] if contracts else api.Contracts.Futures.TXF.TXFR1
             is_future = True
+            if interval in ['1d', '1wk', '1mo']:
+                contract = api.Contracts.Futures.TXF.TXFR1  # 日K以上使用連續合約
+            else:
+                # 分K嚴格篩選真正的「近月合約」(排除價差合約 '/' 與連續合約 'R')
+                valid_contracts = [c for c in api.Contracts.Futures.TXF if c.delivery_month and '/' not in c.code and 'R' not in c.code]
+                valid_contracts.sort(key=lambda c: c.delivery_month)
+                contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TXF.TXFR1
+                
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
-            if interval in ['1d', '1wk', '1mo']:
-                contract = api.Contracts.Futures.TMF.TMFR1  # 日K以上用連續合約
-            else:
-                # 分K必須用「近月合約」，過濾掉連續合約 (R1/R2)
-                contracts = [c for c in api.Contracts.Futures.TMF if not c.code.endswith('R1') and not c.code.endswith('R2')]
-                contracts.sort(key=lambda x: x.delivery_month)
-                contract = contracts[0] if contracts else api.Contracts.Futures.TMF.TMFR1
             is_future = True
+            if interval in ['1d', '1wk', '1mo']:
+                contract = api.Contracts.Futures.TMF.TMFR1  # 日K以上使用連續合約
+            else:
+                # 分K嚴格篩選真正的「近月合約」
+                valid_contracts = [c for c in api.Contracts.Futures.TMF if c.delivery_month and '/' not in c.code and 'R' not in c.code]
+                valid_contracts.sort(key=lambda c: c.delivery_month)
+                contract = valid_contracts[0] if valid_contracts else api.Contracts.Futures.TMF.TMFR1
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -177,18 +180,24 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         if not contract:
             return pd.DataFrame()
 
-        # 2. 依照官方參數格式設定時間 (YYYY-MM-DD)
+        # ==========================================
+        # 2. 精準控制日曆天數 (跨越週末，但絕不超載)
+        # ==========================================
         tz_tw = pytz.timezone('Asia/Taipei')
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 針對期貨與大盤：日K維持長天數，分K強制極短天數 (避免永豐阻擋)
         if is_future or is_index:
             if interval in ['1d', '1wk', '1mo']:
                 actual_lookback = min(lookback_days, 90)
+            elif interval == '60m':
+                actual_lookback = 8  # 8 個日曆天，保證跨越週末，且資料量遠低於 Timeout 門檻
+            elif interval == '15m':
+                actual_lookback = 5  # 5 個日曆天
+            elif interval == '5m':
+                actual_lookback = 4  # 4 個日曆天
             else:
-                # 放寬為 6 天，確保 60分K 能湊滿 60 根資料，且依然能避開永豐的 Timeout
-                actual_lookback = 6
+                actual_lookback = 4
         else:
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 5
             
