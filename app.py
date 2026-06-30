@@ -500,44 +500,28 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
-                       # 修正: 判斷 rt_price > 0 而非 s.volume (單筆量可能為0)，並分離週/月K的追加邏輯
-                        if df.index[-1] < now_dt and rt_price > 0:
-                            # 新增：未開盤時間攔截，防止重覆產生K線
+                       if rt_price > 0:
+                            # 新增：未開盤前 / 期貨日盤收盤(13:45)~夜盤開盤(15:00)空窗 攔截
                             is_before_open = False
                             current_time = datetime.now(tz_tw).time()
                             if ticker in ["TWF=F", "TMF=F"]:
-                                # 排除「未開盤前」與「日盤收盤(13:45)~夜盤開盤(15:00)」這兩段無交易空窗，
-                                # 此時快照只會回傳日盤收盤價的扁平數值(開高低收同一數字、量0)，不可拿來更新K棒
                                 if current_time < dt_time(8, 45) or dt_time(13, 45) <= current_time < dt_time(15, 0):
                                     is_before_open = True
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
-                            st.session_state['sj_snap_debug'] = {
-                                '現在時間': str(current_time), 'now_dt': str(now_dt),
-                                'is_before_open': is_before_open,
-                                'rt_price(快照價)': rt_price, 'rt_open': rt_open, 'rt_high': rt_high, 'rt_low': rt_low,
-                                '更新前最後一根K棒時間': str(df.index[-1]),
-                            }
 
-                            if not is_before_open and not is_market_closed_func(now_dt.date()): # 新增: 排除假日與未開盤異常
-                                if interval == "1d":
-                                    new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
-                                    df = pd.concat([df, new_row])
-                                elif interval in ["1m", "5m", "15m", "60m"]:
-                                    # 分K新開的K棒：開高低收用「當下成交價」；成交量需扣掉「今日已收K棒的累積量」，
-                                    # 不可直接套用快照的全天累積量 (rt_vol)，否則最新K棒會出現異常爆量
-                                    same_day_mask = df.index.date == df.index[-1].date()
-                                    today_known_vol = float(df.loc[same_day_mask, 'Volume'].sum())
-                                    bar_vol = max(0.0, rt_vol - today_known_vol)
-                                    new_row = pd.DataFrame([{'Open': rt_price, 'High': rt_price, 'Low': rt_price, 'Close': rt_price, 'Volume': bar_vol}], index=[now_dt])
-                                    df = pd.concat([df, new_row])
-                                else:
-                                    df.at[df.index[-1], 'Close'] = rt_price
-                                    df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                                    df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
-                                    df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                            # 用「這根K棒理論上的結束時間」判斷現在是否真的跨入下一根，而非單純比較起始時間，
+                            # 否則只要還沒到下一個整點就永遠被誤判成「該開新K棒」，每次刷新都會產生一根
+                            # 開=高=低=收=當下報價的假K棒，蓋掉這根K棒原本累積的真實開高低收
+                            bucket_minutes_map = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}
+                            bucket_minutes = bucket_minutes_map.get(interval)
+                            if bucket_minutes is not None:
+                                is_new_bucket = now_dt >= (df.index[-1] + pd.Timedelta(minutes=bucket_minutes))
                             else:
-                                # 假日不產生新K棒，僅更新最後一根
+                                is_new_bucket = df.index[-1] < now_dt  # 日/週/月K 維持原判斷
+
+                            if is_before_open or is_market_closed_func(now_dt.date()):
+                                # 未開盤/空窗/假日：只同步收盤價，不可更新高低 (避免扁平快照污染)
                                 ref_high = rt_high if interval in ["1d", "1wk", "1mo"] else rt_price
                                 ref_low = rt_low if interval in ["1d", "1wk", "1mo"] else rt_price
                                 df.at[df.index[-1], 'Close'] = rt_price
@@ -545,6 +529,31 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), ref_low)
                                 if interval in ["1d", "1wk", "1mo"]:
                                     df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                            elif is_new_bucket:
+                                # 真正跨入新的一根K棒，才建立新row
+                                if interval == "1d":
+                                    new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                    df = pd.concat([df, new_row])
+                                elif interval in ["1m", "5m", "15m", "60m"]:
+                                    same_day_mask = df.index.date == df.index[-1].date()
+                                    today_known_vol = float(df.loc[same_day_mask, 'Volume'].sum())
+                                    bar_vol = max(0.0, rt_vol - today_known_vol)
+                                    new_row = pd.DataFrame([{'Open': rt_price, 'High': rt_price, 'Low': rt_price, 'Close': rt_price, 'Volume': bar_vol}], index=[now_dt])
+                                    df = pd.concat([df, new_row])
+                                else:
+                                    new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                    df = pd.concat([df, new_row])
+                            else:
+                                # 仍在同一根K棒區間內：保留原本開盤價，只更新累積高低收
+                                df.at[df.index[-1], 'Close'] = rt_price
+                                if interval in ["1d", "1wk", "1mo"]:
+                                    df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
+                                    df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                    df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                                else:
+                                    # 分K不可套用快照「全盤累計」高低，只能用目前報價當作這根K棒目前已知的高低邊界
+                                    df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_price)
+                                    df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_price)
                             
                         sj_snap_used = True
             except Exception:
