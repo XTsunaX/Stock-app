@@ -278,7 +278,15 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         else:
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
-                df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
+                if interval == '60m' and is_future:
+                    # 期貨日盤開盤時間08:45非整點，預設resample以整點切K會跟券商軟體(以08:45為起點)對不齊
+                    # 故日盤、夜盤分開切，日盤校正45分鐘offset、夜盤(15:00整點)維持預設即可
+                    day_mask = (df.index.time >= dt_time(8, 45)) & (df.index.time < dt_time(13, 45))
+                    df_day = df[day_mask].resample('60min', closed='left', label='left', offset='45min').agg(agg_dict).dropna()
+                    df_night = df[~day_mask].resample('60min', closed='left', label='left').agg(agg_dict).dropna()
+                    df = pd.concat([df_day, df_night]).sort_index()
+                else:
+                    df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
     except Exception as e:
@@ -489,8 +497,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
                                     df = pd.concat([df, new_row])
                                 elif interval in ["1m", "5m", "15m", "60m"]:
-                                    # 分K新開的K棒：開高低收都用「當下成交價」，不可套用全日開高低 (避免異常長影線)
-                                    new_row = pd.DataFrame([{'Open': rt_price, 'High': rt_price, 'Low': rt_price, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                    # 分K新開的K棒：開高低收用「當下成交價」；成交量需扣掉「今日已收K棒的累積量」，
+                                    # 不可直接套用快照的全天累積量 (rt_vol)，否則最新K棒會出現異常爆量
+                                    same_day_mask = df.index.date == df.index[-1].date()
+                                    today_known_vol = float(df.loc[same_day_mask, 'Volume'].sum())
+                                    bar_vol = max(0.0, rt_vol - today_known_vol)
+                                    new_row = pd.DataFrame([{'Open': rt_price, 'High': rt_price, 'Low': rt_price, 'Close': rt_price, 'Volume': bar_vol}], index=[now_dt])
                                     df = pd.concat([df, new_row])
                                 else:
                                     df.at[df.index[-1], 'Close'] = rt_price
