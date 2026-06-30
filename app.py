@@ -648,16 +648,6 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         st.warning(f"無法獲取有效的交易數據 ({ticker}, {interval})，可能是該區間無資料或代號錯誤。")
         return
     
-    with st.expander("🔍 除錯：永豐原始1分K資料 (校正時間後)", expanded=False):
-        raw_1m = st.session_state.get('sj_raw_1m_debug')
-        if raw_1m is not None and not raw_1m.empty:
-            st.dataframe(raw_1m)
-        else:
-            st.write("目前無原始1分K資料（可能不是永豐資料來源）")
-            
-    with st.expander("🔍 除錯：永豐即時快照狀態", expanded=False):
-        st.write(st.session_state.get('sj_snap_debug', '尚無資料（可能未觸發快照更新）'))
-    
     # 計算均線
     if ma_flags['5']: df['MA5'] = df['Close'].rolling(window=5).mean()
     if ma_flags['10']: df['MA10'] = df['Close'].rolling(window=10).mean()
