@@ -170,39 +170,38 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         now = datetime.now(tz_tw)
         end_date = now.strftime("%Y-%m-%d")
         
-        # 針對期貨與加權指數，統一放寬天數以利分K運算，其餘個股維持邏輯
+        # 針對期貨與大盤：日K維持長天數，分K強制極短天數 (避免永豐阻擋)
         if is_future or is_index:
-            # 確保分K最多只抓 12 天 (避開分段抓取與 Timeout)，日K以上維持 90 天
-            actual_lookback = min(lookback_days, 90) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 12)
+            if interval in ['1d', '1wk', '1mo']:
+                actual_lookback = min(lookback_days, 90)
+            else:
+                # 關鍵修正：期貨 5分/15分/60分 強制只抓 3 天 (足以跨越週末且包含數百根K棒，絕對不會 Timeout)
+                actual_lookback = 3
         else:
-            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
+            actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else 5
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-       # 3. 呼叫官方 api.kbars (針對期貨/大盤強制啟用分段抓取機制，解決短週期 Timeout 與假日空窗)
+        # 3. 呼叫官方 api.kbars
         kbars_dict = None
         
-        if is_future or is_index:
-            # 決定分段大小：若是分K(短天數)每次只抓 2 天，日K以上每次抓 15 天
-            chunk_size = 2 if interval in ['1m', '5m', '15m', '60m'] else 15
-            
+        # 只有在天數大於 15 天 (通常是日K以上) 才使用分段抓取
+        if (is_future or is_index) and actual_lookback > 15:
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
             chunks = []
             
-            # 切割時間區段
             while curr_end > now - timedelta(days=actual_lookback):
-                curr_start = curr_end - timedelta(days=chunk_size)
+                curr_start = curr_end - timedelta(days=15)
                 if curr_start < now - timedelta(days=actual_lookback):
                     curr_start = now - timedelta(days=actual_lookback)
                 chunks.append((curr_start, curr_end))
                 curr_end = curr_start - timedelta(days=1)
             
-            # 依序抓取並合併資料
             for c_start, c_end in reversed(chunks):
                 s_str = c_start.strftime("%Y-%m-%d")
                 e_str = c_end.strftime("%Y-%m-%d")
-                for attempt in range(3):
+                for attempt in range(2):
                     try:
                         k = api.kbars(contract=contract, start=s_str, end=e_str)
                         if k and hasattr(k, 'ts') and len(k.ts) > 0:
@@ -213,9 +212,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                             all_close.extend(k.Close)
                             all_vol.extend(k.Volume)
                             break
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                     except:
-                        time.sleep(0.5)
+                        time.sleep(0.3)
             
             if all_ts:
                 kbars_dict = {
@@ -223,7 +222,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                     'Low': all_low, 'Close': all_close, 'Volume': all_vol
                 }
         else:
-            # 個股或短天數，維持單次抓取
+            # 關鍵修正：分K (短天數) 直接單次抓取，不經過複雜的迴圈切割，速度最快且最穩
             for attempt in range(3):
                 try:
                     kbars = api.kbars(contract=contract, start=start_date, end=end_date)
