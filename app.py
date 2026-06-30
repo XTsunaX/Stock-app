@@ -178,22 +178,26 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
         start_date = (now - timedelta(days=actual_lookback)).strftime("%Y-%m-%d")
 
-        # 3. 呼叫官方 api.kbars (針對期貨/大盤加入分段抓取機制，解決短週期 Timeout 失敗)
+       # 3. 呼叫官方 api.kbars (針對期貨/大盤強制啟用分段抓取機制，解決短週期 Timeout 與假日空窗)
         kbars_dict = None
         
-        if (is_future or is_index) and actual_lookback > 15:
-            # 每 15 天為一個區間分批抓取，最後合併
+        if is_future or is_index:
+            # 決定分段大小：若是分K(短天數)每次只抓 2 天，日K以上每次抓 15 天
+            chunk_size = 2 if interval in ['1m', '5m', '15m', '60m'] else 15
+            
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
             chunks = []
             
+            # 切割時間區段
             while curr_end > now - timedelta(days=actual_lookback):
-                curr_start = curr_end - timedelta(days=15)
+                curr_start = curr_end - timedelta(days=chunk_size)
                 if curr_start < now - timedelta(days=actual_lookback):
                     curr_start = now - timedelta(days=actual_lookback)
                 chunks.append((curr_start, curr_end))
                 curr_end = curr_start - timedelta(days=1)
             
+            # 依序抓取並合併資料
             for c_start, c_end in reversed(chunks):
                 s_str = c_start.strftime("%Y-%m-%d")
                 e_str = c_end.strftime("%Y-%m-%d")
@@ -358,8 +362,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
        # 優先使用永豐 API 獲取盤中即時 K 線
         if st.session_state.get('sj_logged_in', False):
-            # 大幅縮小短週期天數，期貨一天交易19小時，極短天數即可滿足60根K棒的需求，避免 API 逾時
-            days_needed = {"5m": 2, "15m": 4, "60m": 10, "1d": 150, "1wk": 730, "1mo": 1825}
+            # 放寬總天數以確保能跨越週末與連假，由於底層已實作「每次2天」的分段抓取，不會發生 Timeout
+            days_needed = {"5m": 5, "15m": 10, "60m": 20, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
