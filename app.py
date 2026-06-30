@@ -93,9 +93,11 @@ def fetch_cnyes_futures_data(code, interval='1d', lookback_days=60):
     try:
         # 準備多組可能的代號，以防 API 代號變更導致讀不到
         if code in ["TWF=F", "台指期貨", "TXF", "台指(全)", "台指期(全)", "台指期貨(全)"]: 
-            cnyes_symbols = ["TWS:TXI", "TWS:TX", "TWS:TXF", "TWS:FITX"]
+            cnyes_symbols = ["TWF:TXF", "TWS:TXI", "TWS:TX", "TWS:TXF", "TWS:FITX"]
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]: 
-            cnyes_symbols = ["TWS:TMI", "TWS:MTX", "TWS:TMF", "TWS:FIMTX"]
+            cnyes_symbols = ["TWF:MXF", "TWS:TMI", "TWS:MTX", "TWS:TMF", "TWS:FIMTX"]
+        elif code in ["^TWII", "加權指數", "TSE", "加權指數(^TWII)"]:
+            cnyes_symbols = ["TWS:TSE01"]
         else: 
             return pd.DataFrame()
 
@@ -374,7 +376,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         explicit_ref_prev_close = None  # 新增變數以儲存正確昨日參考價
         
         # 期貨備援：使用鉅亨網擷取期貨歷史資料 (速度快且不消耗永豐流量)
-        if raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+        if raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)", "^TWII", "加權指數", "TSE"]:
             days_req = 60 if interval in ["1m", "5m", "15m", "60m"] else 365
             cnyes_df = fetch_cnyes_futures_data(raw_code, interval=interval, lookback_days=days_req)
             if not cnyes_df.empty:
