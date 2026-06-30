@@ -390,18 +390,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         twstock_used = False
         explicit_ref_prev_close = None  # 新增變數以儲存正確昨日參考價
         
-        # 期貨備援：使用鉅亨網擷取期貨歷史資料 (速度快且不消耗永豐流量)
-        if raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)", "^TWII", "加權指數", "TSE"]:
-            days_req = 60 if interval in ["1m", "5m", "15m", "60m"] else 365
-            cnyes_df = fetch_cnyes_futures_data(raw_code, interval=interval, lookback_days=days_req)
-            if not cnyes_df.empty:
-                df = cnyes_df
-                cnyes_used = True
-
-       # 優先使用永豐 API 獲取盤中即時 K 線
-        if st.session_state.get('sj_logged_in', False) and not cnyes_used:
+       # 1. 優先使用永豐 API 獲取盤中即時 K 線 (將永豐移至最前，解決高低點與券商誤差)
+        if st.session_state.get('sj_logged_in', False):
             # 極度縮小短週期天數，期貨一天交易19小時，僅需極短天數即滿足 60 根 K 棒
-            days_needed = {"5m": 3, "15m": 5, "60m": 12, "1d": 150, "1wk": 730, "1mo": 1825}
+            days_needed = {"1m": 3, "5m": 3, "15m": 5, "60m": 12, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
@@ -409,6 +401,14 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 if not sj_df.empty:
                     df = sj_df
                     sj_kbars_used = True
+
+        # 2. 若永豐未登入或沒抓到，期貨才退回使用鉅亨網備援
+        if not sj_kbars_used and raw_code in ["TWF=F", "TMF=F", "TXF", "TMF", "台指(全)", "台指期(全)", "台指期貨(全)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)", "^TWII", "加權指數", "TSE"]:
+            days_req = 60 if interval in ["1m", "5m", "15m", "60m"] else 365
+            cnyes_df = fetch_cnyes_futures_data(raw_code, interval=interval, lookback_days=days_req)
+            if not cnyes_df.empty:
+                df = cnyes_df
+                cnyes_used = True
 
         # 若永豐未登入、沒抓到，退回使用 yfinance (加入 Retry 避免 Rate Limit)
         if not sj_kbars_used and not cnyes_used:
@@ -495,15 +495,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
-                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常 (修正：改由合約物件取得，支援期貨反推)
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常
                         try:
-                            if ticker.startswith("^TWII"):
-                                pass  # 指數合約沒有參考價/跌停價欄位，交給後面用「實際每日收盤資料」計算昨收
+                            if ticker.startswith("^TWII") or ticker in ["TWF=F", "TMF=F"]:
+                                pass  # 指數與期貨交由後方利用「實際每日收盤資料(日盤)」計算昨收，不使用反推
                             elif hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
-                            elif hasattr(contract_snap, 'limit_down') and contract_snap.limit_down > 0:
-                                # 期貨無 reference 屬性，利用跌停價(10%)反推精確昨日結算價
-                                explicit_ref_prev_close = round(float(contract_snap.limit_down) / 0.9)
                         except:
                             pass
                         
@@ -792,7 +789,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
        # 精準計算漲跌幅: 簡化邏輯並確保各週期均有正確對比基準
         ref_prev_close = cl
         
-        # 若有永豐即時快照的精確參考價，優先使用
+        # 若有永豐即時快照的精確參考價，優先使用 (個股)
         if explicit_ref_prev_close is not None and explicit_ref_prev_close > 0:
             ref_prev_close = float(explicit_ref_prev_close)
         else:
@@ -803,12 +800,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         day_session = df[(df.index.time >= dt_time(8, 45)) & (df.index.time <= dt_time(13, 45))]
                         if not day_session.empty:
                             last_time = df.index[-1]
-                            # 若當前最新K棒在日盤，基準是前一個交易日的日盤收盤
                             if dt_time(8, 45) <= last_time.time() <= dt_time(13, 45):
+                                # 若當前在日盤，基準是前一日的日盤收盤
                                 prev_days = day_session[day_session.index.date < last_time.date()]
                                 ref_prev_close = float(prev_days['Close'].iloc[-1]) if not prev_days.empty else cl
                             else:
-                                # 若當前在夜盤，基準就是最新的一個日盤收盤價
+                                # 若當前在夜盤，基準是最近一個日盤收盤
                                 ref_prev_close = float(day_session['Close'].iloc[-1])
                         else:
                             ref_prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else cl
