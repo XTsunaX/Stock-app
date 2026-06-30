@@ -423,7 +423,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
 
            # 期貨異常保護 (移除自動替換加權指數邏輯)
             if (df.empty or 'High' not in df.columns) and (ticker == "TWF=F" or ticker == "TMF=F"):
-                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。請確保網路連線正常或稍後再試。")
+                sj_status = "已登入" if st.session_state.get('sj_logged_in', False) else "未登入"
+                st.warning(f"⚠️ 無法獲取 {display_name} 的資料。診斷：鉅亨網備援={'成功' if cnyes_used else '失敗'}；永豐API={sj_status}（{'有取得資料' if sj_kbars_used else '沒取得資料'}）。請確保網路連線正常或稍後再試。")
                 return
                 
             # 將 YF 的個股成交量 (股) 統一轉換為 (張)
