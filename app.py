@@ -276,7 +276,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if is_future:
                 df.index = df.index.normalize()
         else:
-            resample_map = {'5m': '5T', '15m': '15T', '60m': '60T'}
+            resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
                 df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
