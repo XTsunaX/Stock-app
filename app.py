@@ -485,8 +485,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 if current_time < dt_time(9, 0): is_before_open = True
 
                             if not is_before_open and not is_market_closed_func(now_dt.date()): # 新增: 排除假日與未開盤異常
-                                if interval in ["1d", "1m", "5m", "15m", "60m"]:
+                                if interval == "1d":
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
+                                    df = pd.concat([df, new_row])
+                                elif interval in ["1m", "5m", "15m", "60m"]:
+                                    # 分K新開的K棒：開高低收都用「當下成交價」，不可套用全日開高低 (避免異常長影線)
+                                    new_row = pd.DataFrame([{'Open': rt_price, 'High': rt_price, 'Low': rt_price, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt])
                                     df = pd.concat([df, new_row])
                                 else:
                                     df.at[df.index[-1], 'Close'] = rt_price
@@ -495,9 +499,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                     df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             else:
                                 # 假日不產生新K棒，僅更新最後一根
+                                ref_high = rt_high if interval in ["1d", "1wk", "1mo"] else rt_price
+                                ref_low = rt_low if interval in ["1d", "1wk", "1mo"] else rt_price
                                 df.at[df.index[-1], 'Close'] = rt_price
-                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), rt_high)
-                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), rt_low)
+                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), ref_high)
+                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), ref_low)
                                 if interval in ["1d", "1wk", "1mo"]:
                                     df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             
