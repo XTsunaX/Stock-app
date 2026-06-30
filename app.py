@@ -172,7 +172,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         
         # 針對期貨與加權指數，統一放寬天數以利分K運算，其餘個股維持邏輯
         if is_future or is_index:
-            actual_lookback = min(lookback_days, 90)
+            # 確保分K最多只抓 12 天 (避開分段抓取與 Timeout)，日K以上維持 90 天
+            actual_lookback = min(lookback_days, 90) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 12)
         else:
             actual_lookback = min(lookback_days, 150) if interval in ['1d', '1wk', '1mo'] else min(lookback_days, 10)
             
@@ -361,9 +362,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                 cnyes_used = True
 
        # 優先使用永豐 API 獲取盤中即時 K 線
-        if st.session_state.get('sj_logged_in', False):
-            # 放寬總天數以確保能跨越週末與連假，由於底層已實作「每次2天」的分段抓取，不會發生 Timeout
-            days_needed = {"5m": 5, "15m": 10, "60m": 20, "1d": 150, "1wk": 730, "1mo": 1825}
+        if st.session_state.get('sj_logged_in', False) and not cnyes_used:
+            # 極度縮小短週期天數，期貨一天交易19小時，僅需極短天數即滿足 60 根 K 棒
+            days_needed = {"5m": 3, "15m": 5, "60m": 12, "1d": 150, "1wk": 730, "1mo": 1825}
                 
             if interval in days_needed:
                 req_days = days_needed[interval]
