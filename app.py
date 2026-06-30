@@ -1507,7 +1507,7 @@ def fetch_futures_list():
                             if val and val not in ['-', 'nan', 'NaN']:
                                 is_small = True
                         futures_dict[code] = "✅(小)" if is_small else "✅"
-                return futures_dict
+            return futures_dict
     except: pass
     return {}
 
