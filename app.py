@@ -722,48 +722,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-       # 精準計算漲跌幅: 簡化邏輯並確保各週期均有正確對比基準
+       # 精準計算漲跌幅: 統一改為與「前一根K棒收盤價」對比，不再強制套用日線級別的昨日收盤價
         ref_prev_close = cl
-        
-        # 若有永豐即時快照的精確參考價，優先使用 (個股)
-        if explicit_ref_prev_close is not None and explicit_ref_prev_close > 0:
-            ref_prev_close = float(explicit_ref_prev_close)
-        else:
-            if is_index or (ticker in ["TWF=F", "TMF=F"]):
-                # 針對加權指數與期貨：強制抓取日盤 (08:45~13:45) 的最後收盤價作為基準
-                try:
-                    if interval in ["1m", "5m", "15m", "60m"]:
-                        day_session = df[(df.index.time >= dt_time(8, 45)) & (df.index.time <= dt_time(13, 45))]
-                        if not day_session.empty:
-                            last_time = df.index[-1]
-                            if dt_time(8, 45) <= last_time.time() <= dt_time(13, 45):
-                                # 若當前在日盤，基準是前一日的日盤收盤
-                                prev_days = day_session[day_session.index.date < last_time.date()]
-                                ref_prev_close = float(prev_days['Close'].iloc[-1]) if not prev_days.empty else cl
-                            else:
-                                # 若當前在夜盤，基準是最近一個日盤收盤
-                                ref_prev_close = float(day_session['Close'].iloc[-1])
-                        else:
-                            ref_prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else cl
-                    else:
-                        ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-                except:
-                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-            else:
-                if interval in ["1m", "5m", "15m", "60m"]:
-                    try:
-                        daily_closes = df['Close'].resample('D').last().dropna()
-                        if len(daily_closes) > 1:
-                            current_date = df_subset.index[-1].date()
-                            if current_date == daily_closes.index[-1].date():
-                                ref_prev_close = float(daily_closes.iloc[-2])
-                            else:
-                                ref_prev_close = float(daily_closes.iloc[-1])
-                    except:
-                        ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
-                else:
-                    # 日K、週K、月K 統一與上一根K棒收盤價比較
-                    ref_prev_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else cl
+        if len(df_subset) > 1:
+            ref_prev_close = float(df_subset['Close'].iloc[-2])
+        elif len(df) > 1:
+            ref_prev_close = float(df['Close'].iloc[-2])
 
         chg = cl - ref_prev_close
         pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
