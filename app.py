@@ -238,18 +238,20 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         else:
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
-                # 永豐1分K時間戳記為該分鐘的「結束時間」（例：20:00:00 代表 19:59~20:00）
-                # 必須使用 closed='right' 讓 20:00:00 歸入 (19:00, 20:00] 區間，並用 label='left' 標示為 19:00
+                # 永豐1分K時間戳記是「結束時間」而非「起始時間」，先校正回起始時間再resample，
+                # 避免整點邊界那1分鐘被誤分到隔壁區間，導致高低點對不上券商軟體
                 df = df.copy()
+                df.index = df.index - pd.Timedelta(minutes=1)
                 st.session_state['sj_raw_1m_debug'] = df.copy()
                 if interval == '60m' and is_future:
-                    # 期貨日盤最後一筆為 13:45:00，修改條件為 > 08:45 且 <= 13:45 確保日盤完整納入
-                    day_mask = (df.index.time > dt_time(8, 45)) & (df.index.time <= dt_time(13, 45))
-                    df_day = df[day_mask].resample('60min', closed='right', label='left', offset='45min').agg(agg_dict).dropna()
-                    df_night = df[~day_mask].resample('60min', closed='right', label='left').agg(agg_dict).dropna()
+                    # 期貨日盤開盤時間08:45非整點，預設resample以整點切K會跟券商軟體(以08:45為起點)對不齊
+                    # 故日盤、夜盤分開切，日盤校正45分鐘offset、夜盤(15:00整點)維持預設即可
+                    day_mask = (df.index.time >= dt_time(8, 45)) & (df.index.time < dt_time(13, 45))
+                    df_day = df[day_mask].resample('60min', closed='left', label='left', offset='45min').agg(agg_dict).dropna()
+                    df_night = df[~day_mask].resample('60min', closed='left', label='left').agg(agg_dict).dropna()
                     df = pd.concat([df_day, df_night]).sort_index()
                 else:
-                    df = df.resample(resample_map[interval], closed='right', label='left').agg(agg_dict).dropna()
+                    df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
     except Exception as e:
