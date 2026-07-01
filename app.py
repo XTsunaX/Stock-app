@@ -155,8 +155,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 3. 呼叫官方 api.kbars
         kbars_dict = None
         
-        # 只有在天數大於 15 天 (通常是日K以上) 才使用分段抓取
-        if (is_future or is_index) and actual_lookback > 15:
+        # 只有在天數大於 15 天 (通常是日K以上) 才使用分段抓取 (個股與期指皆適用)
+        if actual_lookback > 15:
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
             chunks = []
@@ -468,14 +468,20 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 is_new_bucket = df.index[-1] < now_dt  # 日/週/月K 維持原判斷
 
                             if is_before_open or is_market_closed_func(now_dt.date()):
-                                # 未開盤/空窗/假日：只同步收盤價，不可更新高低 (避免扁平快照污染)
-                                ref_high = rt_high if interval in ["1d", "1wk", "1mo"] else rt_price
-                                ref_low = rt_low if interval in ["1d", "1wk", "1mo"] else rt_price
-                                df.at[df.index[-1], 'Close'] = rt_price
-                                df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), ref_high)
-                                df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), ref_low)
-                                if interval in ["1d", "1wk", "1mo"]:
-                                    df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
+                                # 若歷史資料未到今天，且今天是交易日，必須先新增今天的新K棒，避免覆蓋昨日資料
+                                if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()):
+                                    now_dt_naive = now_dt if interval in ["1d", "1wk", "1mo"] else datetime.now(tz_tw).replace(tzinfo=None)
+                                    new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
+                                    df = pd.concat([df, new_row])
+                                else:
+                                    # 未開盤/空窗/假日：只同步收盤價，不可更新高低 (避免扁平快照污染)
+                                    ref_high = rt_high if interval in ["1d", "1wk", "1mo"] else rt_price
+                                    ref_low = rt_low if interval in ["1d", "1wk", "1mo"] else rt_price
+                                    df.at[df.index[-1], 'Close'] = rt_price
+                                    df.at[df.index[-1], 'High'] = max(float(df['High'].iloc[-1]), ref_high)
+                                    df.at[df.index[-1], 'Low'] = min(float(df['Low'].iloc[-1]), ref_low)
+                                    if interval in ["1d", "1wk", "1mo"]:
+                                        df.at[df.index[-1], 'Volume'] = max(float(df['Volume'].iloc[-1]), rt_vol)
                             elif is_new_bucket:
                                 # 真正跨入新的一根K棒，才建立新row
                                 if interval == "1d":
