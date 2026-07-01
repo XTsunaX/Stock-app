@@ -235,7 +235,7 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             
             if is_future:
                 df.index = df.index.normalize()
-       else:
+        else:
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
                 # 永豐1分K時間戳記為該分鐘的「結束時間」（例：20:00:00 代表 19:59~20:00）
