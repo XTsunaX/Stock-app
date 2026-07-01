@@ -452,7 +452,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             is_before_open = False
                             current_time = datetime.now(tz_tw).time()
                             if ticker in ["TWF=F", "TMF=F"]:
-                                if current_time < dt_time(8, 45) or dt_time(13, 45) <= current_time < dt_time(15, 0):
+                                # 修正期貨盤前定義：5:00~8:45為早晨盤前，13:45~15:00為日盤盤後空窗
+                                if (dt_time(5, 0) <= current_time < dt_time(8, 45)) or (dt_time(13, 45) <= current_time < dt_time(15, 0)):
                                     is_before_open = True
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
@@ -468,8 +469,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 is_new_bucket = df.index[-1] < now_dt  # 日/週/月K 維持原判斷
 
                             if is_before_open or is_market_closed_func(now_dt.date()):
-                                # 若歷史資料未到今天，且今天是交易日，必須先新增今天的新K棒，避免覆蓋昨日資料
-                                if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()):
+                                # 確認是否為「早晨尚未開盤」。若尚未開盤，快照為昨天資料，絕不能提早產生今天的K棒。
+                                is_morning_premarket = (current_time < dt_time(9, 0)) if ticker not in ["TWF=F", "TMF=F"] else (dt_time(5, 0) <= current_time < dt_time(8, 45))
+                                
+                                # 若歷史資料未到今天，且今天是交易日，且「不是早晨未開盤」，才補今天K棒 (例如期貨的13:45~15:00空窗)
+                                if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()) and not is_morning_premarket:
                                     now_dt_naive = now_dt if interval in ["1d", "1wk", "1mo"] else datetime.now(tz_tw).replace(tzinfo=None)
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
                                     df = pd.concat([df, new_row])
