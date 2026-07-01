@@ -238,10 +238,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         else:
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
-                # 永豐1分K時間戳記是「結束時間」而非「起始時間」，先校正回起始時間再resample，
-                # 避免整點邊界那1分鐘被誤分到隔壁區間，導致高低點對不上券商軟體
+                # 永豐1分K時間戳記實際為「起始時間」，不需扣除1分鐘，否則會將下個區間的第一分鐘(如21:00)誤算入上個區間(20:00)
                 df = df.copy()
-                df.index = df.index - pd.Timedelta(minutes=1)
                 st.session_state['sj_raw_1m_debug'] = df.copy()
                 if interval == '60m' and is_future:
                     # 期貨日盤開盤時間08:45非整點，預設resample以整點切K會跟券商軟體(以08:45為起點)對不齊
