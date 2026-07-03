@@ -241,16 +241,14 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 df = df.copy()
                 st.session_state['sj_raw_1m_debug'] = df.copy()
                 if is_future:
-                    # 期貨：1分K為「結束時間」，需用 closed='right' 避免整點K棒吸收到上一小時的高低點
                     if interval == '60m':
                         day_mask = (df.index.time > dt_time(8, 45)) & (df.index.time <= dt_time(13, 45))
-                        df_day = df[day_mask].resample('60min', closed='right', label='left', offset='45min').agg(agg_dict).dropna()
-                        df_night = df[~day_mask].resample('60min', closed='right', label='left').agg(agg_dict).dropna()
+                        df_day = df[day_mask].resample('60min', closed='left', label='left', offset='45min').agg(agg_dict).dropna()
+                        df_night = df[~day_mask].resample('60min', closed='left', label='left').agg(agg_dict).dropna()
                         df = pd.concat([df_day, df_night]).sort_index()
                     else:
-                        df = df.resample(resample_map[interval], closed='right', label='left').agg(agg_dict).dropna()
+                        df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
                 else:
-                    # 個股：開盤第一筆為 09:00:00，若用 closed='right' 會被誤分到上一根空K棒，必須維持 closed='left'
                     df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
         return df
