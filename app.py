@@ -2887,10 +2887,22 @@ with tab_db:
         if df_inst is not None:
             st.subheader(f"📅 {selected_date.strftime('%Y-%m-%d')} 統計結果")
             
+            # 建立一個自訂的格式化函數，將原始數字轉為：千分位(+-XXX.XX億)
+            def fmt_with_yi(val):
+                try:
+                    v = float(val)
+                    yi_val = v / 100000000
+                    return f"{int(v):,}({yi_val:+.2f}億)"
+                except:
+                    return str(val)
+            
+            # 將自訂格式套用到買進、賣出、買賣差額三個欄位
+            fmt_dict = {col: fmt_with_yi for col in ['買進金額', '賣出金額', '買賣差額']}
+            
             try:
-                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+                styled_df = df_inst.style.map(color_negative_positive, subset=['買賣差額']).format(fmt_dict)
             except AttributeError:
-                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format({'買進金額': '{:,.0f}', '賣出金額': '{:,.0f}', '買賣差額': '{:,.0f}'})
+                styled_df = df_inst.style.applymap(color_negative_positive, subset=['買賣差額']).format(fmt_dict)
             
             # 使用 columns 進行縮排，不讓表格佔滿全螢幕
             col_tbl, _ = st.columns([1.5, 1])
