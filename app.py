@@ -2975,7 +2975,7 @@ with tab3:
     # ==========================================
     CAL_OVERRIDE_FILE = "cal_override.json"
     
-   def load_cal_overrides():
+    def load_cal_overrides():
         if os.path.exists(CAL_OVERRIDE_FILE):
             try:
                 with open(CAL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
