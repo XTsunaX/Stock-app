@@ -2975,7 +2975,7 @@ with tab3:
     # ==========================================
     CAL_OVERRIDE_FILE = "cal_override.json"
     
-    def load_cal_overrides():
+   def load_cal_overrides():
         if os.path.exists(CAL_OVERRIDE_FILE):
             try:
                 with open(CAL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
@@ -2987,12 +2987,6 @@ with tab3:
         
         # 預設給予一列空白資料，讓使用者可以直接雙擊修改，避免畫面出現 empty 導致無法編輯
         df = pd.DataFrame([{"日期": None, "事件名稱": "", "文字顏色": "白色"}])
-        return df
-            except: pass
-        
-        # 建立空表時，也要先給予正確的 datetime 型別
-        df = pd.DataFrame(columns=["日期", "事件名稱", "文字顏色"])
-        df["日期"] = pd.to_datetime(df["日期"]).dt.date
         return df
         
     def save_cal_overrides(df):
