@@ -2475,6 +2475,10 @@ with tab1:
                 for c in cols_to_fmt:
                     if c in df_indep.columns: df_indep[c] = df_indep[c].apply(fmt_price)
 
+                # 強制轉換為 object 型別，以防寫入字串時發生 TypeError
+                if "收盤價" in df_indep.columns: df_indep["收盤價"] = df_indep["收盤價"].astype(object)
+                if "漲跌幅" in df_indep.columns: df_indep["漲跌幅"] = df_indep["漲跌幅"].astype(object)
+
                 if "收盤價" in df_indep.columns and "漲跌幅" in df_indep.columns:
                     for i in range(len(df_indep)):
                         try:
@@ -2985,8 +2989,9 @@ with tab3:
                         return df
             except: pass
         
-        # 預設給予一列空白資料，讓使用者可以直接雙擊修改，避免畫面出現 empty 導致無法編輯
-        df = pd.DataFrame([{"日期": None, "事件名稱": "", "文字顏色": "白色"}])
+        # 預設給予一列空白資料，並確保日期欄位擁有正確的空值型別 (NaT)
+        df = pd.DataFrame([{"日期": pd.NaT, "事件名稱": "", "文字顏色": "白色"}])
+        df["日期"] = pd.to_datetime(df["日期"], errors='coerce').dt.date
         return df
         
     def save_cal_overrides(df):
