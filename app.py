@@ -2892,7 +2892,7 @@ with tab_db:
                 try:
                     v = float(val)
                     yi_val = v / 100000000
-                    return f"{int(v):,}    ({yi_val:+.2f}億)"
+                    return f"{int(v):,}  ({yi_val:+.2f}億)"
                 except:
                     return str(val)
             
