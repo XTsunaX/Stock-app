@@ -2419,7 +2419,7 @@ with tab1:
                 "🔍 快速查詢 (中文/代號)", 
                 options=stock_options, 
                 key="indep_search_multiselect", 
-                placeholder="輸入 2330 或 台積電... (支援複數查詢)"
+                placeholder="輸入 2330 或 台積電..."
             )
         with col_q2:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
@@ -2511,7 +2511,7 @@ with tab1:
                         "自訂價價差": st.column_config.TextColumn(width=70),
                         "5日線價差": st.column_config.TextColumn(width=70),
                         "狀態": st.column_config.TextColumn(width=60),
-                        "戰略備註": st.column_config.TextColumn("戰略備註", width=400)
+                        "戰略備註": st.column_config.TextColumn("戰略備註", width=note_width_px)
                     },
                     hide_index=True, width='content', key="indep_table_output"
                 )
