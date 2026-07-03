@@ -2425,6 +2425,46 @@ with tab2:
     with c4: min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
     with c5: tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1)
     direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
+    
+    # --- 新增：目標價快速試算區 ---
+    st.markdown("##### 🎯 目標價快速試算")
+    col_t1, col_t2 = st.columns([1, 4])
+    with col_t1:
+        target_p = st.number_input("輸入目標價", value=float(st.session_state.calc_base_price), step=0.5, format="%.2f", key="input_target_price")
+    with col_t2:
+        fee_rate = 0.001425; tax_rate = 0.0015
+        base_p = st.session_state.calc_base_price
+        is_long = "多" in direction
+        
+        if is_long:
+            t_buy = base_p; t_sell = target_p
+            t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
+            t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
+            t_tax = math.floor(t_sell * shares * tax_rate)
+            t_cost = (t_buy * shares) + t_buy_fee
+            t_income = (t_sell * shares) - t_sell_fee - t_tax
+            t_profit = t_income - t_cost
+            t_total_fee = t_buy_fee + t_sell_fee
+        else:
+            t_sell = base_p; t_buy = target_p
+            t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
+            t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
+            t_tax = math.floor(t_sell * shares * tax_rate)
+            t_income = (t_sell * shares) - t_sell_fee - t_tax
+            t_cost = (t_buy * shares) + t_buy_fee
+            t_profit = t_income - t_cost
+            t_total_fee = t_buy_fee + t_sell_fee
+        
+        t_roi = (t_profit / (base_p * shares) * 100) if (base_p * shares) != 0 else 0
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("預估損益", f"{int(t_profit):,}", delta=f"{t_roi:+.2f}%")
+        m2.metric("手續費總和", f"{int(t_total_fee):,}")
+        m3.metric("交易稅", f"{int(t_tax):,}")
+        m4.metric("價差", f"{(target_p - base_p):+.2f}")
+    st.markdown("---")
+    # --- 新增結束 ---
+    
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
     with b1:
@@ -2922,7 +2962,7 @@ with tab3:
             if weekdays:
                 add_evt(weekdays[-1], "MSCI季調生效", "#FF9800") # 橘色
 
-        # (6) FOMC (台灣時間，大多為週四凌晨 02:00，整理2024-2026日期)
+        # (6) FOMC (台灣時間，大多為週四凌晨 02:00 或 03:00，整理2024-2026日期)
         fomc_dates = {
             2024: [(2,1), (3,21), (5,2), (6,13), (8,1), (9,19), (11,8), (12,19)],
             2025: [(1,30), (3,20), (5,8), (6,19), (7,31), (9,18), (10,30), (12,11)],
@@ -2930,7 +2970,9 @@ with tab3:
         }
         if y in fomc_dates:
             for fm, fd in fomc_dates[y]:
-                if fm == m: add_evt(fd, "FOMC (02:00)", "#FF4500") # 橙紅色
+                if fm == m: 
+                    time_str = "02:00" if 3 <= m <= 11 else "03:00"
+                    add_evt(fd, f"FOMC ({time_str})", "#FF4500")
                 
         # (7) 美國CPI公布 (台灣時間 20:30 或 21:30，整理2024-2026日期)
         cpi_dates = {
@@ -2940,7 +2982,9 @@ with tab3:
         }
         if y in cpi_dates:
             for cm, cd in cpi_dates[y]:
-                if cm == m: add_evt(cd, "美國CPI (20:30/21:30)", "#00FA9A") # 春綠色
+                if cm == m: 
+                    time_str = "20:30" if 3 <= m <= 11 else "21:30"
+                    add_evt(cd, f"美國CPI ({time_str})", "#00FA9A")
         
         return events
 
