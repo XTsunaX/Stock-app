@@ -2871,9 +2871,17 @@ with tab3:
         if os.path.exists(CAL_OVERRIDE_FILE):
             try:
                 with open(CAL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
-                    return pd.DataFrame(json.load(f))
+                    df = pd.DataFrame(json.load(f))
+                    if not df.empty and "日期" in df.columns:
+                        # 強制將字串轉換為真實的日期物件，避免 Streamlit 型別檢查報錯
+                        df["日期"] = pd.to_datetime(df["日期"], errors='coerce').dt.date
+                    return df
             except: pass
-        return pd.DataFrame(columns=["日期", "事件名稱", "文字顏色"])
+        
+        # 建立空表時，也要先給予正確的 datetime 型別
+        df = pd.DataFrame(columns=["日期", "事件名稱", "文字顏色"])
+        df["日期"] = pd.to_datetime(df["日期"]).dt.date
+        return df
         
     def save_cal_overrides(df):
         try:
