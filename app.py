@@ -2431,13 +2431,11 @@ with tab2:
         if st.button("🔽 向下", width='stretch'):
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
             st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, -tick_count)
-            if st.session_state.calc_view_price < limit_down: st.session_state.calc_view_price = limit_down
             st.rerun()
     with b2:
         if st.button("🔼 向上", width='stretch'):
             if 'calc_view_price' not in st.session_state: st.session_state.calc_view_price = st.session_state.calc_base_price
             st.session_state.calc_view_price = move_tick(st.session_state.calc_view_price, tick_count)
-            if st.session_state.calc_view_price > limit_up: st.session_state.calc_view_price = limit_up
             st.rerun()
     
     ticks_range = range(tick_count, -(tick_count + 1), -1)
@@ -2450,8 +2448,6 @@ with tab2:
     
     for i in ticks_range:
         p = move_tick(view_p, i)
-        
-        if p > limit_up + 0.001 or p < limit_down - 0.001: continue
         
         if is_long:
             buy_price = base_p; sell_price = p
@@ -2491,12 +2487,9 @@ with tab2:
     
     def style_calc_row(row):
         is_base = row['_is_base']
-        nt = row['_note_type']
         prof = row['_profit']
         
         if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-        if nt == 'up': return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
-        if nt == 'down': return ['background-color: #00cc00; color: white; font-weight: bold'] * len(row)
         if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
         if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
         return ['color: gray'] * len(row)
@@ -2897,10 +2890,18 @@ with tab3:
                 if hm == m: 
                     add_evt(hd, f"美股{name}休市", "#B0BEC5")
         
-        # (2) 美國非農人數公布 (每個月第一個週五)
+        # (2) 美國非農人數公布 (自動判斷美股休市提前與夏令時間)
         for d, wd in month_days_list:
             if d != 0 and wd == 4:
-                add_evt(d, "美國非農(20:30/21:30)", "#00E5FF") # 亮藍色
+                year_holidays = us_holiday_names.get(y, {})
+                # 檢查該週五是否恰逢美股休市（例如 2026/7/3 獨立紀念日）
+                if (m, d) in year_holidays:
+                    # 提前至週四公布，且因必為夏令時間，固定顯示 20:30
+                    add_evt(d - 1, "美國非農 (提前/20:30)", "#00E5FF")
+                else:
+                    # 正常週五公布，依月份區分夏令(3~11月: 20:30) 與 冬令(12~2月: 21:30)
+                    time_str = "20:30" if 3 <= m <= 11 else "21:30"
+                    add_evt(d, f"美國非農 ({time_str})", "#00E5FF")
                 break
                 
         # (3) 四巫日 (3,6,9,12月 第三個週五)
