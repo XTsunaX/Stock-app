@@ -2412,6 +2412,8 @@ with tab1:
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
+
+        
         st.markdown("### 🔍 單檔快速試算 (不寫入主表)")
         col_q1, col_q2 = st.columns([2, 1])
         with col_q1:
