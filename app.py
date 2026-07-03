@@ -2862,6 +2862,51 @@ with tab_db:
         )
 
 with tab3:
+    # ==========================================
+    # 新增：自訂行事曆存取與 UI 介面
+    # ==========================================
+    CAL_OVERRIDE_FILE = "cal_override.json"
+    
+    def load_cal_overrides():
+        if os.path.exists(CAL_OVERRIDE_FILE):
+            try:
+                with open(CAL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+                    return pd.DataFrame(json.load(f))
+            except: pass
+        return pd.DataFrame(columns=["日期", "事件名稱", "文字顏色"])
+        
+    def save_cal_overrides(df):
+        try:
+            # 確保日期格式為字串以利 JSON 儲存
+            df_save = df.copy()
+            df_save['日期'] = df_save['日期'].astype(str)
+            df_save.to_json(CAL_OVERRIDE_FILE, orient="records", force_ascii=False)
+        except: pass
+
+    if 'cal_overrides' not in st.session_state:
+        st.session_state.cal_overrides = load_cal_overrides()
+
+    with st.expander("🛠️ 自訂與校正行事曆事件"):
+        st.info("若發現系統預設日期或時間有誤，可在此手動新增或覆寫事件（例如：提前休市、自訂總經數據時間）。")
+        edited_cal_df = st.data_editor(
+            st.session_state.cal_overrides,
+            num_rows="dynamic",
+            column_config={
+                "日期": st.column_config.DateColumn("日期 (YYYY-MM-DD)", required=True),
+                "事件名稱": st.column_config.TextColumn("事件名稱", required=True),
+                "文字顏色": st.column_config.TextColumn("文字顏色 (預設 #FFFFFF)", default="#FFFFFF")
+            },
+            key="cal_override_editor",
+            use_container_width=True
+        )
+        
+        if st.button("💾 儲存行事曆設定", key="btn_save_cal_override"):
+            st.session_state.cal_overrides = edited_cal_df
+            save_cal_overrides(edited_cal_df)
+            st.toast("自訂行事曆已儲存！", icon="✅")
+            st.rerun()
+    st.markdown("---")
+
     def change_month(delta):
         st.session_state.cal_month += delta
         if st.session_state.cal_month > 12:
@@ -3050,6 +3095,22 @@ with tab3:
     cal_obj = calendar.Calendar(firstweekday=6)
     month_days = cal_obj.monthdayscalendar(sel_year, sel_month)
 
+    # --- 新增：將自訂事件整理為字典以利快速渲染 ---
+    override_dict = {}
+    if not st.session_state.cal_overrides.empty:
+        for _, r in st.session_state.cal_overrides.iterrows():
+            try:
+                if pd.notna(r["日期"]) and str(r["日期"]).strip():
+                    d_obj = pd.to_datetime(r["日期"]).date()
+                    if d_obj.year == sel_year and d_obj.month == sel_month:
+                        if d_obj not in override_dict:
+                            override_dict[d_obj] = []
+                        col = r["文字顏色"] if pd.notna(r["文字顏色"]) and str(r["文字顏色"]).strip() else "#FFFFFF"
+                        override_dict[d_obj].append(f"<div style='color:{col}; font-size:0.8em; margin-top:2px; font-weight:bold;'>{r['事件名稱']}</div>")
+            except:
+                pass
+    # ---------------------------------------------
+
     for week in month_days:
         week_cols = st.columns([0.4, 1, 1, 1, 1, 1, 1, 1])
         first_valid_day = next((d for d in week if d != 0), None)
@@ -3076,6 +3137,11 @@ with tab3:
             # 加入外國重要股市事件
             if day in us_events:
                 content_html.extend(us_events[day])
+            
+            # --- 新增：注入自訂與校正事件 ---
+            if curr_date in override_dict:
+                content_html.extend(override_dict[curr_date])
+            # ------------------------------
             
             if curr_date in real_settlements:
                 infos = real_settlements[curr_date]
