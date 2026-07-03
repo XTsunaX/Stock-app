@@ -2534,52 +2534,65 @@ with tab2:
     with c5: tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1)
     direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
     
-    # --- 新增：目標價快速試算區 ---
+   # --- 新增：目標價快速試算區 ---
     st.markdown("##### 🎯 目標價快速試算")
     col_t1, col_t2 = st.columns([1, 4])
     with col_t1:
-        target_p = st.number_input("輸入目標價", value=float(st.session_state.calc_base_price), step=0.5, format="%.2f", key="input_target_price")
+        # 將 value 設為 None 並加入 placeholder，實現預設為空值
+        target_p = st.number_input("輸入目標價", value=None, step=0.5, format="%.2f", key="input_target_price", placeholder="請輸入...")
     with col_t2:
         fee_rate = 0.001425; tax_rate = 0.0015
         base_p = st.session_state.calc_base_price
         is_long = "多" in direction
         
-        if is_long:
-            t_buy = base_p; t_sell = target_p
-            t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
-            t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
-            t_tax = math.floor(t_sell * shares * tax_rate)
-            t_cost = (t_buy * shares) + t_buy_fee
-            t_income = (t_sell * shares) - t_sell_fee - t_tax
-            t_profit = t_income - t_cost
-            t_total_fee = t_buy_fee + t_sell_fee
+        # 加入防呆判斷：只有當使用者輸入數字時才進行計算
+        if target_p is not None:
+            if is_long:
+                t_buy = base_p; t_sell = target_p
+                t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
+                t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
+                t_tax = math.floor(t_sell * shares * tax_rate)
+                t_cost = (t_buy * shares) + t_buy_fee
+                t_income = (t_sell * shares) - t_sell_fee - t_tax
+                t_profit = t_income - t_cost
+                t_total_fee = t_buy_fee + t_sell_fee
+            else:
+                t_sell = base_p; t_buy = target_p
+                t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
+                t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
+                t_tax = math.floor(t_sell * shares * tax_rate)
+                t_income = (t_sell * shares) - t_sell_fee - t_tax
+                t_cost = (t_buy * shares) + t_buy_fee
+                t_profit = t_income - t_cost
+                t_total_fee = t_buy_fee + t_sell_fee
+            
+            t_roi = (t_profit / (base_p * shares) * 100) if (base_p * shares) != 0 else 0
+            
+            t_color = "#ff4b4b" if t_profit > 0 else ("#00e676" if t_profit < 0 else "white")
+            diff_val = target_p - base_p
+            diff_color = "#ff4b4b" if diff_val > 0 else ("#00e676" if diff_val < 0 else "white")
+            
+            html_str = f"""
+            <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
+                <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
+                <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
+                <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
+                <div>價差: <span style="color: {diff_color}; font-weight: bold;">{diff_val:+.2f}</span></div>
+            </div>
+            """
         else:
-            t_sell = base_p; t_buy = target_p
-            t_sell_fee = max(min_fee, math.floor(t_sell * shares * fee_rate * (discount/10)))
-            t_buy_fee = max(min_fee, math.floor(t_buy * shares * fee_rate * (discount/10)))
-            t_tax = math.floor(t_sell * shares * tax_rate)
-            t_income = (t_sell * shares) - t_sell_fee - t_tax
-            t_cost = (t_buy * shares) + t_buy_fee
-            t_profit = t_income - t_cost
-            t_total_fee = t_buy_fee + t_sell_fee
-        
-        t_roi = (t_profit / (base_p * shares) * 100) if (base_p * shares) != 0 else 0
-        
-        t_color = "#ff4b4b" if t_profit > 0 else ("#00e676" if t_profit < 0 else "white")
-        diff_val = target_p - base_p
-        diff_color = "#ff4b4b" if diff_val > 0 else ("#00e676" if diff_val < 0 else "white")
-        
-        html_str = f"""
-        <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
-            <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
-            <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
-            <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
-            <div>價差: <span style="color: {diff_color}; font-weight: bold;">{diff_val:+.2f}</span></div>
-        </div>
-        """
+            # 空值時的預設顯示狀態
+            html_str = f"""
+            <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
+                <div>預估損益: <span style="color: white; font-weight: bold;">0 (+0.00%)</span></div>
+                <div>手續費總和: <span style="color: #cccccc;">0</span></div>
+                <div>交易稅: <span style="color: #cccccc;">0</span></div>
+                <div>價差: <span style="color: white; font-weight: bold;">+0.00</span></div>
+            </div>
+            """
+            
         st.markdown(html_str, unsafe_allow_html=True)
     st.markdown("---")
-    # --- 新增結束 ---
     
     limit_up, limit_down = calculate_limits(st.session_state.calc_base_price)
     b1, b2, _ = st.columns([1, 1, 6])
