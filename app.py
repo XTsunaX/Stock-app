@@ -1104,7 +1104,7 @@ def fetch_goodinfo_data():
 # ==========================================
 # 0. 頁面設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="台股全盤戰略室", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -1125,7 +1125,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ 當沖戰略室 ⚡")
+st.title("⚡ 台股全盤戰略室 ⚡")
 
 CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
@@ -1937,7 +1937,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
 # ==========================================
 # 主介面 (Tabs)
 # ==========================================
-tab1, tab2, tab_fibo, tab_db, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 當沖損益室 💰", "📈 費波計算", "📚 戰略資料庫", "📅 股市行事曆"])
+tab1, tab2, tab_fibo, tab_db, tab3 = st.tabs(["⚡ 當沖戰略室 ⚡", "💰 交易損益室 💰", "📈 費波計算", "📚 戰略資料庫", "📅 股市行事曆"])
 
 with tab1:
     col_search, col_file = st.columns([2, 1])
@@ -2521,7 +2521,7 @@ with tab1:
                 )
 
 with tab2:
-    st.markdown("#### 💰 當沖損益室 💰")
+    st.markdown("#### 💰 交易損益室 💰")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         calc_price = st.number_input("基準價格", value=float(st.session_state.calc_base_price), step=0.01, format="%.2f", key="input_base_price")
