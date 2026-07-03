@@ -2426,6 +2426,10 @@ with tab1:
             btn_indep_run = st.button("🚀 執行分析", key="btn_indep_run", use_container_width=True)
             
         if btn_indep_run and indep_selection:
+            # --- 確保期貨清單有被載入 ---
+            if not st.session_state.futures_list: 
+                st.session_state.futures_list = fetch_futures_list()
+                
             indep_data = []
             c_map_q, n_map_q = load_local_stock_names()
             f_set = st.session_state.futures_list if 'futures_list' in st.session_state else {}
@@ -2467,11 +2471,11 @@ with tab1:
                             try: df_indep.at[i, '5日線價差'] = round(float(close_p) - float(ma5_val), 2)
                             except: pass
 
-                input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "自訂價價差", "5日線價差", "當日漲停價", "當日跌停價", "收盤價", "漲跌幅", "期貨"]
+                input_cols = ["代號", "名稱", "戰略備註", "5日線價差", "當日漲停價", "當日跌停價", "收盤價", "漲跌幅", "期貨"]
                 for col in input_cols:
                     if col not in df_indep.columns: df_indep[col] = None
                     
-                cols_to_fmt = ["當日漲停價", "當日跌停價", "自訂價(可修)", "自訂價價差", "5日線價差"]
+                cols_to_fmt = ["當日漲停價", "當日跌停價", "5日線價差"]
                 for c in cols_to_fmt:
                     if c in df_indep.columns: df_indep[c] = df_indep[c].apply(fmt_price)
 
