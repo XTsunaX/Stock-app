@@ -2412,33 +2412,105 @@ with tab1:
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
-        st.markdown("### 🔍 單檔快速試算 (不寫入主表)")
-        col_q1, col_q2 = st.columns([2, 1])
+        st.markdown("### 獨立計算")
+        col_q1, col_q2 = st.columns([5, 1.5])
         with col_q1:
-            quick_query = st.text_input("輸入代號或名稱查詢戰略備註", key="quick_query_input", placeholder="例如: 2330 或 台積電")
+            indep_selection = st.multiselect(
+                "🔍 快速查詢 (中文/代號)", 
+                options=stock_options, 
+                key="indep_search_multiselect", 
+                placeholder="輸入 2330 或 台積電... (支援複數查詢)"
+            )
         with col_q2:
-            btn_quick = st.button("獨立分析", use_container_width=True)
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            btn_indep_run = st.button("🚀 執行分析", key="btn_indep_run", use_container_width=True)
             
-        if btn_quick and quick_query:
-            q_code = search_code_online(quick_query) or quick_query
+        if btn_indep_run and indep_selection:
+            indep_data = []
             c_map_q, n_map_q = load_local_stock_names()
-            q_name = c_map_q.get(q_code, q_code)
-            with st.spinner(f"正在分析 {q_name}..."):
-                q_data = fetch_stock_data_raw(
-                    q_code, q_name, None, 
-                    st.session_state.futures_list if 'futures_list' in st.session_state else {}, 
-                    st.session_state.saved_notes, 
-                    c_map_q, 
-                    st.session_state.get('sj_logged_in', False), 
-                    st.session_state.get('sj_api', None)
+            f_set = st.session_state.futures_list if 'futures_list' in st.session_state else {}
+            sj_logged = st.session_state.get('sj_logged_in', False)
+            sj_api_obj = st.session_state.get('sj_api', None)
+            
+            with st.spinner("正在獨立分析..."):
+                for i, item in enumerate(indep_selection):
+                    parts = item.split(' ', 1)
+                    q_code = parts[0]
+                    q_name = parts[1] if len(parts) > 1 else ""
+                    data = fetch_stock_data_raw(
+                        q_code, q_name, None, f_set, st.session_state.saved_notes, 
+                        c_map_q, sj_logged, sj_api_obj
+                    )
+                    if data:
+                        indep_data.append(data)
+                        
+            if indep_data:
+                df_indep = pd.DataFrame(indep_data)
+                
+                # 重新套用戰略備註與價差邏輯
+                for i, row in df_indep.iterrows():
+                    pts = row.get('_points', [])
+                    manual = st.session_state.saved_notes.get(row['代號'], "")
+                    n_full, n_auto = generate_note_from_points(pts, manual, show_3d_hilo)
+                    df_indep.at[i, "戰略備註"] = n_full
+                    df_indep.at[i, "名稱"] = row['名稱'].replace('🔴 ', '').replace('🟢 ', '').replace('⚪ ', '')
+                    
+                    ma5_val = row.get('_ma5')
+                    if pd.isna(ma5_val):
+                        for p in pts:
+                            if p.get('tag') in ['多', '空', '平']:
+                                ma5_val = p.get('val')
+                                break
+                    if pd.notna(ma5_val):
+                        close_p = row.get('收盤價')
+                        if pd.notna(close_p) and str(close_p).strip() != "":
+                            try: df_indep.at[i, '5日線價差'] = round(float(close_p) - float(ma5_val), 2)
+                            except: pass
+
+                input_cols = ["代號", "名稱", "戰略備註", "自訂價(可修)", "狀態", "自訂價價差", "5日線價差", "當日漲停價", "當日跌停價", "收盤價", "漲跌幅", "期貨"]
+                for col in input_cols:
+                    if col not in df_indep.columns: df_indep[col] = None
+                    
+                cols_to_fmt = ["當日漲停價", "當日跌停價", "自訂價(可修)", "自訂價價差", "5日線價差"]
+                for c in cols_to_fmt:
+                    if c in df_indep.columns: df_indep[c] = df_indep[c].apply(fmt_price)
+
+                if "收盤價" in df_indep.columns and "漲跌幅" in df_indep.columns:
+                    for i in range(len(df_indep)):
+                        try:
+                            p = float(df_indep.at[i, "收盤價"])
+                            chg = float(df_indep.at[i, "漲跌幅"])
+                            df_indep.at[i, "收盤價"] = fmt_price(p)
+                            df_indep.at[i, "漲跌幅"] = f"{chg:+.2f}%"
+                        except:
+                            df_indep.at[i, "收盤價"] = fmt_price(df_indep.at[i, "收盤價"])
+                            try: df_indep.at[i, "漲跌幅"] = f"{float(df_indep.at[i, '漲跌幅']):.2f}%"
+                            except: pass
+
+                for col in input_cols:
+                    df_indep[col] = df_indep[col].astype(str)
+
+                # 套用與主表格完全一致的顏色邏輯
+                styled_indep = df_indep[input_cols].style.apply(style_tab1_df, axis=1)
+
+                st.dataframe(
+                    styled_indep,
+                    column_config={
+                        "代號": st.column_config.TextColumn(width=50), 
+                        "名稱": st.column_config.TextColumn(width="small"),
+                        "收盤價": st.column_config.TextColumn(width="small"),
+                        "漲跌幅": st.column_config.TextColumn(width="small"),
+                        "期貨": st.column_config.TextColumn(width=60), 
+                        "自訂價(可修)": st.column_config.TextColumn("自訂價", width=60), 
+                        "當日漲停價": st.column_config.TextColumn(width="small"),
+                        "當日跌停價": st.column_config.TextColumn(width="small"),
+                        "自訂價價差": st.column_config.TextColumn(width=70),
+                        "5日線價差": st.column_config.TextColumn(width=70),
+                        "狀態": st.column_config.TextColumn(width=60),
+                        "戰略備註": st.column_config.TextColumn("戰略備註", width=400)
+                    },
+                    hide_index=True, width='content', key="indep_table_output"
                 )
-                if q_data:
-                    pts = q_data.get('_points', [])
-                    n_full, n_auto = generate_note_from_points(pts, "", show_3d_hilo)
-                    st.success(f"**{q_data['名稱']} ({q_data['代號']})**  |  收盤價: {q_data['收盤價']}  |  漲跌幅: {q_data['漲跌幅']:.2f}%")
-                    st.info(f"💡 戰略備註： {n_full}")
-                else:
-                    st.error("查無資料或取得失敗")    
 
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
@@ -2490,7 +2562,7 @@ with tab2:
         diff_color = "#ff4b4b" if diff_val > 0 else ("#00e676" if diff_val < 0 else "white")
         
         html_str = f"""
-        <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px;">
+        <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
             <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
             <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
             <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
@@ -2909,9 +2981,13 @@ with tab3:
                 with open(CAL_OVERRIDE_FILE, "r", encoding="utf-8") as f:
                     df = pd.DataFrame(json.load(f))
                     if not df.empty and "日期" in df.columns:
-                        # 強制將字串轉換為真實的日期物件，避免 Streamlit 型別檢查報錯
                         df["日期"] = pd.to_datetime(df["日期"], errors='coerce').dt.date
-                    return df
+                        return df
+            except: pass
+        
+        # 預設給予一列空白資料，讓使用者可以直接雙擊修改，避免畫面出現 empty 導致無法編輯
+        df = pd.DataFrame([{"日期": None, "事件名稱": "", "文字顏色": "白色"}])
+        return df
             except: pass
         
         # 建立空表時，也要先給予正確的 datetime 型別
