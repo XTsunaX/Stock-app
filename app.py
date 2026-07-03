@@ -2412,7 +2412,7 @@ with tab1:
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
-        st.markdown("### 獨立計算")
+        st.markdown("### ⚡獨立計算")
         col_q1, col_q2 = st.columns([5, 1.5])
         with col_q1:
             indep_selection = st.multiselect(
