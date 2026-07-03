@@ -2412,6 +2412,34 @@ with tab1:
              save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
              st.rerun()
 
+        st.markdown("### 🔍 單檔快速試算 (不寫入主表)")
+        col_q1, col_q2 = st.columns([2, 1])
+        with col_q1:
+            quick_query = st.text_input("輸入代號或名稱查詢戰略備註", key="quick_query_input", placeholder="例如: 2330 或 台積電")
+        with col_q2:
+            btn_quick = st.button("獨立分析", use_container_width=True)
+            
+        if btn_quick and quick_query:
+            q_code = search_code_online(quick_query) or quick_query
+            c_map_q, n_map_q = load_local_stock_names()
+            q_name = c_map_q.get(q_code, q_code)
+            with st.spinner(f"正在分析 {q_name}..."):
+                q_data = fetch_stock_data_raw(
+                    q_code, q_name, None, 
+                    st.session_state.futures_list if 'futures_list' in st.session_state else {}, 
+                    st.session_state.saved_notes, 
+                    c_map_q, 
+                    st.session_state.get('sj_logged_in', False), 
+                    st.session_state.get('sj_api', None)
+                )
+                if q_data:
+                    pts = q_data.get('_points', [])
+                    n_full, n_auto = generate_note_from_points(pts, "", show_3d_hilo)
+                    st.success(f"**{q_data['名稱']} ({q_data['代號']})**  |  收盤價: {q_data['收盤價']}  |  漲跌幅: {q_data['漲跌幅']:.2f}%")
+                    st.info(f"💡 戰略備註： {n_full}")
+                else:
+                    st.error("查無資料或取得失敗")    
+
 with tab2:
     st.markdown("#### 💰 當沖損益室 💰")
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -2457,11 +2485,19 @@ with tab2:
         
         t_roi = (t_profit / (base_p * shares) * 100) if (base_p * shares) != 0 else 0
         
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("預估損益", f"{int(t_profit):,}", delta=f"{t_roi:+.2f}%")
-        m2.metric("手續費總和", f"{int(t_total_fee):,}")
-        m3.metric("交易稅", f"{int(t_tax):,}")
-        m4.metric("價差", f"{(target_p - base_p):+.2f}")
+        t_color = "#ff4b4b" if t_profit > 0 else ("#00e676" if t_profit < 0 else "white")
+        diff_val = target_p - base_p
+        diff_color = "#ff4b4b" if diff_val > 0 else ("#00e676" if diff_val < 0 else "white")
+        
+        html_str = f"""
+        <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px;">
+            <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
+            <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
+            <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
+            <div>價差: <span style="color: {diff_color}; font-weight: bold;">{diff_val:+.2f}</span></div>
+        </div>
+        """
+        st.markdown(html_str, unsafe_allow_html=True)
     st.markdown("---")
     # --- 新增結束 ---
     
@@ -2902,7 +2938,11 @@ with tab3:
             column_config={
                 "日期": st.column_config.DateColumn("日期 (YYYY-MM-DD)", required=True),
                 "事件名稱": st.column_config.TextColumn("事件名稱", required=True),
-                "文字顏色": st.column_config.TextColumn("文字顏色 (預設 #FFFFFF)", default="#FFFFFF")
+                "文字顏色": st.column_config.SelectboxColumn(
+                    "文字顏色",
+                    options=["白色", "紅色", "綠色", "黃色", "藍色", "橘色", "紫紅色"],
+                    default="白色"
+                )
             },
             key="cal_override_editor",
             use_container_width=True
@@ -2990,7 +3030,7 @@ with tab3:
                 # 檢查該週五是否恰逢美股休市（例如 2026/7/3 獨立紀念日）
                 if (m, d) in year_holidays:
                     # 提前至週四公布，且因必為夏令時間，固定顯示 20:30
-                    add_evt(d - 1, "美國非農 (提前/20:30)", "#00E5FF")
+                    add_evt(d - 1, "美國非農 (20:30)", "#00E5FF")
                 else:
                     # 正常週五公布，依月份區分夏令(3~11月: 20:30) 與 冬令(12~2月: 21:30)
                     time_str = "20:30" if 3 <= m <= 11 else "21:30"
@@ -3113,7 +3153,9 @@ with tab3:
                     if d_obj.year == sel_year and d_obj.month == sel_month:
                         if d_obj not in override_dict:
                             override_dict[d_obj] = []
-                        col = r["文字顏色"] if pd.notna(r["文字顏色"]) and str(r["文字顏色"]).strip() else "#FFFFFF"
+                        color_map = {"白色": "#FFFFFF", "紅色": "#FF4B4B", "綠色": "#00E676", "黃色": "#FFD700", "藍色": "#00E5FF", "橘色": "#FF9800", "紫紅色": "#FF00FF"}
+                        raw_col = str(r["文字顏色"]).strip() if pd.notna(r["文字顏色"]) else "白色"
+                        col = color_map.get(raw_col, "#FFFFFF")
                         override_dict[d_obj].append(f"<div style='color:{col}; font-size:0.8em; margin-top:2px; font-weight:bold;'>{r['事件名稱']}</div>")
             except:
                 pass
