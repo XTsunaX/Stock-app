@@ -2941,26 +2941,39 @@ with tab2:
                 if r.status_code == 200:
                     data = r.json()
                     res = {}
+                    sync_date = ""
                     for item in data:
                         sym_api = item.get("ContractType", "").strip()
                         margin_api = item.get("InitialMargin", 0)
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
+                        if not sync_date and "Date" in item:
+                            d_str = str(item["Date"])
+                            if len(d_str) == 8:
+                                sync_date = f"{d_str[:4]}/{d_str[4:6]}/{d_str[6:]}"
+                    
                     st.session_state.taifex_margin_data = res
-                    # 清除手動填寫的值，讓 UI 讀取新的預設值，避免報錯
-                    if 'opt_manual_margin_tx' in st.session_state:
-                        del st.session_state['opt_manual_margin_tx']
+                    if sync_date:
+                        st.session_state.taifex_sync_date = sync_date
+                    
+                    # 立即更新當前選擇的合約保證金數值
+                    opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
+                    sym = "TXF" if "大台" in opt_tx_type else ("MXF" if "小台" in opt_tx_type else "TMF")
+                    if sym in res:
+                        st.session_state.opt_manual_margin_tx = res[sym]
+                    
                     st.toast("已同步期交所最新保證金", icon="✅")
             except Exception as e:
                 st.toast(f"取得期交所保證金失敗: {e}", icon="⚠️")
 
         def do_clear_opt():
-            keys_to_clear = ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_sf_search', 'opt_manual_margin_tx', 'opt_manual_margin_opt']
+            keys_to_clear = ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_sf_search', 'opt_manual_margin_tx', 'opt_manual_margin_opt', 'opt_custom_margin']
             for k in keys_to_clear:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state.opt_lots = 1
             st.session_state.opt_dir = "🔴 做多 ▲"
+            st.session_state.opt_margin_level = "級距一 | 13.5% (一般股票)"
 
         def on_opt_tab_change():
             do_clear_opt()
@@ -2968,7 +2981,7 @@ with tab2:
 
         if 'taifex_margin_data' not in st.session_state: st.session_state.taifex_margin_data = {}
 
-        # 確保期貨清單存在，並為每檔個股同時產生一般與小型選項
+        # 預先載入期貨清單供個股期貨選單使用
         if 'futures_list' not in st.session_state or not st.session_state.futures_list:
             st.session_state.futures_list = fetch_futures_list()
         
@@ -3003,7 +3016,6 @@ with tab2:
                     placeholder="請輸入股號或名稱...",
                     key="opt_sf_search"
                 )
-                # 自動判斷是否為小型股期，並連動單選鈕
                 is_small = search_stock_futures is not None and "小型" in search_stock_futures
                 opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True, index=1 if is_small else 0)
                 mult = 100 if "小型" in opt_sub_type else 2000
@@ -3025,7 +3037,7 @@ with tab2:
             st.markdown("###### ⇆ 停損及保證金設定")
             sl_p = st.number_input("停損價 (點) - 用於風報比", value=None, format="%.2f", placeholder="輸入停損價", key="opt_sl_p")
             
-            # 手續費記憶功能
+            # 手續費記憶
             config = load_config()
             if 'saved_opt_fee' not in st.session_state:
                 st.session_state.saved_opt_fee = config.get('saved_opt_fee', None)
@@ -3040,14 +3052,15 @@ with tab2:
 
             actual_margin_req = 0
             if opt_main_tab == "台指期":
-                col_m1, col_m2 = st.columns([3, 1])
-                with col_m1:
-                    sym = "TXF" if "大台" in opt_tx_type else ("MXF" if "小台" in opt_tx_type else "TMF")
-                    def_m = st.session_state.taifex_margin_data.get(sym, None)
-                    margin_req = st.number_input("每口保證金 (原始)", value=def_m, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填")
-                with col_m2:
-                    st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
-                    st.button("🔄 同步", use_container_width=True, help="同步期交所保證金", on_click=sync_taifex_margin)
+                st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
+                c_m1, c_m2 = st.columns([3, 1])
+                with c_m1:
+                    margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填", label_visibility="collapsed")
+                with c_m2:
+                    st.button("↺ 重新整理", use_container_width=True, help="同步期交所保證金", on_click=sync_taifex_margin)
+                
+                sync_date_text = st.session_state.get('taifex_sync_date', '尚未同步')
+                st.markdown(f"<div style='color:#ff4b4b; font-size:13px; margin-top: -10px; margin-bottom: 10px;'>✔️已同步 <span style='color:#aaa;'>期交所資料：{sync_date_text}</span></div>", unsafe_allow_html=True)
                 actual_margin_req = margin_req if margin_req is not None else 0
                 
             elif opt_main_tab == "個股期貨":
