@@ -2667,14 +2667,17 @@ with tab2:
             return ['color: gray'] * len(row)
 
         if not df_calc.empty:
-            table_height = (len(df_calc) + 1) * 35 
-            st.dataframe(
-                df_calc.style.apply(style_calc_row, axis=1), 
-                width='content', 
-                hide_index=True, 
-                height=table_height,
-                column_config={"_profit": None, "_note_type": None, "_is_base": None}
-            )
+                table_height = (len(df_calc) + 1) * 35 
+                st.dataframe(
+                    df_calc.style.apply(style_calc_row, axis=1), 
+                    width='content', 
+                    hide_index=True, 
+                    height=table_height,
+                    column_config={
+                        "_profit": None, "_note_type": None, "_is_base": None,
+                        "交易稅": st.column_config.NumberColumn(width=80)
+                    }
+                )
 
     with tab2_2:
         st.markdown("##### 📊 波段信用室")
@@ -2756,20 +2759,17 @@ with tab2:
                 t_diff_val = swing_target_p - s_base_p
                 t_diff_color = "#ff4b4b" if t_diff_val > 0 else ("#00e676" if t_diff_val < 0 else "white")
                 
-                swing_html_str = f"""
-                <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
-                    <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
-                    <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
-                    <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
-                    """
+                swing_html_str = (
+                    f"<div style='font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;'>"
+                    f"<div>預估損益: <span style='color: {t_color}; font-weight: bold;'>{int(t_profit):,} ({t_roi:+.2f}%)</span></div>"
+                    f"<div>手續費總和: <span style='color: #cccccc;'>{int(t_total_fee):,}</span></div>"
+                    f"<div>交易稅: <span style='color: #cccccc;'>{int(t_tax):,}</span></div>"
+                )
                 if swing_type in ["融資(多)", "融券(空)"]:
-                    swing_html_str += f"""<div>利息: <span style="color: #cccccc;">{int(t_interest):,}</span></div>"""
+                    swing_html_str += f"<div>利息: <span style='color: #cccccc;'>{int(t_interest):,}</span></div>"
                     if swing_type == "融券(空)":
-                        swing_html_str += f"""<div>借券費: <span style="color: #cccccc;">{int(t_borrow_fee):,}</span></div>"""
-                swing_html_str += f"""
-                    <div>價差: <span style="color: {t_diff_color}; font-weight: bold;">{t_diff_val:+.2f}</span></div>
-                </div>
-                """
+                        swing_html_str += f"<div>借券費: <span style='color: #cccccc;'>{int(t_borrow_fee):,}</span></div>"
+                swing_html_str += f"<div>價差: <span style='color: {t_diff_color}; font-weight: bold;'>{t_diff_val:+.2f}</span></div></div>"
                 st.markdown(swing_html_str, unsafe_allow_html=True)
             else:
                 st.markdown(f"""
@@ -2898,7 +2898,10 @@ with tab2:
                     width='content', 
                     hide_index=True, 
                     height=(len(df_swing_calc) + 1) * 35,
-                    column_config={"_profit": None, "_is_base": None, "_call": None}
+                    column_config={
+                        "_profit": None, "_is_base": None, "_call": None,
+                        "交易稅": st.column_config.NumberColumn(width=80)
+                    }
                 )
 
     with tab2_3:
@@ -2954,12 +2957,12 @@ with tab2:
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
                         # 正規化: 無論 API 回傳中文名稱或英文代碼，統一存為英文代碼
-                        if "微型" in sym_api or sym_api in ["MXF", "TMF"]:
+                        if "微型" in sym_api or "MXF" in sym_api or "TMF" in sym_api:
                             res["MXF"] = margin_api
                             res["TMF"] = margin_api
-                        elif "小型臺股" in sym_api or "小型台股" in sym_api or sym_api == "MTX":
+                        elif "小型" in sym_api or "MTX" in sym_api:
                             res["MTX"] = margin_api
-                        elif ("臺股" in sym_api or "台股" in sym_api or sym_api == "TX") and "小型" not in sym_api and "微型" not in sym_api:
+                        elif ("臺股" in sym_api or "台股" in sym_api or "TX" in sym_api) and "小型" not in sym_api and "微型" not in sym_api:
                             res["TX"] = margin_api
                         if not sync_date and "Date" in item:
                             d_str = str(item["Date"])
