@@ -2896,6 +2896,292 @@ with tab2:
                 )
 
     with tab2_3:
+        st.markdown("##### 📈 期權交易室")
+        st.markdown("""
+        <style>
+        .opt-card {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .opt-label {
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        .opt-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        /* 做多與做空選擇文字的動態變色 */
+        div[role="radiogroup"] label:has(input[value="🔴 做多 ▲"]:checked) div[data-testid="stMarkdownContainer"] p {
+            color: #ff4b4b !important;
+            font-weight: bold !important;
+        }
+        div[role="radiogroup"] label:has(input[value="🟢 做空 ▼"]:checked) div[data-testid="stMarkdownContainer"] p {
+            color: #00e676 !important;
+            font-weight: bold !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # 切換類別時的清除事件
+        def on_opt_tab_change():
+            keys_to_clear = ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_sf_search', 'opt_manual_margin_tx', 'opt_manual_margin_opt']
+            for k in keys_to_clear:
+                if k in st.session_state:
+                    st.session_state[k] = None
+            if 'opt_lots' in st.session_state: st.session_state.opt_lots = 1
+            if 'opt_dir' in st.session_state: st.session_state.opt_dir = "🔴 做多 ▲"
+
+        def do_clear_opt():
+            on_opt_tab_change()
+
+        if 'taifex_margin_data' not in st.session_state: st.session_state.taifex_margin_data = {}
+        if 'opt_sub_type_idx' not in st.session_state: st.session_state.opt_sub_type_idx = 0
+
+        # 預先載入期貨清單供個股期貨選單使用
+        if 'futures_list' not in st.session_state or not st.session_state.futures_list:
+            st.session_state.futures_list = fetch_futures_list()
+        
+        c_map_opt, _ = load_local_stock_names()
+        sf_opts = []
+        for code, flags in st.session_state.futures_list.items():
+            name = c_map_opt.get(code, code)
+            sf_opts.append(f"{code} {name}期貨 (一般 x2000)")
+            if "(小)" in flags:
+                sf_opts.append(f"{code} 小型{name}期貨 (小型 x100)")
+                
+        def on_stock_futures_change():
+            sel = st.session_state.opt_sf_search
+            if sel and "小型" in sel:
+                st.session_state.opt_sub_type_idx = 1
+            else:
+                st.session_state.opt_sub_type_idx = 0
+
+        col_left, col_right = st.columns([1.1, 1], gap="large")
+
+        with col_left:
+            st.markdown("###### ① 合約設定")
+            opt_main_tab = st.selectbox(
+                "合約類別", 
+                ["台指期", "個股期貨", "選擇權"], 
+                key="opt_main_tab",
+                on_change=on_opt_tab_change
+            )
+
+            if opt_main_tab == "台指期":
+                opt_tx_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True, key="opt_tx_type")
+                mult = 200 if "大台" in opt_tx_type else (50 if "小台" in opt_tx_type else 10)
+                tax_rate = 0.00002
+            elif opt_main_tab == "個股期貨":
+                search_stock_futures = st.selectbox(
+                    "搜尋股期 (代號或名稱)", 
+                    options=sorted(sf_opts), 
+                    index=None,
+                    placeholder="請輸入股號或名稱...",
+                    key="opt_sf_search",
+                    on_change=on_stock_futures_change
+                )
+                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True, index=st.session_state.opt_sub_type_idx)
+                mult = 100 if "小型" in opt_sub_type else 2000
+                tax_rate = 0.00002
+            else:
+                st.markdown("<div style='margin-bottom: 10px; font-size: 14px;'>合約規格：選擇權 (x50)</div>", unsafe_allow_html=True)
+                mult = 50
+                tax_rate = 0.001
+
+            opt_dir = st.radio("部位方向", ["🔴 做多 ▲", "🟢 做空 ▼"], horizontal=True, key="opt_dir")
+            opt_lots = st.number_input("口數", min_value=1, value=1, step=1, key="opt_lots")
+
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                entry_p = st.number_input("進場價 (點)", value=None, format="%.2f", placeholder="輸入進場價", key="opt_entry_p")
+            with c_p2:
+                exit_p = st.number_input("出場/目標價 (點)", value=None, format="%.2f", placeholder="輸入目標價", key="opt_exit_p")
+
+            st.markdown("###### ⇆ 停損及保證金設定")
+            sl_p = st.number_input("停損價 (點) - 用於風報比", value=None, format="%.2f", placeholder="輸入停損價", key="opt_sl_p")
+            
+            # 手續費記憶寫入
+            config = load_config()
+            if 'saved_opt_fee' not in st.session_state:
+                st.session_state.saved_opt_fee = config.get('saved_opt_fee', None)
+                
+            opt_fee = st.number_input("單邊手續費 (元/口)", value=st.session_state.saved_opt_fee, step=1, placeholder="輸入手續費 (必填)")
+            if opt_fee is not None and opt_fee != st.session_state.saved_opt_fee:
+                st.session_state.saved_opt_fee = opt_fee
+                config['saved_opt_fee'] = opt_fee
+                try:
+                    with open(CONFIG_FILE, "w") as f: json.dump(config, f)
+                except: pass
+
+            actual_margin_req = 0
+            if opt_main_tab == "台指期":
+                col_m1, col_m2 = st.columns([3, 1])
+                with col_m1:
+                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
+                    def_m = st.session_state.taifex_margin_data.get(sym, None)
+                    margin_req = st.number_input("每口保證金 (原始)", value=def_m if st.session_state.get('opt_manual_margin_tx') is None else st.session_state.opt_manual_margin_tx, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填")
+                with col_m2:
+                    st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+                    if st.button("🔄 同步", use_container_width=True, help="同步期交所保證金"):
+                        try:
+                            url = 'https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining'
+                            headers = {
+                                'accept': 'application/json',
+                                'If-Modified-Since': 'Mon, 26 Jul 1997 05:00:00 GMT',
+                                'Cache-Control': 'no-cache',
+                                'Pragma': 'no-cache'
+                            }
+                            r = requests.get(url, headers=headers, timeout=5, verify=False)
+                            if r.status_code == 200:
+                                data = r.json()
+                                res = {}
+                                for item in data:
+                                    sym_api = item.get("ContractType", "").strip()
+                                    margin_api = item.get("InitialMargin", 0)
+                                    if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
+                                    res[sym_api] = margin_api
+                                st.session_state.taifex_margin_data = res
+                                st.session_state.opt_manual_margin_tx = None
+                                st.toast("已同步最新保證金", icon="✅")
+                                st.rerun()
+                        except Exception as e:
+                            st.toast(f"取得期交所保證金失敗: {e}", icon="⚠️")
+                actual_margin_req = margin_req if margin_req is not None else 0
+                
+            elif opt_main_tab == "個股期貨":
+                margin_level = st.selectbox("每口保證金 (原始)", [
+                    "級距一 | 13.5% (一般股票)", 
+                    "級距二 | 15.0% (波動較大)", 
+                    "級距三 | 20.0% (高波動)", 
+                    "自訂比例..."
+                ], key="opt_margin_level")
+                
+                if margin_level == "自訂比例...":
+                    margin_pct = st.number_input("自訂保證金比例 (%)", value=st.session_state.get('opt_custom_margin', 13.5), step=0.5, key="opt_custom_margin")
+                else:
+                    margin_pct = float(margin_level.split(" | ")[1].split("%")[0])
+                    
+                if entry_p is not None:
+                    actual_margin_req = round(entry_p * mult * (margin_pct / 100.0))
+                else:
+                    actual_margin_req = 0
+                    
+            else: # 選擇權
+                margin_req = st.number_input("每口保證金 (原始)", value=st.session_state.get('opt_manual_margin_opt', None), step=1000.0, format="%.0f", key="opt_manual_margin_opt", placeholder="買方為權利金，賣方請手動輸入")
+                if margin_req is not None:
+                    actual_margin_req = margin_req
+                elif entry_p is not None:
+                    actual_margin_req = entry_p * mult
+                else:
+                    actual_margin_req = 0
+            
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            if st.button("↺ 清除重填", on_click=do_clear_opt, use_container_width=True):
+                pass
+
+        with col_right:
+            st.markdown("###### 📈 損益結果")
+
+            if entry_p is not None and exit_p is not None and opt_fee is not None:
+                pt_diff = (exit_p - entry_p) if "做多" in opt_dir else (entry_p - exit_p)
+                gross_pnl = pt_diff * mult * opt_lots
+
+                tax_buy = round(entry_p * mult * tax_rate) * opt_lots
+                tax_sell = round(exit_p * mult * tax_rate) * opt_lots
+                total_tax = tax_buy + tax_sell
+                total_fee = opt_fee * 2 * opt_lots
+
+                net_pnl = gross_pnl - total_tax - total_fee
+
+                pnl_color = "#ff4b4b" if net_pnl > 0 else ("#00e676" if net_pnl < 0 else "white")
+
+                st.markdown(f"""
+                <div class="opt-card">
+                    <div class="opt-label">預估淨損益 (含手續費與稅)</div>
+                    <div class="opt-value" style="color: {pnl_color}; font-size: 24px;">{int(net_pnl):,} 元</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                cr1, cr2 = st.columns(2)
+                with cr1:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">毛損益</div>
+                        <div class="opt-value">{int(gross_pnl):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cr2:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">點差/口</div>
+                        <div class="opt-value">{pt_diff:g} 點</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                cr3, cr4 = st.columns(2)
+                with cr3:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">手續費 (雙邊)</div>
+                        <div class="opt-value">{int(total_fee):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cr4:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">期交稅 (雙邊)</div>
+                        <div class="opt-value">{int(total_tax):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                if actual_margin_req > 0:
+                    roi = net_pnl / (actual_margin_req * opt_lots) * 100
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">預估保證金總額</div>
+                        <div class="opt-value">{int(actual_margin_req * opt_lots):,} 元 <span style="font-size: 14px; font-weight: normal; color: #aaa;">(報酬率: {roi:.2f}%)</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown("<br><div style='font-size:16px; font-weight:bold; color:#ddd; margin-bottom:5px;'>風報比 (R:R)</div>", unsafe_allow_html=True)
+                if sl_p is not None:
+                    risk_pt = (entry_p - sl_p) if "做多" in opt_dir else (sl_p - entry_p)
+                    if risk_pt > 0:
+                        reward_pt = pt_diff if pt_diff > 0 else 0
+                        rrr = reward_pt / risk_pt if risk_pt != 0 else 0
+
+                        st.markdown(f"<div style='text-align: right; font-size: 20px; font-weight: bold; margin-bottom: 5px;'>1 : {rrr:.2f}</div>", unsafe_allow_html=True)
+
+                        total_rr = risk_pt + reward_pt
+                        if total_rr > 0:
+                            risk_pct = (risk_pt / total_rr) * 100
+                            reward_pct = (reward_pt / total_rr) * 100
+                        else:
+                            risk_pct = 100; reward_pct = 0
+
+                        st.markdown(f"""
+                        <div style="width: 100%; height: 8px; display: flex; border-radius: 4px; overflow: hidden; margin-bottom: 5px;">
+                            <div style="width: {risk_pct}%; background-color: #00e676;"></div>
+                            <div style="width: {reward_pct}%; background-color: #ff4b4b;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #aaa;">
+                            <span>▼ 風險 {risk_pt:g} 點</span>
+                            <span>▲ 報酬 {reward_pt:g} 點</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.error("停損價設定錯誤 (做多時停損應低於進場價，做空時應高於進場價)")
+                else:
+                    st.caption("輸入停損價後即可顯示風報比評估")
+                    
+                st.markdown("<br><div style='text-align: center; font-size: 12px; color: #888;'>💡 提示：手續費依各券商折扣不同 (大台≈100、小台≈50、微台≈25)<br>保證金請以期交所最新公告為準</div>", unsafe_allow_html=True)
+            else:
+                st.info("👈 請在左側填寫完整的 **進場價**、**出場/目標價** 與 **單邊手續費** 即可自動開始計算損益與風險。")
                 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
