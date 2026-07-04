@@ -2954,9 +2954,9 @@ with tab2:
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
                         # 正規化: 無論 API 回傳中文名稱或英文代碼，統一存為英文代碼
-                        if "微型" in sym_api:
-                            res["MXF"] = margin_api
-                        elif "小型臺股" in sym_api or "小型台股" in sym_api:
+                        if "微型" in sym_api or sym_api == "TMF":
+                            res["TMF"] = margin_api
+                        elif "小型臺股" in sym_api or "小型台股" in sym_api or sym_api == "MTX":
                             res["MTX"] = margin_api
                         elif ("臺股" in sym_api or "台股" in sym_api or sym_api == "TX") and "小型" not in sym_api and "微型" not in sym_api:
                             res["TX"] = margin_api
@@ -2972,7 +2972,7 @@ with tab2:
                     # 立即更新當前選擇的合約保證金數值
                     opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
                     # 修正期交所 API 的合約代號 (大台 TX, 小台 MTX, 微台 TMF)
-                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "MXF")
+                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
                     if sym in res:
                         st.session_state.opt_manual_margin_tx = res[sym]
                     
@@ -3124,17 +3124,20 @@ with tab2:
                 opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
                 
                 # 修正此處的合約代號對應
-                sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "MXF")
+                sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
                 
                 fetched_margin = st.session_state.taifex_margin_data.get(sym, 0)
                 if fetched_margin > 0:
                     margin_display_val = f"{fetched_margin:,.0f} (API自動帶入)"
                     actual_margin_req = fetched_margin
 
+                # 強制寫入 session_state 讓 text_input 隨時更新
+                st.session_state["margin_display_tx"] = margin_display_val
+
                 st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
                 c_m1, c_m2 = st.columns([3, 1])
                 with c_m1:
-                    st.text_input("每口保證金", value=margin_display_val, disabled=True, label_visibility="collapsed", key="margin_display_tx")
+                    st.text_input("每口保證金", disabled=True, label_visibility="collapsed", key="margin_display_tx")
                 with c_m2:
                     st.button("↺ 重新整理", key="refresh_tx_margin", use_container_width=True, on_click=sync_taifex_margin)
                 if sync_text != "尚未同步":
@@ -3154,10 +3157,13 @@ with tab2:
                 elif margin_pct > 0:
                     margin_display_val = f"API 級距 {margin_pct}% (需進場價)"
                     
+                # 強制寫入 session_state 讓 text_input 隨時更新
+                st.session_state["margin_display_ssf"] = margin_display_val
+
                 st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
                 c_m1, c_m2 = st.columns([3, 1])
                 with c_m1:
-                    st.text_input("每口保證金", value=margin_display_val, disabled=True, label_visibility="collapsed", key="margin_display_ssf")
+                    st.text_input("每口保證金", disabled=True, label_visibility="collapsed", key="margin_display_ssf")
                 with c_m2:
                     if st.button("↺ 重新整理", key="refresh_ssf_margin", use_container_width=True):
                         fetch_ssf_margin_info.clear()
