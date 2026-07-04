@@ -3161,6 +3161,13 @@ with tab2:
                     actual_margin_req = margin_req if margin_req is not None else 0
 
                 if actual_margin_req > 0:
+                    roi = net_pnl / (actual_margin_req * opt_lots) * 100
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">預估保證金總額</div>
+                        <div class="opt-value">{int(actual_margin_req * opt_lots):,} 元 <span style="font-size: 14px; font-weight: normal; color: #aaa;">(報酬率: {roi:.2f}%)</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 st.markdown("<br><div style='font-size:16px; font-weight:bold; color:#ddd; margin-bottom:5px;'>風報比 (R:R)</div>", unsafe_allow_html=True)
                 if sl_p is not None:
