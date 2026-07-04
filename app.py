@@ -3214,26 +3214,7 @@ with tab2:
                     </div>
                     """, unsafe_allow_html=True)
 
-                if actual_margin_req > 0:
-                    roi = net_pnl / (actual_margin_req * opt_lots) * 100
-                    st.markdown(f"""
-                    <div class="opt-card">
-                        <div class="opt-label">預估保證金總額</div>
-                        <div class="opt-value">{int(actual_margin_req * opt_lots):,} 元 <span style="font-size: 14px; font-weight: normal; color: #aaa;">(報酬率: {roi:.2f}%)</span></div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                if opt_main_tab == "台指期":
-                    st.markdown("<div style='font-size: 14px; margin-top: 8px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
-                    c_m1, c_m2 = st.columns([3, 1])
-                    with c_m1:
-                        margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填", label_visibility="collapsed")
-                    with c_m2:
-                        st.button("↺ 重新整理", use_container_width=True, help="同步期交所保證金", on_click=sync_taifex_margin)
-                    sync_date_text = st.session_state.get('taifex_sync_date', '尚未同步')
-                    st.markdown(f"<div style='color:#ff4b4b; font-size:13px; margin-top: -10px; margin-bottom: 10px;'>✔️已同步 <span style='color:#aaa;'>期交所資料：{sync_date_text}</span></div>", unsafe_allow_html=True)
-                    actual_margin_req = margin_req if margin_req is not None else 0
-
+                # 刪除原本冗長重複的區塊，只留下這一段：
                 if actual_margin_req > 0:
                     roi = net_pnl / (actual_margin_req * opt_lots) * 100
                     st.markdown(f"""
