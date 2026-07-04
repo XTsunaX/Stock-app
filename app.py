@@ -2667,7 +2667,7 @@ with tab2:
             return ['color: gray'] * len(row)
 
         if not df_calc.empty:
-            table_height = (len(df_calc) + 1) * 40 
+            table_height = (len(df_calc) + 1) * 35 
             st.dataframe(
                 df_calc.style.apply(style_calc_row, axis=1), 
                 width='content', 
