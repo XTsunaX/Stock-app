@@ -2670,7 +2670,7 @@ with tab2:
             table_height = (len(df_calc) + 1) * 35
             st.dataframe(
                 df_calc.style.apply(style_calc_row, axis=1), 
-                width=350, 
+                width=500, 
                 hide_index=True, 
                 height=table_height,
                 column_config={"_profit": None, "_note_type": None, "_is_base": None}
