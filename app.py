@@ -2965,7 +2965,7 @@ with tab2:
                     # 立即更新當前選擇的合約保證金數值
                     opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
                     # 修正期交所 API 的合約代號 (大台 TX, 小台 MTX, 微台 TMF)
-                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
+                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "MXF")
                     if sym in res:
                         st.session_state.opt_manual_margin_tx = res[sym]
                     
@@ -2980,15 +2980,15 @@ with tab2:
             has_small_set = set()
             sync_date = ""
             try:
-                url_pct = "https://openapi.taifex.com.tw/v1/StockFuturesAndOptionsMargining"
+                url_pct = "https://openapi.taifex.com.tw/v1/SingleStockFuturesMargining"
                 r_pct = requests.get(url_pct, headers={'accept': 'application/json'}, timeout=5, verify=False)
                 if r_pct.status_code == 200:
                     data = r_pct.json()
                     stock_contracts = {}
                     for item in data:
-                        code = str(item.get("StockCode", "")).strip()
+                        code = str(item.get("UnderlyingSecurityCode", "")).strip()
                         contract = str(item.get("Contract", "")).strip()
-                        m_val = item.get("InitialMarginPercentage", 0)
+                        m_val = item.get("InitialMarginRate", 0)
                         
                         if code:
                             if code not in stock_contracts:
@@ -3115,7 +3115,7 @@ with tab2:
                 opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
                 
                 # 修正此處的合約代號對應
-                sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
+                sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "MXF")
                 
                 fetched_margin = st.session_state.taifex_margin_data.get(sym, 0)
                 if fetched_margin > 0:
