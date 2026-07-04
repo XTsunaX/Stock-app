@@ -3122,8 +3122,6 @@ with tab2:
                     if st.button("↺ 重新整理", key="refresh_ssf_margin", use_container_width=True):
                         fetch_ssf_margin_info.clear()
                         st.rerun()
-                    
-            else: # 選擇權
 
         with col_right:
             st.markdown("###### 📈 損益結果")
