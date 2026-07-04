@@ -2680,137 +2680,141 @@ with tab2:
         st.markdown("##### 📊 波段信用室")
         c2_1, c2_2, c2_3, c2_4, c2_5 = st.columns(5)
         with c2_1:
-            if 'swing_base_price' not in st.session_state: st.session_state.swing_base_price = 100.0
-            swing_calc_price = st.number_input("基準價格", value=float(st.session_state.swing_base_price), step=0.01, format="%.2f", key="input_swing_base_price")
-            if swing_calc_price != st.session_state.swing_base_price:
-                st.session_state.swing_base_price = swing_calc_price
-                st.session_state.swing_view_price = apply_tick_rules(swing_calc_price)
+            swing_calc_price = st.number_input("基準價格", value=None, step=0.5, format="%.2f", key="input_swing_base_price", placeholder="請輸入...")
         with c2_2: swing_shares = st.number_input("股數", value=1000, step=1000, key="swing_shares")
         with c2_3: swing_discount = st.number_input("手續費折扣 (折)", value=2.8, step=0.1, min_value=0.1, max_value=10.0, key="swing_discount")
         with c2_4: swing_min_fee = st.number_input("最低手續費 (元)", value=20, step=1, key="swing_min_fee")
         with c2_5: swing_tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1, key="swing_tick_count")
         
-        c2_type, c2_margin, c2_rate, c2_days = st.columns(4)
+        c2_type, c2_margin, c2_rate, c2_days, c2_fee_rate = st.columns(5)
         with c2_type:
             swing_type = st.selectbox("交易選項", ["個股", "融資(多)", "融券(空)"], key="swing_type")
         with c2_margin:
-            margin_ratio = st.number_input("自備/保證金成數(%)", value=40.0 if swing_type == "融資(多)" else (90.0 if swing_type == "融券(空)" else 100.0), step=10.0, key="margin_ratio")
+            margin_ratio = st.number_input("融資/券成數(%)", value=60.0 if swing_type == "融資(多)" else (90.0 if swing_type == "融券(空)" else 0.0), step=10.0, key="margin_ratio")
         with c2_rate:
             annual_rate = st.number_input("年利率(%)", value=6.25 if swing_type == "融資(多)" else (0.2 if swing_type == "融券(空)" else 0.0), step=0.1, key="annual_rate")
         with c2_days:
             swing_days = st.number_input("天數", value=1, min_value=1, step=1, key="swing_days")
+        with c2_fee_rate:
+            short_fee_rate = st.number_input("借券費率(‱)", value=8.0 if swing_type == "融券(空)" else 0.0, step=1.0, key="short_fee_rate")
 
-        swing_limit_up, swing_limit_down = calculate_limits(st.session_state.swing_base_price)
-        sb1, sb2, _ = st.columns([1, 1, 6])
-        with sb1:
-            if st.button("🔽 向下", key="swing_btn_down", width='stretch'):
-                if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = st.session_state.swing_base_price
-                st.session_state.swing_view_price = move_tick(st.session_state.swing_view_price, -swing_tick_count)
-                st.rerun()
-        with sb2:
-            if st.button("🔼 向上", key="swing_btn_up", width='stretch'):
-                if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = st.session_state.swing_base_price
-                st.session_state.swing_view_price = move_tick(st.session_state.swing_view_price, swing_tick_count)
-                st.rerun()
+        if swing_calc_price is not None:
+            if swing_calc_price != st.session_state.get('swing_base_price', 0):
+                st.session_state.swing_base_price = swing_calc_price
+                st.session_state.swing_view_price = apply_tick_rules(swing_calc_price)
 
-        swing_ticks_range = range(swing_tick_count, -(swing_tick_count + 1), -1)
-        swing_calc_data = []
-        s_base_p = st.session_state.swing_base_price
-        if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = s_base_p
-        s_view_p = st.session_state.swing_view_price
-        s_fee_rate = 0.001425; s_tax_rate = 0.003
-        
-        for i in swing_ticks_range:
-            p = move_tick(s_view_p, i)
-            
-            buy_price = s_base_p if swing_type in ["個股", "融資(多)"] else p
-            sell_price = p if swing_type in ["個股", "融資(多)"] else s_base_p
-            
-            buy_fee = max(swing_min_fee, math.floor(buy_price * swing_shares * s_fee_rate * (swing_discount/10)))
-            sell_fee = max(swing_min_fee, math.floor(sell_price * swing_shares * s_fee_rate * (swing_discount/10)))
-            tax = math.floor(sell_price * swing_shares * s_tax_rate)
-            total_fee = buy_fee + sell_fee
-            
-            stock_value_buy = buy_price * swing_shares
-            stock_value_sell = sell_price * swing_shares
-            
-            profit = 0
-            interest = 0
-            maintenance_ratio = 0.0
-            call_price = 0.0
-            
-            if swing_type == "個股":
-                cost = stock_value_buy + buy_fee
-                income = stock_value_sell - sell_fee - tax
-                profit = income - cost
-            elif swing_type == "融資(多)":
-                margin_loan = math.floor(stock_value_buy * (1 - margin_ratio/100) / 1000) * 1000
-                self_prepare = stock_value_buy - margin_loan
-                interest = math.floor(margin_loan * (annual_rate/100) * (swing_days/365))
-                cost = self_prepare + buy_fee + interest
-                income = stock_value_sell - margin_loan - sell_fee - tax
-                profit = income - cost
-                maintenance_ratio = (stock_value_sell / margin_loan) * 100 if margin_loan > 0 else 0
-                call_price = (margin_loan * 1.3) / swing_shares if margin_loan > 0 else 0
-            elif swing_type == "融券(空)":
-                margin_deposit = math.floor(stock_value_sell * (margin_ratio/100) / 100) * 100
-                short_sale_proceeds = stock_value_sell - sell_fee - tax
-                interest = math.floor((margin_deposit + short_sale_proceeds) * (annual_rate/100) * (swing_days/365))
-                cost = margin_deposit
-                income = (margin_deposit + short_sale_proceeds + interest) - stock_value_buy - buy_fee
-                profit = income - cost
-                maintenance_ratio = ((margin_deposit + short_sale_proceeds) / stock_value_buy) * 100 if stock_value_buy > 0 else 0
-                call_price = (margin_deposit + short_sale_proceeds) / (1.3 * swing_shares) if swing_shares > 0 else 0
+            swing_limit_up, swing_limit_down = calculate_limits(st.session_state.swing_base_price)
+            sb1, sb2, _ = st.columns([1, 1, 6])
+            with sb1:
+                if st.button("🔽 向下", key="swing_btn_down", width='stretch'):
+                    if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = st.session_state.swing_base_price
+                    st.session_state.swing_view_price = move_tick(st.session_state.swing_view_price, -swing_tick_count)
+                    st.rerun()
+            with sb2:
+                if st.button("🔼 向上", key="swing_btn_up", width='stretch'):
+                    if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = st.session_state.swing_base_price
+                    st.session_state.swing_view_price = move_tick(st.session_state.swing_view_price, swing_tick_count)
+                    st.rerun()
 
-            roi = 0
-            initial_capital = cost if swing_type != "融券(空)" else margin_deposit
-            if initial_capital != 0: roi = (profit / initial_capital) * 100
+            swing_ticks_range = range(swing_tick_count, -(swing_tick_count + 1), -1)
+            swing_calc_data = []
+            s_base_p = st.session_state.swing_base_price
+            if 'swing_view_price' not in st.session_state: st.session_state.swing_view_price = s_base_p
+            s_view_p = st.session_state.swing_view_price
+            s_fee_rate = 0.001425; s_tax_rate = 0.003
             
-            diff = p - s_base_p
-            diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
-            if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
-            
-            is_base = (abs(p - s_base_p) < 0.001)
-            
-            row_data = {
-                "成交價": fmt_price(p), "漲跌": diff_str, "預估損益": int(profit), "報酬率%": f"{roi:+.2f}%",
-                "手續費": int(total_fee), "交易稅": int(tax)
-            }
-            if swing_type in ["融資(多)", "融券(空)"]:
-                row_data["利息"] = int(interest)
-                row_data["維持率%"] = f"{maintenance_ratio:.1f}%" if maintenance_ratio > 0 else "-"
-                row_data["強制回補價"] = f"{call_price:.2f}" if call_price > 0 else "-"
+            for i in swing_ticks_range:
+                p = move_tick(s_view_p, i)
                 
-            row_data["_profit"] = profit
-            row_data["_is_base"] = is_base
-            if swing_type in ["融資(多)", "融券(空)"]:
-                row_data["_call"] = True if maintenance_ratio > 0 and maintenance_ratio < 130 else False
-            else:
-                row_data["_call"] = False
+                buy_price = s_base_p if swing_type in ["個股", "融資(多)"] else p
+                sell_price = p if swing_type in ["個股", "融資(多)"] else s_base_p
+                
+                buy_fee = max(swing_min_fee, math.floor(buy_price * swing_shares * s_fee_rate * (swing_discount/10)))
+                sell_fee = max(swing_min_fee, math.floor(sell_price * swing_shares * s_fee_rate * (swing_discount/10)))
+                tax = math.floor(sell_price * swing_shares * s_tax_rate)
+                total_fee = buy_fee + sell_fee
+                
+                stock_value_buy = buy_price * swing_shares
+                stock_value_sell = sell_price * swing_shares
+                
+                profit = 0
+                interest = 0
+                maintenance_ratio = 0.0
+                call_price = 0.0
+                
+                if swing_type == "個股":
+                    cost = stock_value_buy + buy_fee
+                    income = stock_value_sell - sell_fee - tax
+                    profit = income - cost
+                    roi = (profit / cost * 100) if cost > 0 else 0
+                elif swing_type == "融資(多)":
+                    margin_loan = math.floor(stock_value_buy * (margin_ratio/100) / 1000) * 1000
+                    self_prepare = stock_value_buy - margin_loan + buy_fee
+                    interest = round(margin_loan * (annual_rate/100) * (swing_days/365))
+                    net_sell = stock_value_sell - sell_fee - tax - margin_loan - interest
+                    profit = net_sell - self_prepare
+                    maintenance_ratio = (stock_value_sell / margin_loan) * 100 if margin_loan > 0 else 0
+                    call_price = (margin_loan * 1.3) / swing_shares if margin_loan > 0 else 0
+                    roi = (profit / self_prepare * 100) if self_prepare > 0 else 0
+                elif swing_type == "融券(空)":
+                    margin_deposit = math.ceil(stock_value_sell * (margin_ratio/100) / 100) * 100
+                    borrow_fee = math.floor(stock_value_sell * (short_fee_rate/10000))
+                    sell_guaranty = stock_value_sell - sell_fee - tax - borrow_fee
+                    interest = round((margin_deposit + sell_guaranty) * (annual_rate/100) * (swing_days/365))
+                    buy_cost = stock_value_buy + buy_fee
+                    refund = margin_deposit + sell_guaranty + interest - buy_cost
+                    profit = refund - margin_deposit
+                    maintenance_ratio = ((margin_deposit + sell_guaranty) / stock_value_buy) * 100 if stock_value_buy > 0 else 0
+                    call_price = (margin_deposit + sell_guaranty) / (1.3 * swing_shares) if swing_shares > 0 else 0
+                    roi = (profit / margin_deposit * 100) if margin_deposit > 0 else 0
 
-            swing_calc_data.append(row_data)
+                diff = p - s_base_p
+                diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
+                if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
+                
+                is_base = (abs(p - s_base_p) < 0.001)
+                
+                row_data = {
+                    "成交價": fmt_price(p), "漲跌": diff_str, "預估損益": int(profit), "報酬率%": f"{roi:+.2f}%",
+                    "手續費": int(total_fee), "交易稅": int(tax)
+                }
+                if swing_type in ["融資(多)", "融券(空)"]:
+                    if swing_type == "融券(空)":
+                        row_data["借券費"] = int(borrow_fee)
+                    row_data["利息"] = int(interest)
+                    row_data["維持率%"] = f"{maintenance_ratio:.1f}%" if maintenance_ratio > 0 else "-"
+                    row_data["強制回補價"] = f"{call_price:.2f}" if call_price > 0 else "-"
+                    
+                row_data["_profit"] = profit
+                row_data["_is_base"] = is_base
+                if swing_type in ["融資(多)", "融券(空)"]:
+                    row_data["_call"] = True if maintenance_ratio > 0 and maintenance_ratio < 130 else False
+                else:
+                    row_data["_call"] = False
 
-        df_swing_calc = pd.DataFrame(swing_calc_data)
-        
-        def style_swing_row(row):
-            is_base = row['_is_base']
-            prof = row['_profit']
-            is_call = row['_call']
+                swing_calc_data.append(row_data)
+
+            df_swing_calc = pd.DataFrame(swing_calc_data)
             
-            if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-            if is_call: return ['background-color: #ffcccc; color: #ff0000; font-weight: bold'] * len(row)
-            if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-            if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-            return ['color: gray'] * len(row)
+            def style_swing_row(row):
+                is_base = row['_is_base']
+                prof = row['_profit']
+                is_call = row['_call']
+                
+                if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+                if is_call: return ['background-color: #ffcccc; color: #ff0000; font-weight: bold'] * len(row)
+                if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
+                if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+                return ['color: gray'] * len(row)
 
-        if not df_swing_calc.empty:
-            st.dataframe(
-                df_swing_calc.style.apply(style_swing_row, axis=1), 
-                width='content', 
-                hide_index=True, 
-                height=(len(df_swing_calc) + 1) * 35,
-                column_config={"_profit": None, "_is_base": None, "_call": None}
-            )
+            if not df_swing_calc.empty:
+                st.dataframe(
+                    df_swing_calc.style.apply(style_swing_row, axis=1), 
+                    width='content', 
+                    hide_index=True, 
+                    height=(len(df_swing_calc) + 1) * 35,
+                    column_config={"_profit": None, "_is_base": None, "_call": None}
+                )
 
     with tab2_3:
         st.markdown("##### 📈 期權交易室")
@@ -2818,124 +2822,127 @@ with tab2:
         with c3_1:
             opt_type = st.selectbox("商品類型", ["台指期", "微型台指", "個股期", "選擇權"], key="opt_type")
         with c3_2:
-            opt_price = st.number_input("基準價格/點數", value=100.0 if opt_type == "個股期" else 20000.0, step=1.0 if opt_type != "個股期" else 0.5, format="%.2f", key="opt_price")
+            opt_price = st.number_input("基準價格/點數", value=None, step=1.0 if opt_type != "個股期" else 0.5, format="%.2f", key="opt_price", placeholder="請輸入...")
         with c3_3: opt_lots = st.number_input("口數", value=1, min_value=1, step=1, key="opt_lots")
         with c3_4: 
-            def_fee = 50 if opt_type == "台指期" else (20 if opt_type in ["微型台指", "選擇權"] else 30)
-            opt_fee = st.number_input("單邊手續費(元/口)", value=def_fee, step=1, key="opt_fee")
+            opt_fee = st.number_input("單邊手續費(元/口)", value=None, step=1, key="opt_fee", placeholder="請輸入...")
         with c3_5: opt_tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1, key="opt_tick_count")
         
         opt_dir = st.radio("交易方向", ["作多", "作空"], horizontal=True, key="opt_dir")
         
-        if opt_type == "台指期":
-            multiplier = 200
-            tax_rate = 0.00002
-            tick_size = 1.0
-        elif opt_type == "微型台指":
-            multiplier = 50
-            tax_rate = 0.00002
-            tick_size = 1.0
-        elif opt_type == "個股期":
-            multiplier = 2000
-            tax_rate = 0.00002
-            tick_size = 0.5
-        else: # 選擇權
-            multiplier = 50
-            tax_rate = 0.001
-            tick_size = 0.5
+        if opt_price is not None and opt_fee is not None:
+            if opt_type == "台指期":
+                multiplier = 200
+                tax_rate = 0.00002
+                tick_size = 1.0
+            elif opt_type == "微型台指":
+                multiplier = 50
+                tax_rate = 0.00002
+                tick_size = 1.0
+            elif opt_type == "個股期":
+                multiplier = 2000
+                tax_rate = 0.00002
+                tick_size = 0.5
+            else: # 選擇權
+                multiplier = 50
+                tax_rate = 0.001
+                tick_size = 0.5
 
-        total_fee = opt_fee * 2 * opt_lots
-        est_tax_buy = math.ceil(opt_price * multiplier * tax_rate) * opt_lots
-        est_tax_sell = math.ceil(opt_price * multiplier * tax_rate) * opt_lots
-        total_cost = total_fee + est_tax_buy + est_tax_sell
-        break_even_points = total_cost / (multiplier * opt_lots)
-        
-        st.markdown(f"**損益兩平跳動點數:** 約 `{math.ceil(break_even_points)}` 點")
-
-        if 'opt_view_price' not in st.session_state: st.session_state.opt_view_price = opt_price
-        
-        ob1, ob2, _ = st.columns([1, 1, 6])
-        with ob1:
-            if st.button("🔽 向下", key="opt_btn_down", width='stretch'):
-                st.session_state.opt_view_price -= (tick_size * opt_tick_count)
-                st.rerun()
-        with ob2:
-            if st.button("🔼 向上", key="opt_btn_up", width='stretch'):
-                st.session_state.opt_view_price += (tick_size * opt_tick_count)
-                st.rerun()
-
-        opt_ticks_range = range(opt_tick_count, -(opt_tick_count + 1), -1)
-        opt_calc_data = []
-        
-        for i in opt_ticks_range:
-            p = st.session_state.opt_view_price + (i * tick_size)
-            buy_p = opt_price if opt_dir == "作多" else p
-            sell_p = p if opt_dir == "作多" else opt_price
+            total_fee = opt_fee * 2 * opt_lots
+            est_tax_buy = round(opt_price * multiplier * tax_rate) * opt_lots
+            est_tax_sell = round(opt_price * multiplier * tax_rate) * opt_lots
+            total_cost = total_fee + est_tax_buy + est_tax_sell
+            break_even_points = total_cost / (multiplier * opt_lots)
             
-            tax_buy = math.ceil(buy_p * multiplier * tax_rate) * opt_lots
-            tax_sell = math.ceil(sell_p * multiplier * tax_rate) * opt_lots
-            tax_total = tax_buy + tax_sell
+            st.markdown(f"**損益兩平跳動點數:** 約 `{math.ceil(break_even_points)}` 點")
+
+            if 'opt_view_price' not in st.session_state: st.session_state.opt_view_price = opt_price
+            if st.session_state.get('opt_base_price', 0) != opt_price:
+                st.session_state.opt_base_price = opt_price
+                st.session_state.opt_view_price = opt_price
             
-            profit_points = (sell_p - buy_p) * opt_lots
-            profit_gross = profit_points * multiplier
-            profit_net = profit_gross - total_fee - tax_total
+            ob1, ob2, _ = st.columns([1, 1, 6])
+            with ob1:
+                if st.button("🔽 向下", key="opt_btn_down", width='stretch'):
+                    st.session_state.opt_view_price -= (tick_size * opt_tick_count)
+                    st.rerun()
+            with ob2:
+                if st.button("🔼 向上", key="opt_btn_up", width='stretch'):
+                    st.session_state.opt_view_price += (tick_size * opt_tick_count)
+                    st.rerun()
+
+            opt_ticks_range = range(opt_tick_count, -(opt_tick_count + 1), -1)
+            opt_calc_data = []
             
-            diff = p - opt_price
-            diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
-            if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
-            is_base = (abs(p - opt_price) < 0.001)
-
-            opt_calc_data.append({
-                "平倉點數": fmt_price(p), "點數差": diff_str, "預估淨損益": int(profit_net),
-                "總手續費": int(total_fee), "總交易稅": int(tax_total), "_profit": profit_net, "_is_base": is_base
-            })
-
-        df_opt_calc = pd.DataFrame(opt_calc_data)
-        def style_opt_row(row):
-            is_base = row['_is_base']
-            prof = row['_profit']
-            if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-            if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-            if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-            return ['color: gray'] * len(row)
-
-        if not df_opt_calc.empty:
-            st.dataframe(
-                df_opt_calc.style.apply(style_opt_row, axis=1), 
-                width='content', 
-                hide_index=True, 
-                height=(len(df_opt_calc) + 1) * 35,
-                column_config={"_profit": None, "_is_base": None}
-            )
-
-        st.markdown("---")
-        st.markdown("##### 🧮 期貨費波那契損益試算")
-        of1, of2 = st.columns(2)
-        with of1: fib_high = st.number_input("輸入高點(1)", value=None, step=1.0, format="%.2f", key="opt_fib_h")
-        with of2: fib_low = st.number_input("輸入低點(0)", value=None, step=1.0, format="%.2f", key="opt_fib_l")
-        
-        if fib_high is not None and fib_low is not None and fib_high > fib_low:
-            diff = fib_high - fib_low
-            fib_ratios = [-1.0, -0.618, 0.0, 0.236, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0]
-            fib_data = []
-            for r in fib_ratios:
-                target_p = fib_low + (r * diff)
-                buy_p = opt_price if opt_dir == "作多" else target_p
-                sell_p = target_p if opt_dir == "作多" else opt_price
-                tax_buy = math.ceil(buy_p * multiplier * tax_rate) * opt_lots
-                tax_sell = math.ceil(sell_p * multiplier * tax_rate) * opt_lots
-                profit_gross = (sell_p - buy_p) * opt_lots * multiplier
-                profit_net = profit_gross - total_fee - tax_buy - tax_sell
+            for i in opt_ticks_range:
+                p = st.session_state.opt_view_price + (i * tick_size)
+                buy_p = opt_price if opt_dir == "作多" else p
+                sell_p = p if opt_dir == "作多" else opt_price
                 
-                fib_data.append({
-                    "費波那契比例": f"{r:g}", "目標點數": f"{target_p:.2f}", "平倉淨損益": int(profit_net), "_profit": profit_net
+                tax_buy = round(buy_p * multiplier * tax_rate) * opt_lots
+                tax_sell = round(sell_p * multiplier * tax_rate) * opt_lots
+                tax_total = tax_buy + tax_sell
+                
+                profit_points = (sell_p - buy_p) * opt_lots
+                profit_gross = profit_points * multiplier
+                profit_net = profit_gross - total_fee - tax_total
+                
+                diff = p - opt_price
+                diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
+                if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
+                is_base = (abs(p - opt_price) < 0.001)
+
+                opt_calc_data.append({
+                    "平倉點數/價格": fmt_price(p), "點數差": diff_str, "預估淨損益": int(profit_net),
+                    "總手續費": int(total_fee), "總交易稅": int(tax_total), "_profit": profit_net, "_is_base": is_base
                 })
+
+            df_opt_calc = pd.DataFrame(opt_calc_data)
+            def style_opt_row(row):
+                is_base = row['_is_base']
+                prof = row['_profit']
+                if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
+                if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
+                if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
+                return ['color: gray'] * len(row)
+
+            if not df_opt_calc.empty:
+                st.dataframe(
+                    df_opt_calc.style.apply(style_opt_row, axis=1), 
+                    width='content', 
+                    hide_index=True, 
+                    height=(len(df_opt_calc) + 1) * 35,
+                    column_config={"_profit": None, "_is_base": None}
+                )
+
+            st.markdown("---")
+            st.markdown("##### 🧮 期貨費波那契損益試算")
+            of1, of2 = st.columns(2)
+            with of1: fib_high = st.number_input("輸入高點(1)", value=None, step=1.0, format="%.2f", key="opt_fib_h", placeholder="請輸入...")
+            with of2: fib_low = st.number_input("輸入低點(0)", value=None, step=1.0, format="%.2f", key="opt_fib_l", placeholder="請輸入...")
             
-            df_fib = pd.DataFrame(fib_data)
-            st.dataframe(
-                df_fib.style.apply(lambda row: ['color: #ff4b4b; font-weight: bold' if row['_profit'] > 0 else ('color: #00cc00; font-weight: bold' if row['_profit'] < 0 else 'color: gray')] * len(row), axis=1),
-                width='content', hide_index=True, column_config={"_profit": None}
-            )
+            if fib_high is not None and fib_low is not None and fib_high > fib_low:
+                diff = fib_high - fib_low
+                fib_ratios = [-1.0, -0.618, 0.0, 0.236, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0]
+                fib_data = []
+                for r in fib_ratios:
+                    target_p = fib_low + (r * diff)
+                    buy_p = opt_price if opt_dir == "作多" else target_p
+                    sell_p = target_p if opt_dir == "作多" else opt_price
+                    tax_buy = round(buy_p * multiplier * tax_rate) * opt_lots
+                    tax_sell = round(sell_p * multiplier * tax_rate) * opt_lots
+                    profit_gross = (sell_p - buy_p) * opt_lots * multiplier
+                    profit_net = profit_gross - total_fee - tax_buy - tax_sell
+                    
+                    fib_data.append({
+                        "費波那契比例": f"{r:g}", "目標點數": f"{target_p:.2f}", "平倉淨損益": int(profit_net), "_profit": profit_net
+                    })
+                
+                df_fib = pd.DataFrame(fib_data)
+                st.dataframe(
+                    df_fib.style.apply(lambda row: ['color: #ff4b4b; font-weight: bold' if row['_profit'] > 0 else ('color: #00cc00; font-weight: bold' if row['_profit'] < 0 else 'color: gray')] * len(row), axis=1),
+                    width='content', hide_index=True, column_config={"_profit": None}
+                )
 
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
