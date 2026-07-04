@@ -2818,132 +2818,160 @@ with tab2:
 
     with tab2_3:
         st.markdown("##### 📈 期權交易室")
-        c3_1, c3_2, c3_3, c3_4, c3_5 = st.columns(5)
-        with c3_1:
-            opt_type = st.selectbox("商品類型", ["台指期", "微型台指", "個股期", "選擇權"], key="opt_type")
-        with c3_2:
-            opt_price = st.number_input("基準價格/點數", value=None, step=1.0 if opt_type != "個股期" else 0.5, format="%.2f", key="opt_price", placeholder="請輸入...")
-        with c3_3: opt_lots = st.number_input("口數", value=1, min_value=1, step=1, key="opt_lots")
-        with c3_4: 
-            opt_fee = st.number_input("單邊手續費(元/口)", value=None, step=1, key="opt_fee", placeholder="請輸入...")
-        with c3_5: opt_tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1, key="opt_tick_count")
-        
-        opt_dir = st.radio("交易方向", ["作多", "作空"], horizontal=True, key="opt_dir")
-        
-        if opt_price is not None and opt_fee is not None:
-            if opt_type == "台指期":
-                multiplier = 200
-                tax_rate = 0.00002
-                tick_size = 1.0
-            elif opt_type == "微型台指":
-                multiplier = 50
-                tax_rate = 0.00002
-                tick_size = 1.0
-            elif opt_type == "個股期":
-                multiplier = 2000
-                tax_rate = 0.00002
-                tick_size = 0.5
-            else: # 選擇權
-                multiplier = 50
-                tax_rate = 0.001
-                tick_size = 0.5
+        st.markdown("""
+        <style>
+        .opt-card {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .opt-label {
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        .opt-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-            total_fee = opt_fee * 2 * opt_lots
-            est_tax_buy = round(opt_price * multiplier * tax_rate) * opt_lots
-            est_tax_sell = round(opt_price * multiplier * tax_rate) * opt_lots
-            total_cost = total_fee + est_tax_buy + est_tax_sell
-            break_even_points = total_cost / (multiplier * opt_lots)
-            
-            st.markdown(f"**損益兩平跳動點數:** 約 `{math.ceil(break_even_points)}` 點")
+        col_left, col_right = st.columns([1.1, 1], gap="large")
 
-            if 'opt_view_price' not in st.session_state: st.session_state.opt_view_price = opt_price
-            if st.session_state.get('opt_base_price', 0) != opt_price:
-                st.session_state.opt_base_price = opt_price
-                st.session_state.opt_view_price = opt_price
-            
-            ob1, ob2, _ = st.columns([1, 1, 6])
-            with ob1:
-                if st.button("🔽 向下", key="opt_btn_down", width='stretch'):
-                    st.session_state.opt_view_price -= (tick_size * opt_tick_count)
-                    st.rerun()
-            with ob2:
-                if st.button("🔼 向上", key="opt_btn_up", width='stretch'):
-                    st.session_state.opt_view_price += (tick_size * opt_tick_count)
-                    st.rerun()
+        with col_left:
+            st.markdown("###### ① 合約設定")
+            opt_main_tab = st.selectbox("合約類別", ["台指期", "個股期貨", "選擇權"])
 
-            opt_ticks_range = range(opt_tick_count, -(opt_tick_count + 1), -1)
-            opt_calc_data = []
-            
-            for i in opt_ticks_range:
-                p = st.session_state.opt_view_price + (i * tick_size)
-                buy_p = opt_price if opt_dir == "作多" else p
-                sell_p = p if opt_dir == "作多" else opt_price
-                
-                tax_buy = round(buy_p * multiplier * tax_rate) * opt_lots
-                tax_sell = round(sell_p * multiplier * tax_rate) * opt_lots
-                tax_total = tax_buy + tax_sell
-                
-                profit_points = (sell_p - buy_p) * opt_lots
-                profit_gross = profit_points * multiplier
-                profit_net = profit_gross - total_fee - tax_total
-                
-                diff = p - opt_price
-                diff_str = f"{diff:+.2f}".rstrip('0').rstrip('.') if diff != 0 else "0"
-                if diff > 0 and not diff_str.startswith('+'): diff_str = "+" + diff_str
-                is_base = (abs(p - opt_price) < 0.001)
+            if opt_main_tab == "台指期":
+                opt_sub_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True)
+            elif opt_main_tab == "個股期貨":
+                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True)
+            else:
+                opt_sub_type = st.radio("合約規格", ["選擇權 (x50)"], horizontal=True)
 
-                opt_calc_data.append({
-                    "平倉點數/價格": fmt_price(p), "點數差": diff_str, "預估淨損益": int(profit_net),
-                    "總手續費": int(total_fee), "總交易稅": int(tax_total), "_profit": profit_net, "_is_base": is_base
-                })
+            opt_dir = st.radio("部位方向", ["做多 ▲", "做空 ▼"], horizontal=True)
+            opt_lots = st.number_input("口數", min_value=1, value=1, step=1)
 
-            df_opt_calc = pd.DataFrame(opt_calc_data)
-            def style_opt_row(row):
-                is_base = row['_is_base']
-                prof = row['_profit']
-                if is_base: return ['background-color: #ffffcc; color: black; font-weight: bold; border: 2px solid #ffd700;'] * len(row)
-                if prof > 0: return ['color: #ff4b4b; font-weight: bold'] * len(row) 
-                if prof < 0: return ['color: #00cc00; font-weight: bold'] * len(row) 
-                return ['color: gray'] * len(row)
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                entry_p = st.number_input("進場價 (點)", value=None, format="%.2f", placeholder="輸入進場價")
+            with c_p2:
+                exit_p = st.number_input("出場/目標價 (點)", value=None, format="%.2f", placeholder="輸入目標價")
 
-            if not df_opt_calc.empty:
-                st.dataframe(
-                    df_opt_calc.style.apply(style_opt_row, axis=1), 
-                    width='content', 
-                    hide_index=True, 
-                    height=(len(df_opt_calc) + 1) * 35,
-                    column_config={"_profit": None, "_is_base": None}
-                )
+            st.markdown("###### ⇆ 停損及其他設定")
+            sl_p = st.number_input("停損價 (點) - 用於風報比", value=None, format="%.2f", placeholder="輸入停損價")
+            opt_fee = st.number_input("單邊手續費 (元/口)", value=None, step=1, placeholder="輸入手續費 (必填)")
+            margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000, placeholder="選填")
 
-            st.markdown("---")
-            st.markdown("##### 🧮 期貨費波那契損益試算")
-            of1, of2 = st.columns(2)
-            with of1: fib_high = st.number_input("輸入高點(1)", value=None, step=1.0, format="%.2f", key="opt_fib_h", placeholder="請輸入...")
-            with of2: fib_low = st.number_input("輸入低點(0)", value=None, step=1.0, format="%.2f", key="opt_fib_l", placeholder="請輸入...")
-            
-            if fib_high is not None and fib_low is not None and fib_high > fib_low:
-                diff = fib_high - fib_low
-                fib_ratios = [-1.0, -0.618, 0.0, 0.236, 0.5, 0.618, 0.786, 1.0, 1.618, 2.0]
-                fib_data = []
-                for r in fib_ratios:
-                    target_p = fib_low + (r * diff)
-                    buy_p = opt_price if opt_dir == "作多" else target_p
-                    sell_p = target_p if opt_dir == "作多" else opt_price
-                    tax_buy = round(buy_p * multiplier * tax_rate) * opt_lots
-                    tax_sell = round(sell_p * multiplier * tax_rate) * opt_lots
-                    profit_gross = (sell_p - buy_p) * opt_lots * multiplier
-                    profit_net = profit_gross - total_fee - tax_buy - tax_sell
+        with col_right:
+            st.markdown("###### 📈 損益結果")
+
+            if entry_p is not None and exit_p is not None and opt_fee is not None:
+                # Calculations
+                if opt_sub_type == "大台 (TX)": mult = 200; tax_rate = 0.00002
+                elif opt_sub_type == "小台 (MTX)": mult = 50; tax_rate = 0.00002
+                elif opt_sub_type == "微台 (TMF)": mult = 10; tax_rate = 0.00002
+                elif opt_sub_type == "一般 (x2000)": mult = 2000; tax_rate = 0.00002
+                elif opt_sub_type == "小型 (x100)": mult = 100; tax_rate = 0.00002
+                else: mult = 50; tax_rate = 0.001
+
+                pt_diff = (exit_p - entry_p) if "做多" in opt_dir else (entry_p - exit_p)
+                gross_pnl = pt_diff * mult * opt_lots
+
+                tax_buy = round(entry_p * mult * tax_rate) * opt_lots
+                tax_sell = round(exit_p * mult * tax_rate) * opt_lots
+                total_tax = tax_buy + tax_sell
+                total_fee = opt_fee * 2 * opt_lots
+
+                net_pnl = gross_pnl - total_tax - total_fee
+
+                pnl_color = "#ff4b4b" if net_pnl > 0 else ("#00e676" if net_pnl < 0 else "white")
+
+                st.markdown(f"""
+                <div class="opt-card">
+                    <div class="opt-label">預估淨損益 (含手續費與稅)</div>
+                    <div class="opt-value" style="color: {pnl_color}; font-size: 24px;">{int(net_pnl):,} 元</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                cr1, cr2 = st.columns(2)
+                with cr1:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">毛損益</div>
+                        <div class="opt-value">{int(gross_pnl):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cr2:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">點差/口</div>
+                        <div class="opt-value">{pt_diff:g} 點</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                cr3, cr4 = st.columns(2)
+                with cr3:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">手續費 (雙邊)</div>
+                        <div class="opt-value">{int(total_fee):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cr4:
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">期交稅 (雙邊)</div>
+                        <div class="opt-value">{int(total_tax):,} 元</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                if margin_req is not None and margin_req > 0:
+                    roi = net_pnl / (margin_req * opt_lots) * 100
+                    st.markdown(f"""
+                    <div class="opt-card">
+                        <div class="opt-label">原始保證金總額</div>
+                        <div class="opt-value">{int(margin_req * opt_lots):,} 元 <span style="font-size: 14px; font-weight: normal; color: #aaa;">(報酬率: {roi:.2f}%)</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown("<br>###### 風報比 (R:R)", unsafe_allow_html=True)
+                if sl_p is not None:
+                    risk_pt = (entry_p - sl_p) if "做多" in opt_dir else (sl_p - entry_p)
+                    if risk_pt > 0:
+                        reward_pt = pt_diff if pt_diff > 0 else 0
+                        rrr = reward_pt / risk_pt if risk_pt != 0 else 0
+
+                        st.markdown(f"<div style='text-align: right; font-size: 20px; font-weight: bold; margin-bottom: 5px;'>1 : {rrr:.2f}</div>", unsafe_allow_html=True)
+
+                        total_rr = risk_pt + reward_pt
+                        if total_rr > 0:
+                            risk_pct = (risk_pt / total_rr) * 100
+                            reward_pct = (reward_pt / total_rr) * 100
+                        else:
+                            risk_pct = 100; reward_pct = 0
+
+                        st.markdown(f"""
+                        <div style="width: 100%; height: 8px; display: flex; border-radius: 4px; overflow: hidden; margin-bottom: 5px;">
+                            <div style="width: {risk_pct}%; background-color: #00e676;"></div>
+                            <div style="width: {reward_pct}%; background-color: #ff4b4b;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #aaa;">
+                            <span>▼ 風險 {risk_pt:g} 點</span>
+                            <span>▲ 報酬 {reward_pt:g} 點</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.error("停損價設定錯誤 (做多時停損應低於進場價，做空時應高於進場價)")
+                else:
+                    st.caption("輸入停損價後即可顯示風報比評估")
                     
-                    fib_data.append({
-                        "費波那契比例": f"{r:g}", "目標點數": f"{target_p:.2f}", "平倉淨損益": int(profit_net), "_profit": profit_net
-                    })
-                
-                df_fib = pd.DataFrame(fib_data)
-                st.dataframe(
-                    df_fib.style.apply(lambda row: ['color: #ff4b4b; font-weight: bold' if row['_profit'] > 0 else ('color: #00cc00; font-weight: bold' if row['_profit'] < 0 else 'color: gray')] * len(row), axis=1),
-                    width='content', hide_index=True, column_config={"_profit": None}
-                )
-
+                st.markdown("<br><div style='text-align: center; font-size: 12px; color: #888;'>💡 提示：手續費依各券商折扣不同 (大台≈100、小台≈50、微台≈25)<br>保證金請以期交所最新公告為準</div>", unsafe_allow_html=True)
+            else:
+                st.info("👈 請在左側填寫完整的 **進場價**、**出場/目標價** 與 **單邊手續費** 即可自動開始計算損益與風險。")
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
