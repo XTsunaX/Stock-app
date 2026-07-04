@@ -2892,7 +2892,7 @@ with tab2:
             if not df_swing_calc.empty:
                 st.dataframe(
                     df_swing_calc.style.apply(style_swing_row, axis=1), 
-                    use_container_width=True, 
+                    width=425, 
                     hide_index=True, 
                     height=(len(df_swing_calc) + 1) * 35,
                     column_config={"_profit": None, "_is_base": None, "_call": None}
