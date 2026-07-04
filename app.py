@@ -2964,7 +2964,8 @@ with tab2:
                     
                     # 立即更新當前選擇的合約保證金數值
                     opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
-                    sym = "TXF" if "大台" in opt_tx_type else ("MXF" if "小台" in opt_tx_type else "TMF")
+                    # 修正期交所 API 的合約代號 (大台 TX, 小台 MTX, 微台 TMF)
+                    sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
                     if sym in res:
                         st.session_state.opt_manual_margin_tx = res[sym]
                     
@@ -3027,16 +3028,21 @@ with tab2:
 
         if 'taifex_margin_data' not in st.session_state: st.session_state.taifex_margin_data = {}
         
+        # 確保期貨清單有被載入 (穩定來源)
+        if 'futures_list' not in st.session_state or not st.session_state.futures_list:
+            st.session_state.futures_list = fetch_futures_list()
+
         # 取得 API 保證金與小型股期資料
         ssf_margin_map, has_small_set, ssf_sync_date = fetch_ssf_margin_info()
 
         c_map_opt, _ = load_local_stock_names()
         sf_opts = []
-        for code in ssf_margin_map.keys():
+        # 改回使用穩定的 futures_list 產生選單，避免 API 異常時選單空白
+        for code, status in st.session_state.futures_list.items():
             name = c_map_opt.get(code, code)
             sf_opts.append(f"{code} {name}期貨 (一般 x2000)")
-            # 依據 API 查詢結果，只有真正具備多合約的個股才加入小型股期選項
-            if code in has_small_set:
+            # 結合網頁抓取的 "(小)" 標記與 API 回傳的 has_small_set 雙重確認
+            if "(小)" in status or code in has_small_set:
                 sf_opts.append(f"{code} 小型{name}期貨 (小型 x100)")
         sf_opts = sorted(sf_opts)
 
@@ -3107,7 +3113,9 @@ with tab2:
             if opt_main_tab == "台指期":
                 sync_text = st.session_state.get('taifex_sync_date', '尚未同步')
                 opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
-                sym = "TXF" if "大台" in opt_tx_type else ("MXF" if "小台" in opt_tx_type else "TMF")
+                
+                # 修正此處的合約代號對應
+                sym = "TX" if "大台" in opt_tx_type else ("MTX" if "小台" in opt_tx_type else "TMF")
                 
                 fetched_margin = st.session_state.taifex_margin_data.get(sym, 0)
                 if fetched_margin > 0:
