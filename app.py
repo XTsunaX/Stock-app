@@ -2667,14 +2667,14 @@ with tab2:
             return ['color: gray'] * len(row)
 
         if not df_calc.empty:
-                table_height = (len(df_calc) + 1) * 35 
-                st.dataframe(
-                    df_calc.style.apply(style_calc_row, axis=1), 
-                    use_container_width=True, 
-                    hide_index=True, 
-                    height=table_height,
-                    column_config={"_profit": None, "_note_type": None, "_is_base": None}
-                )
+            table_height = (len(df_calc) + 1) * 40 
+            st.dataframe(
+                df_calc.style.apply(style_calc_row, axis=1), 
+                width='content', 
+                hide_index=True, 
+                height=table_height,
+                column_config={"_profit": None, "_note_type": None, "_is_base": None}
+            )
 
     with tab2_2:
         st.markdown("##### 📊 波段信用室")
