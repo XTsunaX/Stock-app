@@ -2974,34 +2974,42 @@ with tab2:
 
         @st.cache_data(ttl=3600, show_spinner=False)
         def fetch_ssf_margin_info():
-            """透過期交所 OpenAPI 獲取個股期貨保證金比例與絕對金額"""
+            """透過期交所 OpenAPI 獲取個股期貨保證金比例與小型合約資訊"""
             margin_map = {}
+            has_small_set = set()
+            sync_date = ""
             try:
-                # 1. 取得個股期貨保證金適用比例
                 url_pct = "https://openapi.taifex.com.tw/v1/StockFuturesAndOptionsMargining"
                 r_pct = requests.get(url_pct, headers={'accept': 'application/json'}, timeout=5, verify=False)
                 if r_pct.status_code == 200:
-                    for item in r_pct.json():
+                    data = r_pct.json()
+                    stock_contracts = {}
+                    for item in data:
                         code = str(item.get("StockCode", "")).strip()
+                        contract = str(item.get("Contract", "")).strip()
                         m_val = item.get("InitialMarginPercentage", 0)
-                        if code and m_val:
+                        
+                        if code:
+                            if code not in stock_contracts:
+                                stock_contracts[code] = set()
+                            if contract:
+                                stock_contracts[code].add(contract)
+                            
                             try: margin_map[code] = float(m_val)
                             except: pass
+                            
+                        # 擷取更新日期
+                        if not sync_date and "Date" in item:
+                            d_str = str(item["Date"])
+                            if len(d_str) == 8:
+                                sync_date = f"{d_str[:4]}/{d_str[4:6]}/{d_str[6:]}"
 
-                # 2. 取得調整後契約保證金 (絕對金額)
-                url_adj = "https://openapi.taifex.com.tw/v1/SSFAdjustedInfo"
-                r_adj = requests.get(url_adj, headers={'accept': 'application/json'}, timeout=5, verify=False)
-                if r_adj.status_code == 200:
-                    for item in r_adj.json():
-                        code = str(item.get("StockCode", "")).strip()
-                        m_val = item.get("InitialMargin", 0)
-                        if code and m_val:
-                            try:
-                                if isinstance(m_val, str): m_val = float(m_val.replace(',', ''))
-                                if m_val > 0: margin_map[f"{code}_adj"] = float(m_val)
-                            except: pass
+                    # 判斷是否含有小型股期 (若同一股號有多個合約代號，即代表有小型股期)
+                    for code, contracts in stock_contracts.items():
+                        if len(contracts) > 1:
+                            has_small_set.add(code)
             except: pass
-            return margin_map
+            return margin_map, has_small_set, sync_date
 
         def do_clear_opt():
             for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt']:
@@ -3018,18 +3026,17 @@ with tab2:
         # --------------------------------------------
 
         if 'taifex_margin_data' not in st.session_state: st.session_state.taifex_margin_data = {}
-
-        # 預先載入期貨清單供個股期貨選單使用
-        if 'futures_list' not in st.session_state or not st.session_state.futures_list:
-            st.session_state.futures_list = fetch_futures_list()
         
+        # 取得 API 保證金與小型股期資料
+        ssf_margin_map, has_small_set, ssf_sync_date = fetch_ssf_margin_info()
+
         c_map_opt, _ = load_local_stock_names()
         sf_opts = []
-        for code, status in st.session_state.futures_list.items():
+        for code in ssf_margin_map.keys():
             name = c_map_opt.get(code, code)
             sf_opts.append(f"{code} {name}期貨 (一般 x2000)")
-            # 只有在期交所清單中被標記為有小型股期的，才加入選單
-            if "(小)" in status:
+            # 依據 API 查詢結果，只有真正具備多合約的個股才加入小型股期選項
+            if code in has_small_set:
                 sf_opts.append(f"{code} 小型{name}期貨 (小型 x100)")
         sf_opts = sorted(sf_opts)
 
@@ -3094,34 +3101,63 @@ with tab2:
                 except: pass
 
             actual_margin_req = 0
+            margin_display_val = "尚未同步或無資料"
+            sync_text = "尚未同步"
+
             if opt_main_tab == "台指期":
-                actual_margin_req = st.session_state.get('opt_manual_margin_tx') or 0
+                sync_text = st.session_state.get('taifex_sync_date', '尚未同步')
+                opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
+                sym = "TXF" if "大台" in opt_tx_type else ("MXF" if "小台" in opt_tx_type else "TMF")
                 
-            elif opt_main_tab == "個股期貨":
+                fetched_margin = st.session_state.taifex_margin_data.get(sym, 0)
+                if fetched_margin > 0:
+                    margin_display_val = f"{fetched_margin:,.0f} (API自動帶入)"
+                    actual_margin_req = fetched_margin
+
                 st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
-                
                 c_m1, c_m2 = st.columns([3, 1])
                 with c_m1:
-                    ssf_margin_map = fetch_ssf_margin_info()
-                    sf_code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
+                    st.text_input("每口保證金", value=margin_display_val, disabled=True, label_visibility="collapsed", key="margin_display_tx")
+                with c_m2:
+                    st.button("↺ 重新整理", key="refresh_tx_margin", use_container_width=True, on_click=sync_taifex_margin)
+                if sync_text != "尚未同步":
+                    st.markdown(f"<div style='font-size:13px; margin-top: -10px; margin-bottom: 10px;'><span style='color:#00e676;'>✔️</span> <span style='color:#ff4b4b;'>已同步</span> <span style='color:#aaa;'>期交所資料：{sync_text}</span></div>", unsafe_allow_html=True)
                     
-                    # 優先確認是否有調整後絕對金額保證金 (GET/SSFAdjustedInfo)
-                    adj_margin = ssf_margin_map.get(f"{sf_code}_adj", 0)
-                    margin_pct = ssf_margin_map.get(sf_code, 13.5) # 若無則預設為級距一 13.5%
+            elif opt_main_tab == "個股期貨":
+                sync_text = ssf_sync_date if ssf_sync_date else "尚未同步"
+                
+                sf_code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
+                margin_pct = ssf_margin_map.get(sf_code, 0)
+                
+                # 直接使用 API 的級距百分比計算標準合約保證金，避免套用到特殊調整合約的絕對金額
+                if margin_pct > 0 and entry_p is not None:
+                    calc_margin = round(entry_p * mult * (margin_pct / 100.0))
+                    margin_display_val = f"{calc_margin:,.0f} (API 級距 {margin_pct}%)"
+                    actual_margin_req = calc_margin
+                elif margin_pct > 0:
+                    margin_display_val = f"API 級距 {margin_pct}% (需進場價)"
                     
-                    if adj_margin > 0:
-                        st.text_input("每口保證金 (原始)", value=f"{adj_margin:,.0f} 元 (API調整後金額)", disabled=True, label_visibility="collapsed", key="ssf_margin_display")
-                        actual_margin_req = adj_margin
-                    else:
-                        st.text_input("每口保證金 (原始)", value=f"API自動帶入 | 級距 {margin_pct}%", disabled=True, label_visibility="collapsed", key="ssf_margin_display")
-                        if entry_p is not None:
-                            actual_margin_req = round(entry_p * mult * (margin_pct / 100.0))
-                        else:
-                            actual_margin_req = 0
+                st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
+                c_m1, c_m2 = st.columns([3, 1])
+                with c_m1:
+                    st.text_input("每口保證金", value=margin_display_val, disabled=True, label_visibility="collapsed", key="margin_display_ssf")
                 with c_m2:
                     if st.button("↺ 重新整理", key="refresh_ssf_margin", use_container_width=True):
                         fetch_ssf_margin_info.clear()
                         st.rerun()
+                if sync_text != "尚未同步":
+                    st.markdown(f"<div style='font-size:13px; margin-top: -10px; margin-bottom: 10px;'><span style='color:#00e676;'>✔️</span> <span style='color:#ff4b4b;'>已同步</span> <span style='color:#aaa;'>期交所資料：{sync_text}</span></div>", unsafe_allow_html=True)
+                    
+            else: # 選擇權
+                margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_opt", placeholder="買方為權利金，賣方請手動輸入")
+                if margin_req is not None:
+                    actual_margin_req = margin_req
+                elif entry_p is not None:
+                    actual_margin_req = entry_p * mult
+                else:
+                    actual_margin_req = 0
+            
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
         with col_right:
             st.markdown("###### 📈 損益結果")
