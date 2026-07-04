@@ -2698,6 +2698,84 @@ with tab2:
         with c2_fee_rate:
             short_fee_rate = st.number_input("借券費率(‱)", value=8.0 if swing_type == "融券(空)" else 0.0, step=1.0, key="short_fee_rate")
 
+        # --- 新增：目標價快速試算區 ---
+        st.markdown("##### 🎯 目標價快速試算")
+        col_st1, col_st2 = st.columns([1, 4])
+        with col_st1:
+            swing_target_p = st.number_input("輸入目標價", value=None, step=0.5, format="%.2f", key="swing_target_price", placeholder="請輸入...")
+        with col_st2:
+            if swing_calc_price is not None and swing_target_p is not None:
+                s_base_p = swing_calc_price
+                s_fee_rate = 0.001425; s_tax_rate = 0.003
+                
+                t_buy_price = s_base_p if swing_type in ["個股", "融資(多)"] else swing_target_p
+                t_sell_price = swing_target_p if swing_type in ["個股", "融資(多)"] else s_base_p
+                
+                t_buy_fee = max(swing_min_fee, math.floor(t_buy_price * swing_shares * s_fee_rate * (swing_discount/10)))
+                t_sell_fee = max(swing_min_fee, math.floor(t_sell_price * swing_shares * s_fee_rate * (swing_discount/10)))
+                t_tax = math.floor(t_sell_price * swing_shares * s_tax_rate)
+                t_total_fee = t_buy_fee + t_sell_fee
+                
+                t_stock_value_buy = t_buy_price * swing_shares
+                t_stock_value_sell = t_sell_price * swing_shares
+                
+                t_profit = 0
+                t_interest = 0
+                t_borrow_fee = 0
+                t_roi = 0
+                
+                if swing_type == "個股":
+                    t_cost = t_stock_value_buy + t_buy_fee
+                    t_income = t_stock_value_sell - t_sell_fee - t_tax
+                    t_profit = t_income - t_cost
+                    t_roi = (t_profit / t_cost * 100) if t_cost > 0 else 0
+                elif swing_type == "融資(多)":
+                    t_margin_loan = math.floor(t_stock_value_buy * (margin_ratio/100) / 1000) * 1000
+                    t_self_prepare = t_stock_value_buy - t_margin_loan + t_buy_fee
+                    t_interest = round(t_margin_loan * (annual_rate/100) * (swing_days/365))
+                    t_net_sell = t_stock_value_sell - t_sell_fee - t_tax - t_margin_loan - t_interest
+                    t_profit = t_net_sell - t_self_prepare
+                    t_roi = (t_profit / t_self_prepare * 100) if t_self_prepare > 0 else 0
+                elif swing_type == "融券(空)":
+                    t_margin_deposit = math.ceil(t_stock_value_sell * (margin_ratio/100) / 100) * 100
+                    t_borrow_fee = math.floor(t_stock_value_sell * (short_fee_rate/10000))
+                    t_sell_guaranty = t_stock_value_sell - t_sell_fee - t_tax - t_borrow_fee
+                    t_interest = round((t_margin_deposit + t_sell_guaranty) * (annual_rate/100) * (swing_days/365))
+                    t_buy_cost = t_stock_value_buy + t_buy_fee
+                    t_refund = t_margin_deposit + t_sell_guaranty + t_interest - t_buy_cost
+                    t_profit = t_refund - t_margin_deposit
+                    t_roi = (t_profit / t_margin_deposit * 100) if t_margin_deposit > 0 else 0
+
+                t_color = "#ff4b4b" if t_profit > 0 else ("#00e676" if t_profit < 0 else "white")
+                t_diff_val = swing_target_p - s_base_p
+                t_diff_color = "#ff4b4b" if t_diff_val > 0 else ("#00e676" if t_diff_val < 0 else "white")
+                
+                swing_html_str = f"""
+                <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
+                    <div>預估損益: <span style="color: {t_color}; font-weight: bold;">{int(t_profit):,} ({t_roi:+.2f}%)</span></div>
+                    <div>手續費總和: <span style="color: #cccccc;">{int(t_total_fee):,}</span></div>
+                    <div>交易稅: <span style="color: #cccccc;">{int(t_tax):,}</span></div>
+                    """
+                if swing_type in ["融資(多)", "融券(空)"]:
+                    swing_html_str += f"""<div>利息: <span style="color: #cccccc;">{int(t_interest):,}</span></div>"""
+                    if swing_type == "融券(空)":
+                        swing_html_str += f"""<div>借券費: <span style="color: #cccccc;">{int(t_borrow_fee):,}</span></div>"""
+                swing_html_str += f"""
+                    <div>價差: <span style="color: {t_diff_color}; font-weight: bold;">{t_diff_val:+.2f}</span></div>
+                </div>
+                """
+                st.markdown(swing_html_str, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="font-size: 16px; display: flex; flex-wrap: wrap; gap: 15px; padding: 10px; background-color: rgba(255,255,255,0.05); border-radius: 8px; margin-top: 28px;">
+                    <div>預估損益: <span style="color: white; font-weight: bold;">0 (+0.00%)</span></div>
+                    <div>手續費總和: <span style="color: #cccccc;">0</span></div>
+                    <div>交易稅: <span style="color: #cccccc;">0</span></div>
+                    <div>價差: <span style="color: white; font-weight: bold;">+0.00</span></div>
+                </div>
+                """, unsafe_allow_html=True)
+        st.markdown("---")
+
         if swing_calc_price is not None:
             if swing_calc_price != st.session_state.get('swing_base_price', 0):
                 st.session_state.swing_base_price = swing_calc_price
@@ -2739,6 +2817,7 @@ with tab2:
                 
                 profit = 0
                 interest = 0
+                borrow_fee = 0
                 maintenance_ratio = 0.0
                 call_price = 0.0
                 
@@ -2839,6 +2918,28 @@ with tab2:
         </style>
         """, unsafe_allow_html=True)
 
+        # 預先載入期貨清單供個股期貨選單使用
+        if 'futures_list' not in st.session_state or not st.session_state.futures_list:
+            st.session_state.futures_list = fetch_futures_list()
+        
+        c_map_opt, _ = load_local_stock_names()
+        sf_opts = []
+        for code, flags in st.session_state.futures_list.items():
+            name = c_map_opt.get(code, code)
+            sf_opts.append(f"{code} {name}期貨 (一般)")
+            if "(小)" in flags:
+                sf_opts.append(f"{code} 小型{name}期貨 (小型)")
+                
+        if 'opt_sub_type_idx' not in st.session_state:
+            st.session_state.opt_sub_type_idx = 0
+            
+        def on_stock_futures_change():
+            sel = st.session_state.search_stock_futures
+            if "小型" in sel:
+                st.session_state.opt_sub_type_idx = 1
+            else:
+                st.session_state.opt_sub_type_idx = 0
+
         col_left, col_right = st.columns([1.1, 1], gap="large")
 
         with col_left:
@@ -2848,11 +2949,17 @@ with tab2:
             if opt_main_tab == "台指期":
                 opt_sub_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True)
             elif opt_main_tab == "個股期貨":
-                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True)
+                search_stock_futures = st.selectbox(
+                    "搜尋股期 (代號或名稱)", 
+                    options=["請選擇..."] + sorted(sf_opts), 
+                    key="search_stock_futures",
+                    on_change=on_stock_futures_change
+                )
+                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True, index=st.session_state.opt_sub_type_idx)
             else:
                 opt_sub_type = st.radio("合約規格", ["選擇權 (x50)"], horizontal=True)
 
-            opt_dir = st.radio("部位方向", ["做多 ▲", "做空 ▼"], horizontal=True)
+            opt_dir = st.radio("部位方向", ["🔴 做多 ▲", "🟢 做空 ▼"], horizontal=True)
             opt_lots = st.number_input("口數", min_value=1, value=1, step=1)
 
             c_p1, c_p2 = st.columns(2)
@@ -2861,16 +2968,52 @@ with tab2:
             with c_p2:
                 exit_p = st.number_input("出場/目標價 (點)", value=None, format="%.2f", placeholder="輸入目標價")
 
-            st.markdown("###### ⇆ 停損及其他設定")
+            st.markdown("###### ⇆ 停損及保證金設定")
             sl_p = st.number_input("停損價 (點) - 用於風報比", value=None, format="%.2f", placeholder="輸入停損價")
-            opt_fee = st.number_input("單邊手續費 (元/口)", value=None, step=1, placeholder="輸入手續費 (必填)")
-            margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000, placeholder="選填")
+            
+            # 手續費記憶寫入
+            config = load_config()
+            if 'saved_opt_fee' not in st.session_state:
+                st.session_state.saved_opt_fee = config.get('saved_opt_fee', None)
+                
+            opt_fee = st.number_input("單邊手續費 (元/口)", value=st.session_state.saved_opt_fee, step=1, placeholder="輸入手續費 (必填)")
+            if opt_fee is not None and opt_fee != st.session_state.saved_opt_fee:
+                st.session_state.saved_opt_fee = opt_fee
+                config['saved_opt_fee'] = opt_fee
+                try:
+                    with open(CONFIG_FILE, "w") as f: json.dump(config, f)
+                except: pass
+
+            col_m1, col_m2 = st.columns([3, 1])
+            with col_m1:
+                margin_req = st.number_input("每口保證金 (原始)", value=st.session_state.get('opt_auto_margin', None), step=1000.0, format="%.0f", placeholder="選填")
+            with col_m2:
+                st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 重新整理", use_container_width=True, help="查詢期交所最新保證金或依級距自動概算"):
+                    if opt_main_tab == "台指期":
+                        try:
+                            r = requests.get("https://openapi.taifex.com.tw/v1/Margin", timeout=5, verify=False)
+                            if r.status_code == 200:
+                                m_data = {item.get("Symbol", ""): item.get("InitialMargin", 0) for item in r.json()}
+                                if "大台" in opt_sub_type: st.session_state.opt_auto_margin = float(m_data.get("TXF", 0))
+                                elif "小台" in opt_sub_type: st.session_state.opt_auto_margin = float(m_data.get("MXF", 0))
+                                elif "微台" in opt_sub_type: st.session_state.opt_auto_margin = float(m_data.get("TMF", 0))
+                                st.rerun()
+                        except:
+                            st.toast("取得期交所保證金失敗", icon="⚠️")
+                    elif opt_main_tab == "個股期貨" and entry_p is not None:
+                        # 依合約規格及級距一 13.5% 概算保證金
+                        m_mult = 100 if "小型" in opt_sub_type else 2000
+                        st.session_state.opt_auto_margin = float(round(entry_p * m_mult * 0.135))
+                        st.toast("已依級距一 (13.5%) 概算保證金", icon="✅")
+                        st.rerun()
+                    else:
+                        st.toast("請先填寫進場價以利概算", icon="⚠️")
 
         with col_right:
             st.markdown("###### 📈 損益結果")
 
             if entry_p is not None and exit_p is not None and opt_fee is not None:
-                # Calculations
                 if opt_sub_type == "大台 (TX)": mult = 200; tax_rate = 0.00002
                 elif opt_sub_type == "小台 (MTX)": mult = 50; tax_rate = 0.00002
                 elif opt_sub_type == "微台 (TMF)": mult = 10; tax_rate = 0.00002
@@ -2938,7 +3081,7 @@ with tab2:
                     </div>
                     """, unsafe_allow_html=True)
 
-                st.markdown("<br>###### 風報比 (R:R)", unsafe_allow_html=True)
+                st.markdown("<br><div style='font-size:16px; font-weight:bold; color:#ddd; margin-bottom:5px;'>風報比 (R:R)</div>", unsafe_allow_html=True)
                 if sl_p is not None:
                     risk_pt = (entry_p - sl_p) if "做多" in opt_dir else (sl_p - entry_p)
                     if risk_pt > 0:
@@ -2972,6 +3115,7 @@ with tab2:
                 st.markdown("<br><div style='text-align: center; font-size: 12px; color: #888;'>💡 提示：手續費依各券商折扣不同 (大台≈100、小台≈50、微台≈25)<br>保證金請以期交所最新公告為準</div>", unsafe_allow_html=True)
             else:
                 st.info("👈 請在左側填寫完整的 **進場價**、**出場/目標價** 與 **單邊手續費** 即可自動開始計算損益與風險。")
+                
 with tab_fibo:
     st.markdown("#### 📈 費波計算")
     
