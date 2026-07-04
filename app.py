@@ -2943,7 +2943,7 @@ with tab2:
                     res = {}
                     sync_date = ""
                     for item in data:
-                        sym_api = item.get("ContractType", "").strip()
+                        sym_api = item.get("Contract", "").strip()
                         margin_api = item.get("InitialMargin", 0)
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
@@ -2967,13 +2967,14 @@ with tab2:
                 st.toast(f"取得期交所保證金失敗: {e}", icon="⚠️")
 
         def do_clear_opt():
-            keys_to_clear = ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_sf_search', 'opt_manual_margin_tx', 'opt_manual_margin_opt', 'opt_custom_margin']
-            for k in keys_to_clear:
-                if k in st.session_state:
-                    del st.session_state[k]
-            st.session_state.opt_lots = 1
-            st.session_state.opt_dir = "🔴 做多 ▲"
-            st.session_state.opt_margin_level = "級距一 | 13.5% (一般股票)"
+            for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt']:
+                st.session_state[k] = None
+            st.session_state['opt_sf_search'] = None
+            if 'opt_custom_margin' in st.session_state:
+                del st.session_state['opt_custom_margin']
+            st.session_state['opt_lots'] = 1
+            st.session_state['opt_dir'] = "🔴 做多 ▲"
+            st.session_state['opt_margin_level'] = "級距一 | 13.5% (一般股票)"
 
         def on_opt_tab_change():
             do_clear_opt()
@@ -3052,16 +3053,7 @@ with tab2:
 
             actual_margin_req = 0
             if opt_main_tab == "台指期":
-                st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
-                c_m1, c_m2 = st.columns([3, 1])
-                with c_m1:
-                    margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填", label_visibility="collapsed")
-                with c_m2:
-                    st.button("↺ 重新整理", use_container_width=True, help="同步期交所保證金", on_click=sync_taifex_margin)
-                
-                sync_date_text = st.session_state.get('taifex_sync_date', '尚未同步')
-                st.markdown(f"<div style='color:#ff4b4b; font-size:13px; margin-top: -10px; margin-bottom: 10px;'>✔️已同步 <span style='color:#aaa;'>期交所資料：{sync_date_text}</span></div>", unsafe_allow_html=True)
-                actual_margin_req = margin_req if margin_req is not None else 0
+                actual_margin_req = st.session_state.get('opt_manual_margin_tx') or 0
                 
             elif opt_main_tab == "個股期貨":
                 margin_level = st.selectbox("每口保證金 (原始)", [
@@ -3156,6 +3148,19 @@ with tab2:
                         <div class="opt-value">{int(actual_margin_req * opt_lots):,} 元 <span style="font-size: 14px; font-weight: normal; color: #aaa;">(報酬率: {roi:.2f}%)</span></div>
                     </div>
                     """, unsafe_allow_html=True)
+
+                if opt_main_tab == "台指期":
+                    st.markdown("<div style='font-size: 14px; margin-top: 8px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
+                    c_m1, c_m2 = st.columns([3, 1])
+                    with c_m1:
+                        margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_tx", placeholder="選填", label_visibility="collapsed")
+                    with c_m2:
+                        st.button("↺ 重新整理", use_container_width=True, help="同步期交所保證金", on_click=sync_taifex_margin)
+                    sync_date_text = st.session_state.get('taifex_sync_date', '尚未同步')
+                    st.markdown(f"<div style='color:#ff4b4b; font-size:13px; margin-top: -10px; margin-bottom: 10px;'>✔️已同步 <span style='color:#aaa;'>期交所資料：{sync_date_text}</span></div>", unsafe_allow_html=True)
+                    actual_margin_req = margin_req if margin_req is not None else 0
+
+                if actual_margin_req > 0:
 
                 st.markdown("<br><div style='font-size:16px; font-weight:bold; color:#ddd; margin-bottom:5px;'>風報比 (R:R)</div>", unsafe_allow_html=True)
                 if sl_p is not None:
