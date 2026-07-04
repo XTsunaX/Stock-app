@@ -2953,6 +2953,13 @@ with tab2:
                         margin_api = item.get("InitialMargin", 0)
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
+                        # 正規化: 無論 API 回傳中文名稱或英文代碼，統一存為英文代碼
+                        if "微型" in sym_api:
+                            res["MXF"] = margin_api
+                        elif "小型臺股" in sym_api or "小型台股" in sym_api:
+                            res["MTX"] = margin_api
+                        elif ("臺股" in sym_api or "台股" in sym_api or sym_api == "TX") and "小型" not in sym_api and "微型" not in sym_api:
+                            res["TX"] = margin_api
                         if not sync_date and "Date" in item:
                             d_str = str(item["Date"])
                             if len(d_str) == 8:
