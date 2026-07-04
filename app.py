@@ -2670,13 +2670,10 @@ with tab2:
                 table_height = (len(df_calc) + 1) * 35 
                 st.dataframe(
                     df_calc.style.apply(style_calc_row, axis=1), 
-                    width='content', 
+                    use_container_width=True, 
                     hide_index=True, 
                     height=table_height,
-                    column_config={
-                        "_profit": None, "_note_type": None, "_is_base": None,
-                        "交易稅": st.column_config.NumberColumn(width=80)
-                    }
+                    column_config={"_profit": None, "_note_type": None, "_is_base": None}
                 )
 
     with tab2_2:
@@ -2895,13 +2892,10 @@ with tab2:
             if not df_swing_calc.empty:
                 st.dataframe(
                     df_swing_calc.style.apply(style_swing_row, axis=1), 
-                    width='content', 
+                    use_container_width=True, 
                     hide_index=True, 
                     height=(len(df_swing_calc) + 1) * 35,
-                    column_config={
-                        "_profit": None, "_is_base": None, "_call": None,
-                        "交易稅": st.column_config.NumberColumn(width=80)
-                    }
+                    column_config={"_profit": None, "_is_base": None, "_call": None}
                 )
 
     with tab2_3:
@@ -2957,12 +2951,13 @@ with tab2:
                         if isinstance(margin_api, str): margin_api = float(margin_api.replace(',', ''))
                         res[sym_api] = margin_api
                         # 正規化: 無論 API 回傳中文名稱或英文代碼，統一存為英文代碼
-                        if "微型" in sym_api or "MXF" in sym_api or "TMF" in sym_api:
+                        sym_clean = sym_api.replace(' ', '')
+                        if sym_clean in ["MXF", "TMF"] or "微型臺" in sym_clean or "微型台" in sym_clean:
                             res["MXF"] = margin_api
                             res["TMF"] = margin_api
-                        elif "小型" in sym_api or "MTX" in sym_api:
+                        elif sym_clean == "MTX" or "小型臺股" in sym_clean or "小型台指" in sym_clean:
                             res["MTX"] = margin_api
-                        elif ("臺股" in sym_api or "台股" in sym_api or "TX" in sym_api) and "小型" not in sym_api and "微型" not in sym_api:
+                        elif sym_clean == "TX" or sym_clean in ["臺股期貨", "台股期貨", "臺指期貨", "台指期貨"]:
                             res["TX"] = margin_api
                         if not sync_date and "Date" in item:
                             d_str = str(item["Date"])
