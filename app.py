@@ -2955,7 +2955,7 @@ with tab2:
                         if sym_clean in ["MXF", "TMF"] or "微型臺" in sym_clean or "微型台" in sym_clean:
                             res["MXF"] = margin_api
                             res["TMF"] = margin_api
-                        elif sym_clean == "MTX" or "小型臺股" in sym_clean or "小型台指" or "小型台指期貨" in sym_clean:
+                        elif sym_clean == "MTX" or "小型臺指" in sym_clean or "小型台指" in sym_clean:
                             res["MTX"] = margin_api
                         elif sym_clean == "TX" or sym_clean in ["臺股期貨", "台股期貨", "臺指期貨", "台指期貨"]:
                             res["TX"] = margin_api
