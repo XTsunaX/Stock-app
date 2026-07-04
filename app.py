@@ -3120,7 +3120,7 @@ with tab2:
             margin_display_val = "尚未同步或無資料"
             sync_text = "尚未同步"
 
-           if opt_main_tab == "台指期":
+            if opt_main_tab == "台指期":
                 sync_text = st.session_state.get('taifex_sync_date', '尚未同步')
                 opt_tx_type = st.session_state.get('opt_tx_type', '大台 (TX)')
                 
