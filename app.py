@@ -3026,7 +3026,9 @@ with tab2:
             do_clear_opt()
         # --------------------------------------------
 
-        if 'taifex_margin_data' not in st.session_state: st.session_state.taifex_margin_data = {}
+        if 'taifex_margin_data' not in st.session_state:
+            st.session_state.taifex_margin_data = {}
+            sync_taifex_margin()
         
         # 確保期貨清單有被載入 (穩定來源)
         if 'futures_list' not in st.session_state or not st.session_state.futures_list:
