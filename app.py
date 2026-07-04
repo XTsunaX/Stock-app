@@ -2694,7 +2694,13 @@ with tab2:
         with c2_rate:
             annual_rate = st.number_input("年利率(%)", value=6.25 if swing_type == "融資(多)" else (0.2 if swing_type == "融券(空)" else 0.0), step=0.1, key="annual_rate")
         with c2_days:
-            swing_days = st.number_input("天數", value=1, min_value=1, step=1, key="swing_days")
+            swing_date_range = st.date_input("選擇區間", value=(datetime.now(tz_tw).date(), datetime.now(tz_tw).date() + timedelta(days=1)), key="swing_date_range")
+            if isinstance(swing_date_range, tuple) and len(swing_date_range) == 2:
+                swing_days = (swing_date_range[1] - swing_date_range[0]).days
+                if swing_days < 1: swing_days = 1
+            else:
+                swing_days = 1
+            st.caption(f"總天數: {swing_days} 天")
         with c2_fee_rate:
             short_fee_rate = st.number_input("借券費率(‱)", value=8.0 if swing_type == "融券(空)" else 0.0, step=1.0, key="short_fee_rate")
 
@@ -2965,6 +2971,32 @@ with tab2:
                     st.toast("已同步期交所最新保證金", icon="✅")
             except Exception as e:
                 st.toast(f"取得期交所保證金失敗: {e}", icon="⚠️")
+       
+        @st.cache_data(ttl=3600, show_spinner=False)
+        def fetch_ssf_margin_info():
+            """透過期交所 OpenAPI 獲取個股期貨保證金"""
+            margin_map = {}
+            try:
+                # 透過 SSFAdjustedInfo 等 API 更新保證金資訊
+                urls = [
+                    "https://openapi.taifex.com.tw/v1/SSFAdjustedInfo",
+                    "https://openapi.taifex.com.tw/v1/StockFuturesAndOptionsMargining"
+                ]
+                for url in urls:
+                    r = requests.get(url, headers={'accept': 'application/json'}, timeout=5, verify=False)
+                    if r.status_code == 200:
+                        for item in r.json():
+                            # 嘗試獲取股號對應代號
+                            code = str(item.get("StockCode", item.get("UnderlyingSecurityCode", item.get("Contract", "")))).strip()
+                            m_val = item.get("InitialMargin", item.get("InitialMarginPercentage", 0))
+                            if code and m_val:
+                                try:
+                                    if isinstance(m_val, str): m_val = float(m_val.replace('%', '').replace(',', ''))
+                                    if m_val > 0 and code not in margin_map:
+                                        margin_map[code] = m_val
+                                except: pass
+            except: pass
+            return margin_map
 
         def do_clear_opt():
             for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt']:
@@ -3010,11 +3042,14 @@ with tab2:
                 mult = 200 if "大台" in opt_tx_type else (50 if "小台" in opt_tx_type else 10)
                 tax_rate = 0.00002
             elif opt_main_tab == "個股期貨":
+                # 1. 搜尋股期輸入股號只要出現對應的股期就好
+                opt_sf_input = st.text_input("搜尋股期 (輸入代號或名稱)", placeholder="例如: 2330", key="opt_sf_input")
+                filtered_sf_opts = [opt for opt in sf_opts if opt_sf_input in opt] if opt_sf_input else sf_opts
+                
                 search_stock_futures = st.selectbox(
-                    "搜尋股期 (代號或名稱)", 
-                    options=sf_opts, 
-                    index=None,
-                    placeholder="請輸入股號或名稱...",
+                    "選擇對應股期", 
+                    options=filtered_sf_opts, 
+                    index=0 if filtered_sf_opts else None,
                     key="opt_sf_search"
                 )
                 is_small = search_stock_futures is not None and "小型" in search_stock_futures
@@ -3056,31 +3091,36 @@ with tab2:
                 actual_margin_req = st.session_state.get('opt_manual_margin_tx') or 0
                 
             elif opt_main_tab == "個股期貨":
-                margin_level = st.selectbox("每口保證金 (原始)", [
-                    "級距一 | 13.5% (一般股票)", 
-                    "級距二 | 15.0% (波動較大)", 
-                    "級距三 | 20.0% (高波動)", 
-                    "自訂比例..."
-                ], key="opt_margin_level")
+                ssf_margin_map = fetch_ssf_margin_info()
+                sf_code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
+                fetched_margin = ssf_margin_map.get(sf_code, 13.5)
                 
-                if margin_level == "自訂比例...":
-                    margin_pct = st.number_input("自訂保證金比例 (%)", value=st.session_state.get('opt_custom_margin', 13.5), step=0.5, key="opt_custom_margin")
+                if fetched_margin > 100:
+                    # 直接顯示抓取到的絕對金額保證金
+                    st.text_input("每口保證金 (原始)", value=f"{fetched_margin:,.0f} 元 (API自動帶入)", disabled=True)
+                    actual_margin_req = fetched_margin
                 else:
-                    margin_pct = float(margin_level.split(" | ")[1].split("%")[0])
+                    # 直接帶入抓取到的百分比級距保證金
+                    if fetched_margin == 13.5: default_level = "級距一 | 13.5% (一般股票)"
+                    elif fetched_margin == 15.0: default_level = "級距二 | 15.0% (波動較大)"
+                    elif fetched_margin == 20.0: default_level = "級距三 | 20.0% (高波動)"
+                    else: default_level = f"API自動帶入 | {fetched_margin}%"
                     
-                if entry_p is not None:
-                    actual_margin_req = round(entry_p * mult * (margin_pct / 100.0))
-                else:
-                    actual_margin_req = 0
+                    opts = ["級距一 | 13.5% (一般股票)", "級距二 | 15.0% (波動較大)", "級距三 | 20.0% (高波動)", "自訂比例..."]
+                    if default_level not in opts: opts.insert(0, default_level)
+                    else: opts.insert(0, opts.pop(opts.index(default_level)))
+                        
+                    margin_level = st.selectbox("每口保證金 (原始)", opts, key="opt_margin_level")
                     
-            else: # 選擇權
-                margin_req = st.number_input("每口保證金 (原始)", value=None, step=1000.0, format="%.0f", key="opt_manual_margin_opt", placeholder="買方為權利金，賣方請手動輸入")
-                if margin_req is not None:
-                    actual_margin_req = margin_req
-                elif entry_p is not None:
-                    actual_margin_req = entry_p * mult
-                else:
-                    actual_margin_req = 0
+                    if margin_level == "自訂比例...":
+                        margin_pct = st.number_input("自訂保證金比例 (%)", value=st.session_state.get('opt_custom_margin', 13.5), step=0.5, key="opt_custom_margin")
+                    else:
+                        margin_pct = float(margin_level.split(" | ")[1].split("%")[0])
+                        
+                    if entry_p is not None:
+                        actual_margin_req = round(entry_p * mult * (margin_pct / 100.0))
+                    else:
+                        actual_margin_req = 0
             
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
             st.button("↺ 清除重填", on_click=do_clear_opt, use_container_width=True)
