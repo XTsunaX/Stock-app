@@ -2989,14 +2989,14 @@ with tab2:
             maint_map = {}         # 新增
             try:
                 url_pct = "https://openapi.taifex.com.tw/v1/SingleStockFuturesMargining"
-                r_pct = requests.get(url_pct, headers={'accept': 'application/json'}, timeout=5, verify=False)
+                r_pct = requests.get(url_pct, headers={'accept': 'application/json', 'If-Modified-Since': 'Mon, 26 Jul 1997 05:00:00 GMT'}, timeout=5, verify=False)
                 if r_pct.status_code == 200:
                     data = r_pct.json()
                     stock_contracts = {}
                     for item in data:
                         code = str(item.get("UnderlyingSecurityCode", "")).strip()
                         contract = str(item.get("Contract", "")).strip()
-                        m_val = item.get("InitialMarginRate", 0)
+                        m_val = str(item.get("InitialMarginRate", "0")).replace('%', '').strip()
                         
                         if code:
                             if code not in stock_contracts:
@@ -3006,7 +3006,7 @@ with tab2:
                             
                             try: margin_map[code] = float(m_val)
                             except: pass
-                            maint_val = item.get("MaintenanceMarginRate", 0)
+                            maint_val = str(item.get("MaintenanceMarginRate", "0")).replace('%', '').strip()
                             try: maint_map[code] = float(maint_val)
                             except: pass
                             g_val = str(item.get("GroupLevel", "")).strip()
