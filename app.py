@@ -2985,6 +2985,8 @@ with tab2:
             margin_map = {}
             has_small_set = set()
             sync_date = ""
+            group_level_map = {}   # 新增
+            maint_map = {}         # 新增
             try:
                 url_pct = "https://openapi.taifex.com.tw/v1/SingleStockFuturesMargining"
                 r_pct = requests.get(url_pct, headers={'accept': 'application/json'}, timeout=5, verify=False)
@@ -3004,7 +3006,11 @@ with tab2:
                             
                             try: margin_map[code] = float(m_val)
                             except: pass
-                            
+                            maint_val = item.get("MaintenanceMarginRate", 0)
+                            try: maint_map[code] = float(maint_val)
+                            except: pass
+                            g_val = str(item.get("GroupLevel", "")).strip()
+                            if g_val: group_level_map[code] = g_val
                         # 擷取更新日期
                         if not sync_date and "Date" in item:
                             d_str = str(item["Date"])
@@ -3016,7 +3022,7 @@ with tab2:
                         if len(contracts) > 1:
                             has_small_set.add(code)
             except: pass
-            return margin_map, has_small_set, sync_date
+            return margin_map, maint_map, group_level_map, has_small_set, sync_date
 
         def do_clear_opt():
             for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt']:
@@ -3041,7 +3047,7 @@ with tab2:
             st.session_state.futures_list = fetch_futures_list()
 
         # 取得 API 保證金與小型股期資料
-        ssf_margin_map, has_small_set, ssf_sync_date = fetch_ssf_margin_info()
+        ssf_margin_map, ssf_maint_map, ssf_group_level_map, has_small_set, ssf_sync_date = fetch_ssf_margin_info()
 
         c_map_opt, _ = load_local_stock_names()
         sf_opts = []
@@ -3167,7 +3173,24 @@ with tab2:
                         st.session_state["margin_display_ssf"] = f"{calc_margin:,.0f}"
                     else:
                         st.session_state["margin_display_ssf"] = ""
+# ── 保證金級距資訊卡片 ──────────────────────────
+                group_level = ssf_group_level_map.get(sf_code, "")
+                maint_pct   = ssf_maint_map.get(sf_code, 0)
+                calc_maint  = round(entry_p * mult * (maint_pct / 100.0)) if maint_pct > 0 and entry_p is not None else 0
 
+                if sf_code and (group_level or margin_pct > 0):
+                    level_label = f"第 {group_level} 級" if group_level.isdigit() else (group_level if group_level else "—")
+                    init_line  = f"原始 <b style='color:#ff9800;'>{calc_margin:,}</b> 元" if calc_margin > 0 else f"原始比例 <b>{margin_pct}%</b>"
+                    maint_line = (f"　｜　維持 <b style='color:#4fc3f7;'>{calc_maint:,}</b> 元" if calc_maint > 0
+                                  else (f"　｜　維持比例 <b>{maint_pct}%</b>" if maint_pct > 0 else ""))
+                    st.markdown(f"""
+                    <div style='background:#0d1b2a;border:1px solid #1e3a5f;border-radius:8px;padding:9px 14px;margin-bottom:12px;font-size:13px;'>
+                        <span style='color:#00e5ff;font-weight:700;'>📊 保證金級距：{level_label}</span>
+                        <span style='color:#888;margin-left:10px;'>原始 {margin_pct}%</span>
+                        {"<span style='color:#888;'> ／ 維持 " + str(maint_pct) + "%</span>" if maint_pct > 0 else ""}
+                        <div style='margin-top:5px;color:#e0e0e0;'>{init_line}{maint_line}</div>
+                    </div>""", unsafe_allow_html=True)
+                # ────────────────────────────────────────────────
                 st.markdown("<div style='font-size: 14px; margin-bottom: 5px;'>每口保證金 (原始)</div>", unsafe_allow_html=True)
                 c_m1, c_m2 = st.columns([3, 1])
                 with c_m1:
