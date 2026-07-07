@@ -3121,8 +3121,14 @@ with tab2:
                                 if snap and len(snap) > 0:
                                     s = snap[0]
                                     rt_p = s.close
-                                    if rt_p == 0: rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
-                                    ref_p = getattr(contract, 'reference', 0)
+                                    
+                                    # 修正：利用快照原生的 change (漲跌) 反推真正的日盤收盤價，確保夜盤紅綠顏色正確
+                                    if hasattr(s, 'change') and rt_p > 0:
+                                        ref_p = rt_p - s.change
+                                    else:
+                                        ref_p = getattr(contract, 'reference', 0)
+                                        
+                                    if rt_p == 0: rt_p = s.open if s.open > 0 else ref_p
                                     if ref_p == 0: ref_p = s.open
                             except: pass
                         if rt_p is None or rt_p == 0:
@@ -3144,7 +3150,6 @@ with tab2:
                                         is_small = True
 
                                     candidates = []
-                                    # 正確遍歷 Shioaji API 的期貨類別與合約，不再依賴 dir()
                                     for category in sj_api.Contracts.Futures:
                                         for c in category:
                                             if str(getattr(c, 'underlying_code', '')) == str(code):
@@ -3168,9 +3173,15 @@ with tab2:
                                             if snap and len(snap) > 0:
                                                 s = snap[0]
                                                 rt_p = s.close
+                                                
+                                                # 修正：利用快照原生的 change (漲跌) 反推真正的日盤收盤價，確保夜盤紅綠顏色正確
+                                                if hasattr(s, 'change') and rt_p > 0:
+                                                    ref_p = rt_p - s.change
+                                                else:
+                                                    ref_p = getattr(contract, 'reference', 0)
+                                                    
                                                 if rt_p == 0:  
-                                                    rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
-                                                ref_p = getattr(contract, 'reference', 0)
+                                                    rt_p = s.open if s.open > 0 else ref_p
                                                 if ref_p == 0: ref_p = s.open
                                 except Exception: pass
                 except Exception: pass
