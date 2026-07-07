@@ -3107,31 +3107,74 @@ with tab2:
                     sj_logged = st.session_state.get('sj_logged_in', False)
                     sj_api = st.session_state.get('sj_api', None)
                     
-                    if opt_main_tab == "台指期":
-                        if sj_logged and sj_api:
+                    if opt_main_tab in ["台指期", "個股期貨"]:
+                        contract = None
+                        if opt_main_tab == "台指期":
+                            if sj_logged and sj_api:
+                                try:
+                                    if "大台" in opt_tx_type:
+                                        contracts = sj_api.Contracts.Futures.TXF
+                                    elif "小台" in opt_tx_type:
+                                        contracts = sj_api.Contracts.Futures.MXF
+                                    else:
+                                        contracts = sj_api.Contracts.Futures.TMF
+                                    contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                except: pass
+                        elif opt_main_tab == "個股期貨":
+                            code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
+                            if code and sj_logged and sj_api:
+                                try:
+                                    is_small = False
+                                    if 'opt_sub_type' in locals() and isinstance(opt_sub_type, str) and "小型" in opt_sub_type:
+                                        is_small = True
+                                    candidates = []
+                                    for category in sj_api.Contracts.Futures:
+                                        for c in category:
+                                            if str(getattr(c, 'underlying_code', '')) == str(code):
+                                                c_name = getattr(c, 'name', '')
+                                                if is_small and "小型" in c_name: candidates.append(c)
+                                                elif not is_small and "小型" not in c_name: candidates.append(c)
+                                    if not candidates:
+                                        for category in sj_api.Contracts.Futures:
+                                            for c in category:
+                                                if str(getattr(c, 'underlying_code', '')) == str(code): candidates.append(c)
+                                    if candidates:
+                                        valid_contracts = [c for c in candidates if '/' not in getattr(c, 'code', '') and not getattr(c, 'code', '').endswith('R1') and not getattr(c, 'code', '').endswith('R2')]
+                                        if valid_contracts:
+                                            contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                except Exception: pass
+
+                        if contract and sj_logged and sj_api:
                             try:
-                                if "大台" in opt_tx_type:
-                                    contracts = sj_api.Contracts.Futures.TXF
-                                elif "小台" in opt_tx_type:
-                                    contracts = sj_api.Contracts.Futures.MXF
-                                else:
-                                    contracts = sj_api.Contracts.Futures.TMF
-                                contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
                                 snap = sj_api.snapshots([contract])
                                 if snap and len(snap) > 0:
                                     s = snap[0]
-                                    rt_p = s.close
+                                    rt_p = s.close if s.close > 0 else s.open
                                     
-                                    # 修正：利用快照原生的 change (漲跌) 反推真正的日盤收盤價，確保夜盤紅綠顏色正確
-                                    if hasattr(s, 'change') and rt_p > 0:
-                                        ref_p = rt_p - s.change
-                                    else:
-                                        ref_p = getattr(contract, 'reference', 0)
+                                    # 修正：直接抓取歷史K棒，過濾出最近一次「日盤 (08:45~13:45)」的最後一筆收盤價作為絕對精準的基準價
+                                    tz_tw_loc = pytz.timezone('Asia/Taipei')
+                                    now_loc = datetime.now(tz_tw_loc)
+                                    start_str = (now_loc - timedelta(days=5)).strftime("%Y-%m-%d")
+                                    end_str = now_loc.strftime("%Y-%m-%d")
+                                    kbars = sj_api.kbars(contract, start=start_str, end=end_str)
+                                    
+                                    if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                                        df_k = pd.DataFrame({**kbars})
+                                        df_k['ts'] = pd.to_datetime(df_k['ts'])
+                                        if df_k['ts'].dt.tz is not None:
+                                            df_k['ts'] = df_k['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
                                         
-                                    if rt_p == 0: rt_p = s.open if s.open > 0 else ref_p
-                                    if ref_p == 0: ref_p = s.open
-                            except: pass
-                        if rt_p is None or rt_p == 0:
+                                        day_mask = (df_k['ts'].dt.time >= dt_time(8, 45)) & (df_k['ts'].dt.time <= dt_time(13, 45))
+                                        df_day = df_k[day_mask]
+                                        if not df_day.empty:
+                                            ref_p = float(df_day['Close'].iloc[-1])
+                                            
+                                    if ref_p is None:
+                                        ref_p = getattr(contract, 'reference', 0)
+                                        if ref_p == 0: ref_p = s.open
+                            except Exception: pass
+
+                        if (rt_p is None or rt_p == 0) and opt_main_tab == "台指期":
                             try:
                                 yf_ticker = "TMF=F" if "微台" in opt_tx_type else "TWF=F"
                                 df = yf.Ticker(yf_ticker).history(period="5d", interval="1m")
@@ -3140,50 +3183,6 @@ with tab2:
                                     df_d = yf.Ticker(yf_ticker).history(period="5d")
                                     ref_p = df_d['Close'].iloc[-2] if len(df_d) >= 2 else rt_p
                             except: pass
-                    elif opt_main_tab == "個股期貨":
-                        code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
-                        if code:
-                            if sj_logged and sj_api:
-                                try:
-                                    is_small = False
-                                    if 'opt_sub_type' in locals() and isinstance(opt_sub_type, str) and "小型" in opt_sub_type:
-                                        is_small = True
-
-                                    candidates = []
-                                    for category in sj_api.Contracts.Futures:
-                                        for c in category:
-                                            if str(getattr(c, 'underlying_code', '')) == str(code):
-                                                c_name = getattr(c, 'name', '')
-                                                if is_small and "小型" in c_name:
-                                                    candidates.append(c)
-                                                elif not is_small and "小型" not in c_name:
-                                                    candidates.append(c)
-
-                                    if not candidates:
-                                        for category in sj_api.Contracts.Futures:
-                                            for c in category:
-                                                if str(getattr(c, 'underlying_code', '')) == str(code):
-                                                    candidates.append(c)
-                                    
-                                    if candidates:
-                                        valid_contracts = [c for c in candidates if '/' not in getattr(c, 'code', '') and not getattr(c, 'code', '').endswith('R1') and not getattr(c, 'code', '').endswith('R2')]
-                                        if valid_contracts:
-                                            contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
-                                            snap = sj_api.snapshots([contract])
-                                            if snap and len(snap) > 0:
-                                                s = snap[0]
-                                                rt_p = s.close
-                                                
-                                                # 修正：利用快照原生的 change (漲跌) 反推真正的日盤收盤價，確保夜盤紅綠顏色正確
-                                                if hasattr(s, 'change') and rt_p > 0:
-                                                    ref_p = rt_p - s.change
-                                                else:
-                                                    ref_p = getattr(contract, 'reference', 0)
-                                                    
-                                                if rt_p == 0:  
-                                                    rt_p = s.open if s.open > 0 else ref_p
-                                                if ref_p == 0: ref_p = s.open
-                                except Exception: pass
                 except Exception: pass
                 
                 st.session_state.opt_rt_price = rt_p
