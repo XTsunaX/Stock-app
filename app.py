@@ -3025,8 +3025,9 @@ with tab2:
             return margin_map, maint_map, group_level_map, has_small_set, sync_date
 
         def do_clear_opt():
-            for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt']:
-                st.session_state[k] = None
+            for k in ['opt_entry_p', 'opt_exit_p', 'opt_sl_p', 'opt_manual_margin_tx', 'opt_manual_margin_opt', 'opt_rt_price', 'opt_ref_price']:
+                if k in st.session_state:
+                    st.session_state[k] = None
             st.session_state['opt_sf_search'] = None
             if 'opt_custom_margin' in st.session_state:
                 del st.session_state['opt_custom_margin']
@@ -3098,9 +3099,78 @@ with tab2:
             opt_dir = st.radio("部位方向", ["🔴 做多 ▲", "🟢 做空 ▼"], horizontal=True, key="opt_dir")
             opt_lots = st.number_input("口數", min_value=1, value=1, step=1, key="opt_lots")
 
+            # --- 獲取最新即時價格邏輯 (支援夜盤) ---
+            if st.session_state.get('opt_rt_trigger', False):
+                st.session_state.opt_rt_trigger = False
+                rt_p, ref_p = None, None
+                try:
+                    sj_logged = st.session_state.get('sj_logged_in', False)
+                    sj_api = st.session_state.get('sj_api', None)
+                    
+                    if opt_main_tab == "台指期":
+                        if sj_logged and sj_api:
+                            tx_prefix = "TXF" if "大台" in opt_tx_type else "MXF"
+                            contracts = sj_api.Contracts.Futures.TXF if tx_prefix == "TXF" else sj_api.Contracts.Futures.MXF
+                            contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: c.delivery_date)
+                            snap = sj_api.snapshots([contract])
+                            if snap:
+                                rt_p = snap[0].close
+                                ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
+                        else:
+                            yf_ticker = "TMF=F" if "微台" in opt_tx_type else "TWF=F"
+                            df = yf.Ticker(yf_ticker).history(period="5d", interval="1m")
+                            if not df.empty:
+                                rt_p = df['Close'].iloc[-1]
+                                df_d = yf.Ticker(yf_ticker).history(period="5d")
+                                ref_p = df_d['Close'].iloc[-2] if len(df_d) >= 2 else rt_p
+                    elif opt_main_tab == "個股期貨":
+                        code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
+                        if code:
+                            if sj_logged and sj_api:
+                                try:
+                                    contract = sj_api.Contracts.Stocks[code]
+                                    snap = sj_api.snapshots([contract])
+                                    if snap:
+                                        rt_p = snap[0].close
+                                        ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
+                                except: pass
+                            if rt_p is None:
+                                try:
+                                    df = yf.Ticker(f"{code}.TW").history(period="5d")
+                                    if df.empty: df = yf.Ticker(f"{code}.TWO").history(period="5d")
+                                    if not df.empty:
+                                        rt_p = df['Close'].iloc[-1]
+                                        ref_p = df['Close'].iloc[-2] if len(df) >= 2 else rt_p
+                                except: pass
+                except Exception: pass
+                
+                st.session_state.opt_rt_price = rt_p
+                st.session_state.opt_ref_price = ref_p
+            # ------------------------------------
+
             c_p1, c_p2 = st.columns(2)
             with c_p1:
                 entry_p = st.number_input("進場價 (點)", value=None, format="%.2f", placeholder="輸入進場價", key="opt_entry_p")
+                
+                # --- 顯示最新成交價及重新整理按鈕 ---
+                if opt_main_tab in ["台指期", "個股期貨"]:
+                    c_rt1, c_rt2 = st.columns([4, 1])
+                    with c_rt1:
+                        rt_p = st.session_state.get('opt_rt_price', None)
+                        ref_p = st.session_state.get('opt_ref_price', None)
+                        if rt_p is not None and ref_p is not None:
+                            color = "#ff4b4b" if rt_p > ref_p else ("#00e676" if rt_p < ref_p else "white")
+                            diff = rt_p - ref_p
+                            sign = "+" if diff > 0 else ""
+                            st.markdown(f"<div style='font-size:13px; margin-top:-10px; margin-bottom:10px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<div style='font-size:13px; margin-top:-10px; margin-bottom:10px; color:#aaa;'>最新成交價: 尚未更新 (請點擊右側按鈕)</div>", unsafe_allow_html=True)
+                    with c_rt2:
+                        if st.button("🔄", key="btn_refresh_opt_rt", help="更新最新價格"):
+                            st.session_state.opt_rt_trigger = True
+                            st.rerun()
+                # ------------------------------------
+
             with c_p2:
                 exit_p = st.number_input("出場/目標價 (點)", value=None, format="%.2f", placeholder="輸入目標價", key="opt_exit_p")
 
