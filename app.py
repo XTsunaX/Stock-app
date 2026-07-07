@@ -3109,44 +3109,71 @@ with tab2:
                     
                     if opt_main_tab == "台指期":
                         if sj_logged and sj_api:
-                            tx_prefix = "TXF" if "大台" in opt_tx_type else "MXF"
-                            contracts = sj_api.Contracts.Futures.TXF if tx_prefix == "TXF" else sj_api.Contracts.Futures.MXF
-                            contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: c.delivery_date)
-                            snap = sj_api.snapshots([contract])
-                            if snap:
-                                rt_p = snap[0].close
-                                ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
-                        else:
-                            yf_ticker = "TMF=F" if "微台" in opt_tx_type else "TWF=F"
-                            df = yf.Ticker(yf_ticker).history(period="5d", interval="1m")
-                            if not df.empty:
-                                rt_p = df['Close'].iloc[-1]
-                                df_d = yf.Ticker(yf_ticker).history(period="5d")
-                                ref_p = df_d['Close'].iloc[-2] if len(df_d) >= 2 else rt_p
+                            try:
+                                if "大台" in opt_tx_type:
+                                    contracts = sj_api.Contracts.Futures.TXF
+                                elif "小台" in opt_tx_type:
+                                    contracts = sj_api.Contracts.Futures.MXF
+                                else:
+                                    contracts = sj_api.Contracts.Futures.TMF
+                                contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                snap = sj_api.snapshots([contract])
+                                if snap and len(snap) > 0:
+                                    s = snap[0]
+                                    rt_p = s.close
+                                    if rt_p == 0: rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
+                                    ref_p = getattr(contract, 'reference', 0)
+                                    if ref_p == 0: ref_p = s.open
+                            except: pass
+                        if rt_p is None or rt_p == 0:
+                            try:
+                                yf_ticker = "TMF=F" if "微台" in opt_tx_type else "TWF=F"
+                                df = yf.Ticker(yf_ticker).history(period="5d", interval="1m")
+                                if not df.empty:
+                                    rt_p = df['Close'].iloc[-1]
+                                    df_d = yf.Ticker(yf_ticker).history(period="5d")
+                                    ref_p = df_d['Close'].iloc[-2] if len(df_d) >= 2 else rt_p
+                            except: pass
                     elif opt_main_tab == "個股期貨":
                         code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
                         if code:
                             if sj_logged and sj_api:
                                 try:
                                     is_small = "小型" in opt_sub_type
-                                    target_mult = 100 if is_small else 2000
                                     candidates = []
-                                    # 修正：改用 dir() 確保能正確遍歷動態生成的個股期貨屬性物件，避免夜盤抓不到合約
+                                    # 修正：遍歷所有期貨合約，並以「名稱」取代「固定乘數」判斷大小型，解決除權息乘數變動與夜盤合約問題
                                     for attr in dir(sj_api.Contracts.Futures):
                                         if not attr.startswith('_'):
                                             try:
                                                 fut_group = getattr(sj_api.Contracts.Futures, attr)
                                                 for c in fut_group:
-                                                    if getattr(c, 'underlying_code', '') == code and getattr(c, 'multiplier', 0) == target_mult:
-                                                        candidates.append(c)
+                                                    if str(getattr(c, 'underlying_code', '')) == str(code):
+                                                        c_name = getattr(c, 'name', '')
+                                                        if is_small and "小型" in c_name:
+                                                            candidates.append(c)
+                                                        elif not is_small and "小型" not in c_name:
+                                                            candidates.append(c)
                                             except: pass
                                     
                                     if candidates:
-                                        contract = min([c for c in candidates if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: c.delivery_date)
+                                        contract = min([c for c in candidates if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
                                         snap = sj_api.snapshots([contract])
-                                        if snap:
-                                            rt_p = snap[0].close
-                                            ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
+                                        if snap and len(snap) > 0:
+                                            s = snap[0]
+                                            rt_p = s.close
+                                            if rt_p == 0:  # 處理夜盤剛開盤無成交的情況
+                                                rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
+                                            ref_p = getattr(contract, 'reference', 0)
+                                            if ref_p == 0: ref_p = s.open
+                                except: pass
+                            
+                            if rt_p is None or rt_p == 0:
+                                try:
+                                    df = yf.Ticker(f"{code}.TW").history(period="5d")
+                                    if df.empty: df = yf.Ticker(f"{code}.TWO").history(period="5d")
+                                    if not df.empty:
+                                        rt_p = df['Close'].iloc[-1]
+                                        ref_p = df['Close'].iloc[-2] if len(df) >= 2 else rt_p
                                 except: pass
                 except Exception: pass
                 
