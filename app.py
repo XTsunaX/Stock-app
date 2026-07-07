@@ -3128,15 +3128,18 @@ with tab2:
                         if code:
                             if sj_logged and sj_api:
                                 try:
-                                    # 修正：遍歷所有期貨合約而非現貨合約，以正確獲取支援夜盤的個股期報價
                                     is_small = "小型" in opt_sub_type
                                     target_mult = 100 if is_small else 2000
                                     candidates = []
-                                    for k, v in sj_api.Contracts.Futures.__dict__.items():
-                                        if not k.startswith('_'):
-                                            for c in v:
-                                                if getattr(c, 'underlying_code', '') == code and getattr(c, 'multiplier', 0) == target_mult:
-                                                    candidates.append(c)
+                                    # 修正：改用 dir() 確保能正確遍歷動態生成的個股期貨屬性物件，避免夜盤抓不到合約
+                                    for attr in dir(sj_api.Contracts.Futures):
+                                        if not attr.startswith('_'):
+                                            try:
+                                                fut_group = getattr(sj_api.Contracts.Futures, attr)
+                                                for c in fut_group:
+                                                    if getattr(c, 'underlying_code', '') == code and getattr(c, 'multiplier', 0) == target_mult:
+                                                        candidates.append(c)
+                                            except: pass
                                     
                                     if candidates:
                                         contract = min([c for c in candidates if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: c.delivery_date)
@@ -3157,6 +3160,21 @@ with tab2:
                 
                 # --- 顯示最新成交價及重新整理按鈕 ---
                 if opt_main_tab in ["台指期", "個股期貨"]:
+                    # 修正：注入 CSS 實現 align-items: center 讓按鈕與文字垂直置中平行，並移除 margin 造成的落差
+                    st.markdown("""
+                    <style>
+                    div[data-testid="stHorizontalBlock"]:has(button[title="更新最新價格"]) {
+                        align-items: center !important;
+                    }
+                    div:has(> button[title="更新最新價格"]) button {
+                        min-height: 32px !important;
+                        font-size: 14px !important;
+                        padding: 0px 5px !important;
+                        margin: 0px !important;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+
                     c_rt1, c_rt2 = st.columns([5, 1])
                     with c_rt1:
                         rt_p = st.session_state.get('opt_rt_price', None)
@@ -3165,22 +3183,10 @@ with tab2:
                             color = "#ff4b4b" if rt_p > ref_p else ("#00e676" if rt_p < ref_p else "white")
                             diff = rt_p - ref_p
                             sign = "+" if diff > 0 else ""
-                            # 將字體放大至 20px 以匹配高度
-                            st.markdown(f"<div style='font-size:20px; margin-top:2px; margin-bottom:10px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='font-size:16px; color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='font-size:20px; margin:0px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='font-size:16px; color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
                         else:
-                            st.markdown("<div style='font-size:20px; margin-top:2px; margin-bottom:10px; color:#aaa;'>最新成交價: 尚未更新</div>", unsafe_allow_html=True)
+                            st.markdown("<div style='font-size:20px; margin:0px; color:#aaa;'>最新成交價: 尚未更新</div>", unsafe_allow_html=True)
                     with c_rt2:
-                        # 注入專屬 CSS 讓此按鈕高度與字體縮小
-                        st.markdown("""
-                        <style>
-                        div:has(> button[title="更新最新價格"]) button {
-                            min-height: 35px !important;
-                            font-size: 16px !important;
-                            padding: 0px 5px !important;
-                            margin-top: 2px !important;
-                        }
-                        </style>
-                        """, unsafe_allow_html=True)
                         if st.button("🔄", key="btn_refresh_opt_rt", help="更新最新價格", use_container_width=True):
                             st.session_state.opt_rt_trigger = True
                             st.rerun()
