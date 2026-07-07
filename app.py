@@ -3128,19 +3128,22 @@ with tab2:
                         if code:
                             if sj_logged and sj_api:
                                 try:
-                                    contract = sj_api.Contracts.Stocks[code]
-                                    snap = sj_api.snapshots([contract])
-                                    if snap:
-                                        rt_p = snap[0].close
-                                        ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
-                                except: pass
-                            if rt_p is None:
-                                try:
-                                    df = yf.Ticker(f"{code}.TW").history(period="5d")
-                                    if df.empty: df = yf.Ticker(f"{code}.TWO").history(period="5d")
-                                    if not df.empty:
-                                        rt_p = df['Close'].iloc[-1]
-                                        ref_p = df['Close'].iloc[-2] if len(df) >= 2 else rt_p
+                                    # 修正：遍歷所有期貨合約而非現貨合約，以正確獲取支援夜盤的個股期報價
+                                    is_small = "小型" in opt_sub_type
+                                    target_mult = 100 if is_small else 2000
+                                    candidates = []
+                                    for k, v in sj_api.Contracts.Futures.__dict__.items():
+                                        if not k.startswith('_'):
+                                            for c in v:
+                                                if getattr(c, 'underlying_code', '') == code and getattr(c, 'multiplier', 0) == target_mult:
+                                                    candidates.append(c)
+                                    
+                                    if candidates:
+                                        contract = min([c for c in candidates if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: c.delivery_date)
+                                        snap = sj_api.snapshots([contract])
+                                        if snap:
+                                            rt_p = snap[0].close
+                                            ref_p = contract.reference if hasattr(contract, 'reference') and contract.reference > 0 else snap[0].open
                                 except: pass
                 except Exception: pass
                 
@@ -3154,7 +3157,7 @@ with tab2:
                 
                 # --- 顯示最新成交價及重新整理按鈕 ---
                 if opt_main_tab in ["台指期", "個股期貨"]:
-                    c_rt1, c_rt2 = st.columns([4, 1])
+                    c_rt1, c_rt2 = st.columns([5, 1])
                     with c_rt1:
                         rt_p = st.session_state.get('opt_rt_price', None)
                         ref_p = st.session_state.get('opt_ref_price', None)
@@ -3162,11 +3165,23 @@ with tab2:
                             color = "#ff4b4b" if rt_p > ref_p else ("#00e676" if rt_p < ref_p else "white")
                             diff = rt_p - ref_p
                             sign = "+" if diff > 0 else ""
-                            st.markdown(f"<div style='font-size:13px; margin-top:-10px; margin-bottom:10px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
+                            # 將字體放大至 20px 以匹配高度
+                            st.markdown(f"<div style='font-size:20px; margin-top:2px; margin-bottom:10px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='font-size:16px; color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
                         else:
-                            st.markdown("<div style='font-size:13px; margin-top:-10px; margin-bottom:10px; color:#aaa;'>最新成交價: 尚未更新 (請點擊右側按鈕)</div>", unsafe_allow_html=True)
+                            st.markdown("<div style='font-size:20px; margin-top:2px; margin-bottom:10px; color:#aaa;'>最新成交價: 尚未更新</div>", unsafe_allow_html=True)
                     with c_rt2:
-                        if st.button("🔄", key="btn_refresh_opt_rt", help="更新最新價格"):
+                        # 注入專屬 CSS 讓此按鈕高度與字體縮小
+                        st.markdown("""
+                        <style>
+                        div:has(> button[title="更新最新價格"]) button {
+                            min-height: 35px !important;
+                            font-size: 16px !important;
+                            padding: 0px 5px !important;
+                            margin-top: 2px !important;
+                        }
+                        </style>
+                        """, unsafe_allow_html=True)
+                        if st.button("🔄", key="btn_refresh_opt_rt", help="更新最新價格", use_container_width=True):
                             st.session_state.opt_rt_trigger = True
                             st.rerun()
                 # ------------------------------------
