@@ -1806,10 +1806,10 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     hist['High'] = hist[['High', 'Close']].max(axis=1)
     hist['Low'] = hist[['Low', 'Close']].min(axis=1)
 
-    # 包含收盤價、漲跌幅，15:00 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
+   # 包含收盤價、漲跌幅，14:30 前排除今日資料，套用昨日指標 (配合主要擷取昨日盤後資料需求)
     tz_tw_calc = pytz.timezone('Asia/Taipei')
     now_tw_calc = datetime.now(tz_tw_calc)
-    switch_time = dt_time(15, 0)
+    switch_time = dt_time(14, 30)
     
     if now_tw_calc.time() < switch_time:
         if not hist.empty and hist.index[-1].date() == now_tw_calc.date():
