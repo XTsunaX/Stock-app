@@ -3139,43 +3139,47 @@ with tab2:
                         if code:
                             if sj_logged and sj_api:
                                 try:
-                                    is_small = "小型" in opt_sub_type
+                                    is_small = False
+                                    if 'opt_sub_type' in locals() and isinstance(opt_sub_type, str) and "小型" in opt_sub_type:
+                                        is_small = True
+
                                     candidates = []
-                                    # 修正：遍歷所有期貨合約，並以「名稱」取代「固定乘數」判斷大小型，解決除權息乘數變動與夜盤合約問題
-                                    for attr in dir(sj_api.Contracts.Futures):
-                                        if not attr.startswith('_'):
-                                            try:
-                                                fut_group = getattr(sj_api.Contracts.Futures, attr)
-                                                for c in fut_group:
-                                                    if str(getattr(c, 'underlying_code', '')) == str(code):
-                                                        c_name = getattr(c, 'name', '')
-                                                        if is_small and "小型" in c_name:
-                                                            candidates.append(c)
-                                                        elif not is_small and "小型" not in c_name:
-                                                            candidates.append(c)
-                                            except: pass
+                                    # 正確遍歷 Shioaji API 的期貨類別與合約，不再依賴 dir()
+                                    for category in sj_api.Contracts.Futures:
+                                        for c in category:
+                                            # 對比標的代碼 underlying_code 以抓取個股期
+                                            if str(getattr(c, 'underlying_code', '')) == str(code):
+                                                c_name = getattr(c, 'name', '')
+                                                if is_small and "小型" in c_name:
+                                                    candidates.append(c)
+                                                elif not is_small and "小型" not in c_name:
+                                                    candidates.append(c)
+
+                                    # 若因為過濾條件沒抓到，放寬為只要是同標的的任何期貨合約皆納入
+                                    if not candidates:
+                                        for category in sj_api.Contracts.Futures:
+                                            for c in category:
+                                                if str(getattr(c, 'underlying_code', '')) == str(code):
+                                                    candidates.append(c)
                                     
                                     if candidates:
-                                        contract = min([c for c in candidates if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
-                                        snap = sj_api.snapshots([contract])
-                                        if snap and len(snap) > 0:
-                                            s = snap[0]
-                                            rt_p = s.close
-                                            if rt_p == 0:  # 處理夜盤剛開盤無成交的情況
-                                                rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
-                                            ref_p = getattr(contract, 'reference', 0)
-                                            if ref_p == 0: ref_p = s.open
-                                except: pass
+                                        # 排除價差合約 (含 '/') 與 R1/R2 特殊合約，確保抓到正常月份
+                                        valid_contracts = [c for c in candidates if '/' not in getattr(c, 'code', '') and not getattr(c, 'code', '').endswith('R1') and not getattr(c, 'code', '').endswith('R2')]
+                                        if valid_contracts:
+                                            # 以交割日 (delivery_date) 最小者作為近月合約
+                                            contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                            snap = sj_api.snapshots([contract])
+                                            if snap and len(snap) > 0:
+                                                s = snap[0]
+                                                rt_p = s.close
+                                                # 處理剛開盤或流動性差無成交的情況
+                                                if rt_p == 0:  
+                                                    rt_p = s.open if s.open > 0 else getattr(contract, 'reference', 0)
+                                                ref_p = getattr(contract, 'reference', 0)
+                                                if ref_p == 0: ref_p = s.open
+                                except Exception: pass
                             
-                            if rt_p is None or rt_p == 0:
-                                try:
-                                    df = yf.Ticker(f"{code}.TW").history(period="5d")
-                                    if df.empty: df = yf.Ticker(f"{code}.TWO").history(period="5d")
-                                    if not df.empty:
-                                        rt_p = df['Close'].iloc[-1]
-                                        ref_p = df['Close'].iloc[-2] if len(df) >= 2 else rt_p
-                                except: pass
-                except Exception: pass
+                            # 已移除原先 YF 抓取現貨 (個股) 的邏輯，確保畫面上呈現的必定為個股期貨
                 
                 st.session_state.opt_rt_price = rt_p
                 st.session_state.opt_ref_price = ref_p
