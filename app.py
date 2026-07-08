@@ -3037,6 +3037,9 @@ with tab2:
 
         def on_opt_tab_change():
             do_clear_opt()
+        
+        def on_f_contract_change():
+            st.session_state.opt_rt_trigger = True
         # --------------------------------------------
 
         if 'taifex_margin_data' not in st.session_state:
@@ -3072,8 +3075,8 @@ with tab2:
                 on_change=on_opt_tab_change
             )
 
-            if opt_main_tab == "台指期":
-                opt_tx_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True, key="opt_tx_type")
+           if opt_main_tab == "台指期":
+                opt_tx_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True, key="opt_tx_type", on_change=on_f_contract_change)
                 mult = 200 if "大台" in opt_tx_type else (50 if "小台" in opt_tx_type else 10)
                 tax_rate = 0.00002
             elif opt_main_tab == "個股期貨":
@@ -3085,10 +3088,11 @@ with tab2:
                     "選擇對應股期", 
                     options=filtered_sf_opts, 
                     index=0 if filtered_sf_opts else None,
-                    key="opt_sf_search"
+                    key="opt_sf_search",
+                    on_change=on_f_contract_change
                 )
                 is_small = search_stock_futures is not None and "小型" in search_stock_futures
-                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True, index=1 if is_small else 0)
+                opt_sub_type = st.radio("合約規格", ["一般 (x2000)", "小型 (x100)"], horizontal=True, index=1 if is_small else 0, on_change=on_f_contract_change)
                 mult = 100 if "小型" in opt_sub_type else 2000
                 tax_rate = 0.00002
             else:
