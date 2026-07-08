@@ -3153,7 +3153,6 @@ with tab2:
                                             contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
                                 except Exception: pass
 
-                        # 完全移除 YF 與 K 棒邏輯，單純依賴永豐快照資料反推基準價
                         if contract:
                             try:
                                 snap = sj_api.snapshots([contract])
@@ -3161,11 +3160,48 @@ with tab2:
                                     s = snap[0]
                                     rt_p = s.close if s.close > 0 else s.open
                                     
-                                    if hasattr(s, 'change') and rt_p > 0:
-                                        ref_p = rt_p - s.change
+                                    # 修正：精準讀取永豐快照的 change_price 反推基準價
+                                    change_val = getattr(s, 'change_price', getattr(s, 'change', None))
+                                    if change_val is not None and rt_p > 0:
+                                        ref_p = rt_p - float(change_val)
                                     else:
-                                        ref_p = getattr(contract, 'reference', 0)
-                                        if ref_p == 0: ref_p = s.open
+                                        # 堅固備援：直接向 API 請求 K 棒，抓取當日 13:45 最後一筆收盤價
+                                        tz_tw_loc = pytz.timezone('Asia/Taipei')
+                                        now_loc = datetime.now(tz_tw_loc)
+                                        start_str = (now_loc - timedelta(days=5)).strftime("%Y-%m-%d")
+                                        end_str = now_loc.strftime("%Y-%m-%d")
+                                        
+                                        try:
+                                            kbars = sj_api.kbars(contract, start=start_str, end=end_str)
+                                            if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
+                                                df_k = pd.DataFrame({**kbars})
+                                                df_k['ts'] = pd.to_datetime(df_k['ts'])
+                                                if df_k['ts'].dt.tz is not None:
+                                                    df_k['ts'] = df_k['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
+                                                
+                                                day_mask = (df_k['ts'].dt.time >= dt_time(8, 45)) & (df_k['ts'].dt.time <= dt_time(13, 45))
+                                                df_day = df_k[day_mask]
+                                                if not df_day.empty:
+                                                    daily_closes = df_day.groupby(df_day['ts'].dt.date)['Close'].last()
+                                                    curr_d = now_loc.date()
+                                                    
+                                                    # 14:00 前 (含凌晨夜盤與上午日盤)：基準價為「前一交易日」的 13:45
+                                                    if now_loc.time() < dt_time(14, 0):
+                                                        past_closes = daily_closes[daily_closes.index < curr_d]
+                                                        if not past_closes.empty: ref_p = float(past_closes.iloc[-1])
+                                                    # 14:00 後 (下午夜盤開始)：基準價為「今日」的 13:45
+                                                    else:
+                                                        valid_closes = daily_closes[daily_closes.index <= curr_d]
+                                                        if not valid_closes.empty: ref_p = float(valid_closes.iloc[-1])
+                                        except: pass
+                                        
+                                        # 若真的都抓不到，最後才回退至快取的參考價
+                                        if ref_p is None or ref_p == 0:
+                                            ref_p = getattr(contract, 'reference', 0)
+                                            
+                                    # 防呆：若夜盤尚未有成交量，讓成交價顯示與基準價相同
+                                    if rt_p == 0 and ref_p is not None and ref_p > 0:
+                                        rt_p = ref_p
                             except Exception: pass
                 except Exception: pass
                 
