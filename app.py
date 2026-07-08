@@ -3167,7 +3167,20 @@ with tab2:
                                         day_mask = (df_k['ts'].dt.time >= dt_time(8, 45)) & (df_k['ts'].dt.time <= dt_time(13, 45))
                                         df_day = df_k[day_mask]
                                         if not df_day.empty:
-                                            ref_p = float(df_day['Close'].iloc[-1])
+                                            # 修正：依日期分組取得每日「日盤」最後一筆收盤價
+                                            daily_closes = df_day.groupby(df_day['ts'].dt.date)['Close'].last()
+                                            curr_d = now_loc.date()
+                                            
+                                            # 日盤時段(或凌晨)：基準價為「小於今日」的最後交易日日盤收盤
+                                            if now_loc.time() < dt_time(14, 0):
+                                                past_closes = daily_closes[daily_closes.index < curr_d]
+                                                if not past_closes.empty:
+                                                    ref_p = float(past_closes.iloc[-1])
+                                            # 夜盤時段(14:00後)：基準價為「包含今日」的最後交易日日盤收盤
+                                            else:
+                                                valid_closes = daily_closes[daily_closes.index <= curr_d]
+                                                if not valid_closes.empty:
+                                                    ref_p = float(valid_closes.iloc[-1])
                                             
                                     if ref_p is None:
                                         ref_p = getattr(contract, 'reference', 0)
