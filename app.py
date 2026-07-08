@@ -3037,6 +3037,8 @@ with tab2:
 
         def on_opt_tab_change():
             do_clear_opt()
+            # 新增此行：確保切換商品類別(例如切換至台指期)時，自動觸發抓取預設合約的最新價格
+            st.session_state.opt_rt_trigger = True
         
         def on_f_contract_change():
             st.session_state.opt_rt_trigger = True
