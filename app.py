@@ -3111,25 +3111,21 @@ with tab2:
                     sj_logged = st.session_state.get('sj_logged_in', False)
                     sj_api = st.session_state.get('sj_api', None)
                     
-                    tz_tw_loc = pytz.timezone('Asia/Taipei')
-                    now_loc = datetime.now(tz_tw_loc)
-                    
-                    if opt_main_tab in ["台指期", "個股期貨"]:
+                    if opt_main_tab in ["台指期", "個股期貨"] and sj_logged and sj_api:
                         contract = None
                         if opt_main_tab == "台指期":
-                            if sj_logged and sj_api:
-                                try:
-                                    if "大台" in opt_tx_type:
-                                        contracts = sj_api.Contracts.Futures.TXF
-                                    elif "小台" in opt_tx_type:
-                                        contracts = sj_api.Contracts.Futures.MXF
-                                    else:
-                                        contracts = sj_api.Contracts.Futures.TMF
-                                    contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
-                                except: pass
+                            try:
+                                if "大台" in opt_tx_type:
+                                    contracts = sj_api.Contracts.Futures.TXF
+                                elif "小台" in opt_tx_type:
+                                    contracts = sj_api.Contracts.Futures.MXF
+                                else:
+                                    contracts = sj_api.Contracts.Futures.TMF
+                                contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                            except: pass
                         elif opt_main_tab == "個股期貨":
                             code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
-                            if code and sj_logged and sj_api:
+                            if code:
                                 try:
                                     is_small = False
                                     if 'opt_sub_type' in locals() and isinstance(opt_sub_type, str) and "小型" in opt_sub_type:
@@ -3151,81 +3147,20 @@ with tab2:
                                             contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
                                 except Exception: pass
 
-                        # 優先透過 API 取得即時成交價 (rt_p) 與歷史日盤收盤 (ref_p)
-                        if contract and sj_logged and sj_api:
+                        # 完全移除 YF 與 K 棒邏輯，單純依賴永豐快照資料反推基準價
+                        if contract:
                             try:
                                 snap = sj_api.snapshots([contract])
                                 if snap and len(snap) > 0:
                                     s = snap[0]
                                     rt_p = s.close if s.close > 0 else s.open
                                     
-                                    # 嘗試從 Shioaji 抓取近五日 kbars，精準定位日盤最後一筆作為基準價
-                                    start_str = (now_loc - timedelta(days=5)).strftime("%Y-%m-%d")
-                                    end_str = now_loc.strftime("%Y-%m-%d")
-                                    kbars = sj_api.kbars(contract, start=start_str, end=end_str)
-                                    
-                                    if kbars and hasattr(kbars, 'ts') and len(kbars.ts) > 0:
-                                        df_k = pd.DataFrame({**kbars})
-                                        df_k['ts'] = pd.to_datetime(df_k['ts'])
-                                        
-                                        # 修正：確保時區正確，若為 tz-naive (UTC epoch)，強制轉回台北時間
-                                        if df_k['ts'].dt.tz is None:
-                                            df_k['ts'] = df_k['ts'].dt.tz_localize('UTC').dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-                                        else:
-                                            df_k['ts'] = df_k['ts'].dt.tz_convert('Asia/Taipei').dt.tz_localize(None)
-                                            
-                                        day_mask = (df_k['ts'].dt.time >= dt_time(8, 45)) & (df_k['ts'].dt.time <= dt_time(13, 45))
-                                        df_day = df_k[day_mask]
-                                        if not df_day.empty:
-                                            daily_closes = df_day.groupby(df_day['ts'].dt.date)['Close'].last()
-                                            curr_d = now_loc.date()
-                                            if now_loc.time() < dt_time(14, 0):
-                                                past_closes = daily_closes[daily_closes.index < curr_d]
-                                                if not past_closes.empty: ref_p = float(past_closes.iloc[-1])
-                                            else:
-                                                valid_closes = daily_closes[daily_closes.index <= curr_d]
-                                                if not valid_closes.empty: ref_p = float(valid_closes.iloc[-1])
+                                    if hasattr(s, 'change') and rt_p > 0:
+                                        ref_p = rt_p - s.change
+                                    else:
+                                        ref_p = getattr(contract, 'reference', 0)
+                                        if ref_p == 0: ref_p = s.open
                             except Exception: pass
-
-                        # 雙重備援：如果上面沒有成功取得 rt_p 或是 ref_p，透過 Yahoo Finance 補足
-                        if rt_p is None or rt_p == 0 or ref_p is None or ref_p == 0:
-                            try:
-                                if opt_main_tab == "台指期":
-                                    yf_ticker = "TMF=F" if "微台" in opt_tx_type else "TWF=F"
-                                    df_d = yf.Ticker(yf_ticker).history(period="5d")
-                                    if not df_d.empty:
-                                        if rt_p is None or rt_p == 0:
-                                            df_m = yf.Ticker(yf_ticker).history(period="5d", interval="1m")
-                                            if not df_m.empty: rt_p = df_m['Close'].iloc[-1]
-                                        if ref_p is None or ref_p == 0:
-                                            curr_d = now_loc.date()
-                                            if now_loc.time() < dt_time(14, 0):
-                                                past = df_d[df_d.index.date < curr_d]
-                                                if not past.empty: ref_p = float(past['Close'].iloc[-1])
-                                            else:
-                                                valid = df_d[df_d.index.date <= curr_d]
-                                                if not valid.empty: ref_p = float(valid['Close'].iloc[-1])
-                                                
-                                elif opt_main_tab == "個股期貨":
-                                    if code:
-                                        df_d = yf.Ticker(f"{code}.TW").history(period="5d")
-                                        if df_d.empty: df_d = yf.Ticker(f"{code}.TWO").history(period="5d")
-                                        if not df_d.empty:
-                                            if rt_p is None or rt_p == 0: rt_p = float(df_d['Close'].iloc[-1])
-                                            if ref_p is None or ref_p == 0:
-                                                curr_d = now_loc.date()
-                                                if now_loc.time() < dt_time(14, 0):
-                                                    past = df_d[df_d.index.date < curr_d]
-                                                    if not past.empty: ref_p = float(past['Close'].iloc[-1])
-                                                else:
-                                                    valid = df_d[df_d.index.date <= curr_d]
-                                                    if not valid.empty: ref_p = float(valid['Close'].iloc[-1])
-                            except Exception: pass
-                            
-                        # 最後防線：若真的抓不到 ref_p，只好退回靜態的參考價
-                        if (ref_p is None or ref_p == 0) and contract:
-                            ref_p = getattr(contract, 'reference', 0)
-                            
                 except Exception: pass
                 
                 st.session_state.opt_rt_price = rt_p
