@@ -3075,7 +3075,7 @@ with tab2:
                 on_change=on_opt_tab_change
             )
 
-           if opt_main_tab == "台指期":
+            if opt_main_tab == "台指期":
                 opt_tx_type = st.radio("合約規格", ["大台 (TX)", "小台 (MTX)", "微台 (TMF)"], horizontal=True, key="opt_tx_type", on_change=on_f_contract_change)
                 mult = 200 if "大台" in opt_tx_type else (50 if "小台" in opt_tx_type else 10)
                 tax_rate = 0.00002
