@@ -3105,7 +3105,11 @@ with tab2:
             opt_dir = st.radio("部位方向", ["🔴 做多 ▲", "🟢 做空 ▼"], horizontal=True, key="opt_dir")
             opt_lots = st.number_input("口數", min_value=1, value=1, step=1, key="opt_lots")
 
-           # --- 獲取最新即時價格邏輯 (支援夜盤) ---
+           # 新增：當最新成交價為空（例如剛切換到期權交易室），自動觸發獲取預設的台指期大台價格
+            if st.session_state.get('opt_rt_price') is None:
+                st.session_state.opt_rt_trigger = True
+
+            # --- 獲取最新即時價格邏輯 (支援夜盤) ---
             if st.session_state.get('opt_rt_trigger', False):
                 st.session_state.opt_rt_trigger = False
                 rt_p, ref_p = None, None
