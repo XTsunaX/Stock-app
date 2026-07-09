@@ -2601,17 +2601,21 @@ with tab1:
             sj_logged = st.session_state.get('sj_logged_in', False)
             sj_api_obj = st.session_state.get('sj_api', None)
             
+            # 🚀 修正關鍵：在進入多執行緒前，先將 session_state 內容提取為區域變數
+            notes_copy = dict(st.session_state.get('saved_notes', {}))
+            
             with st.spinner("正在獨立分析..."):
                 def _indep_worker(item):
+                    time.sleep(0.1) # 加入微小緩衝
                     parts = item.split(' ', 1)
                     q_code = parts[0]
                     q_name = parts[1] if len(parts) > 1 else ""
                     return fetch_stock_data_raw(
-                        q_code, q_name, None, f_set, st.session_state.saved_notes, 
+                        q_code, q_name, None, f_set, notes_copy, # <--- 這裡改用提取出來的 notes_copy
                         c_map_q, sj_logged, sj_api_obj
                     )
                 
-                # 同樣開啟多執行緒處理獨立分析
+                # 同樣開啟多執行緒處理獨立分析 (建議 max_workers 設為 4 避免記憶體超載)
                 with ThreadPoolExecutor(max_workers=4) as executor:
                     results = list(executor.map(_indep_worker, indep_selection))
                     indep_data = [res for res in results if res]
