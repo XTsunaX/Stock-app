@@ -2018,7 +2018,7 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
                 return res
                 
             # 將 max_workers 從 3 提升到 6
-            with ThreadPoolExecutor(max_workers=6) as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 results = list(executor.map(_fetch_worker, fetch_tasks))
                 valid_results = [r for r in results if r]
                 if valid_results:
@@ -2031,6 +2031,8 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
     st.rerun()
 
 
+# 強制釋放不再使用的記憶體與執行緒資源
+gc.collect()
 # ==========================================
 # 主介面 (Tabs)
 # ==========================================
@@ -2195,7 +2197,7 @@ with tab1:
         sj_api_obj = st.session_state.get('sj_api', None)
 
         # 將 max_workers 從 2 提升到 6，增加同時分析的股票數量
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy, sj_logged_in_flag, sj_api_obj): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
@@ -2383,12 +2385,18 @@ with tab1:
                 if not to_remove.empty:
                     remove_codes = to_remove["代號"].unique()
                     
-                    # 速度優化：將刪除的股票資料快取起來，下次加回瞬間完成
+                    # 速度優化：將刪除的股票資料快取起來
                     for c in remove_codes: 
                         st.session_state.ignored_stocks.add(str(c))
                         row_data = st.session_state.stock_data[st.session_state.stock_data["代號"] == c]
                         if not row_data.empty:
                             st.session_state.ignored_data_cache[c] = row_data.iloc[0].to_dict()
+                            
+                    # --- 新增：資源優化，忽略快取超過 20 檔就刪除最舊的 ---
+                    while len(st.session_state.ignored_data_cache) > 20:
+                        oldest_key = next(iter(st.session_state.ignored_data_cache))
+                        del st.session_state.ignored_data_cache[oldest_key]
+                    # ----------------------------------------------------
                     
                     # 從表格資料中剃除
                     st.session_state.stock_data = st.session_state.stock_data[~st.session_state.stock_data["代號"].isin(remove_codes)]
@@ -2475,7 +2483,7 @@ with tab1:
                                 if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
                                 return res
 
-                            with ThreadPoolExecutor(max_workers=6) as executor:
+                            with ThreadPoolExecutor(max_workers=4) as executor:
                                 results = list(executor.map(_replenish_worker, remaining_to_fetch))
                                 valid_results = [r for r in results if r]
                                 if valid_results:
@@ -2515,8 +2523,12 @@ with tab1:
                 def bg_prefetch_task(targets):
                     for c in targets:
                         t_code, t_name, t_src, t_extra = c
+                        # 資源優化：預載快取最多只保留 5 檔，避免撐爆記憶體
+                        if len(st.session_state.get('prefetch_cache', {})) >= 5:
+                            break
+                            
                         if t_code in st.session_state.get('prefetch_cache', {}): continue
-                        time.sleep(0.5) # 放慢背景抓取速度，避免觸發 API 封鎖
+                        time.sleep(0.5) 
                         res = fetch_stock_data_raw(t_code, t_name, t_extra, f_copy, n_copy, c_map_copy, sj_log, sj_api_obj)
                         if res:
                             res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
@@ -2600,7 +2612,7 @@ with tab1:
                     )
                 
                 # 同樣開啟多執行緒處理獨立分析
-                with ThreadPoolExecutor(max_workers=6) as executor:
+                with ThreadPoolExecutor(max_workers=4) as executor:
                     results = list(executor.map(_indep_worker, indep_selection))
                     indep_data = [res for res in results if res]
                         
