@@ -1444,28 +1444,12 @@ with st.sidebar:
         if len(current_selected_codes) != len(st.session_state.ignored_stocks):
             unignored_codes = st.session_state.ignored_stocks - current_selected_codes
             st.session_state.ignored_stocks = current_selected_codes
-            
-            # --- 新增：將取消忽略的股票立刻加回分析清單 ---
+            # --- 新增：將待加回的股票存入 pending 狀態 ---
             if unignored_codes:
-                if 'futures_list' not in st.session_state or not st.session_state.futures_list:
-                    st.session_state.futures_list = fetch_futures_list()
-                futures_copy = st.session_state.futures_list
-                notes_copy = dict(st.session_state.get('saved_notes', {}))
-                code_map_copy, _ = load_local_stock_names()
-                sj_logged = st.session_state.get('sj_logged_in', False)
-                sj_api_obj = st.session_state.get('sj_api', None)
-                
-                with st.spinner("正在將股票加回分析區..."):
-                    for c_code in unignored_codes:
-                        c_name = get_stock_name_online(c_code)
-                        data = fetch_stock_data_raw(c_code, c_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
-                        if data:
-                            data.update({'_source': 'search', '_order': 0, '_source_rank': 2})
-                            st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
+                st.session_state.pending_unignore = unignored_codes
             # ---------------------------------------------
-            
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-            st.toast("已更新忽略名單並加回分析區。", icon="🔄")
+            st.toast("已更新忽略名單。", icon="🔄")
             st.rerun()
     else:
         st.write("🚫 目前無忽略股票")
@@ -1536,7 +1520,7 @@ with st.sidebar:
 @st.cache_data(ttl=86400)
 def fetch_futures_list():
     try:
-        # 優先使用 OpenAPI 獲取個股期貨清單，最為精準
+        # 優先使用期交所 OpenAPI 獲取個股期貨清單與小型契約
         url = "https://openapi.taifex.com.tw/v1/SingleStockFuturesMargining"
         r = requests.get(url, headers={'accept': 'application/json'}, timeout=5, verify=False)
         if r.status_code == 200:
@@ -1544,24 +1528,26 @@ def fetch_futures_list():
             stock_contracts = {}
             for item in data:
                 code = str(item.get("UnderlyingSecurityCode", "")).strip()
-                if code:
-                    stock_contracts[code] = stock_contracts.get(code, 0) + 1
+                contract = str(item.get("Contract", "")).strip()
+                if code and contract:
+                    if code not in stock_contracts:
+                        stock_contracts[code] = set()
+                    stock_contracts[code].add(contract)
             
             futures_dict = {}
-            for code, count in stock_contracts.items():
-                futures_dict[code] = "✅(小型)" if count > 1 else "✅"
+            for code, contracts in stock_contracts.items():
+                futures_dict[code] = "✅(小型)" if len(contracts) > 1 else "✅"
             if futures_dict:
                 return futures_dict
     except: pass
 
-    # 備用：網頁爬蟲
+    # 備援：網頁爬蟲
     try:
         url = "https://www.taifex.com.tw/cht/2/stockLists"
         dfs = pd.read_html(url)
         futures_dict = {}
         if dfs:
             for df in dfs:
-                # 攤平並整理欄位名稱
                 df_cols = [str(c).replace('\n', '').replace(' ', '') for c in df.columns]
                 df.columns = df_cols
                 
@@ -1577,13 +1563,10 @@ def fetch_futures_list():
                             if val and val not in ['-', 'nan', 'NaN', '']:
                                 is_small = True
                         
-                        if code in futures_dict and is_small:
+                        if is_small:
                             futures_dict[code] = "✅(小型)"
-                        elif is_small:
-                            futures_dict[code] = "✅(小型)"
-                        else:
-                            if code not in futures_dict:
-                                futures_dict[code] = "✅"
+                        elif code not in futures_dict:
+                            futures_dict[code] = "✅"
             return futures_dict
     except: pass
     return {}
@@ -1981,6 +1964,33 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
         "當日漲停價": limit_up_show, "當日跌停價": limit_down_show, "自訂價(可修)": None,   
         "戰略備註": strategy_note, "_points": full_calc_points, "狀態": "", "_auto_note": auto_note, "_ma5": ma5 if 'ma5' in locals() else None
     }
+
+# ==========================================
+# 處理待加回的忽略股票 (防止 NameError)
+# ==========================================
+if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
+    unignored_codes = st.session_state.pending_unignore
+    st.session_state.pending_unignore = set()
+    
+    if 'futures_list' not in st.session_state or not st.session_state.futures_list:
+        st.session_state.futures_list = fetch_futures_list()
+    futures_copy = st.session_state.futures_list
+    notes_copy = dict(st.session_state.get('saved_notes', {}))
+    code_map_copy, _ = load_local_stock_names()
+    sj_logged = st.session_state.get('sj_logged_in', False)
+    sj_api_obj = st.session_state.get('sj_api', None)
+    
+    with st.spinner("正在將股票加回分析區..."):
+        for c_code in unignored_codes:
+            c_name = get_stock_name_online(c_code)
+            # 此時 fetch_stock_data_raw 已被定義，不會再報 NameError
+            data = fetch_stock_data_raw(c_code, c_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
+            if data:
+                data.update({'_source': 'search', '_order': 0, '_source_rank': 2})
+                st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
+    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+    st.rerun()
+
 
 # ==========================================
 # 主介面 (Tabs)
