@@ -1518,9 +1518,9 @@ with st.sidebar:
     st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", width='stretch')
 
 @st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)
 def fetch_futures_list():
     try:
-        # 優先使用期交所 OpenAPI 獲取個股期貨清單與小型契約
         url = "https://openapi.taifex.com.tw/v1/SingleStockFuturesMargining"
         r = requests.get(url, headers={'accept': 'application/json'}, timeout=5, verify=False)
         if r.status_code == 200:
@@ -1536,12 +1536,11 @@ def fetch_futures_list():
             
             futures_dict = {}
             for code, contracts in stock_contracts.items():
-                futures_dict[code] = "✅(小型)" if len(contracts) > 1 else "✅"
+                futures_dict[code] = "✅(有小型)" if len(contracts) > 1 else "✅"
             if futures_dict:
                 return futures_dict
     except: pass
 
-    # 備援：網頁爬蟲
     try:
         url = "https://www.taifex.com.tw/cht/2/stockLists"
         dfs = pd.read_html(url)
@@ -1564,7 +1563,7 @@ def fetch_futures_list():
                                 is_small = True
                         
                         if is_small:
-                            futures_dict[code] = "✅(小型)"
+                            futures_dict[code] = "✅(有小型)"
                         elif code not in futures_dict:
                             futures_dict[code] = "✅"
             return futures_dict
@@ -1974,7 +1973,7 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
     
     if 'futures_list' not in st.session_state or not st.session_state.futures_list:
         st.session_state.futures_list = fetch_futures_list()
-    futures_copy = st.session_state.futures_list
+    futures_copy = dict(st.session_state.futures_list)
     notes_copy = dict(st.session_state.get('saved_notes', {}))
     code_map_copy, _ = load_local_stock_names()
     sj_logged = st.session_state.get('sj_logged_in', False)
@@ -1982,12 +1981,24 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
     
     with st.spinner("正在將股票加回分析區..."):
         for c_code in unignored_codes:
-            c_name = get_stock_name_online(c_code)
-            # 此時 fetch_stock_data_raw 已被定義，不會再報 NameError
+            # 尋找原始的來源與順序，確保插回正確位置
+            cand_info = next((c for c in st.session_state.all_candidates if c[0] == c_code), None)
+            if cand_info:
+                c_name, c_source, c_order = cand_info[1], cand_info[2], cand_info[3]
+                c_rank = 1 if c_source == 'upload' else 2
+            else:
+                c_name = get_stock_name_online(c_code)
+                c_source, c_order, c_rank = 'search', 999, 2
+                
             data = fetch_stock_data_raw(c_code, c_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
             if data:
-                data.update({'_source': 'search', '_order': 0, '_source_rank': 2})
+                data.update({'_source': c_source, '_order': c_order, '_source_rank': c_rank})
                 st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
+                
+        # 加回後依照原始屬性重新排序
+        if not st.session_state.stock_data.empty and '_source_rank' in st.session_state.stock_data.columns:
+            st.session_state.stock_data = st.session_state.stock_data.sort_values(by=['_source_rank', '_order']).reset_index(drop=True)
+            
     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
     st.rerun()
 
@@ -2133,7 +2144,7 @@ with tab1:
         existing_data = {}
         st.session_state.stock_data = pd.DataFrame() 
         
-        futures_copy = set(st.session_state.futures_list)
+        futures_copy = dict(st.session_state.futures_list)
         notes_copy = dict(st.session_state.saved_notes)
         code_map_copy, _ = load_local_stock_names()
 
@@ -2324,7 +2335,7 @@ with tab1:
                 "名稱": st.column_config.TextColumn(disabled=True, width="small"),
                 "收盤價": st.column_config.TextColumn(width="small", disabled=True),
                 "漲跌幅": st.column_config.TextColumn(disabled=True, width="small"),
-                "期貨": st.column_config.TextColumn(disabled=True, width=60), 
+                "期貨": st.column_config.TextColumn(width=90), 
                 "自訂價(可修)": st.column_config.TextColumn("自訂價 ✏️", width=60), 
                 "當日漲停價": st.column_config.TextColumn(width="small", disabled=True),
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
@@ -2351,7 +2362,7 @@ with tab1:
                     if needed > 0 and st.session_state.all_candidates:
                         replenished_count = 0
                         existing_codes = set(st.session_state.stock_data['代號'].astype(str))
-                        futures_copy = set(st.session_state.futures_list)
+                        futures_copy = dict(st.session_state.futures_list)
                         notes_copy = dict(st.session_state.saved_notes)
                         code_map_copy, _ = load_local_stock_names()
                         
@@ -2411,7 +2422,7 @@ with tab1:
                 needed = limit - upload_count
                 replenished_count = 0
                 existing_codes = set(st.session_state.stock_data['代號'].astype(str))
-                futures_copy = set(st.session_state.futures_list)
+                futures_copy = dict(st.session_state.futures_list)
                 notes_copy = dict(st.session_state.saved_notes)
                 code_map_copy, _ = load_local_stock_names()
 
@@ -2566,7 +2577,7 @@ with tab1:
                         "名稱": st.column_config.TextColumn(width="small"),
                         "收盤價": st.column_config.TextColumn(width="small"),
                         "漲跌幅": st.column_config.TextColumn(width="small"),
-                        "期貨": st.column_config.TextColumn(width=60), 
+                        "期貨": st.column_config.TextColumn(width=90), 
                         "自訂價(可修)": st.column_config.TextColumn("自訂價", width=60), 
                         "當日漲停價": st.column_config.TextColumn(width="small"),
                         "當日跌停價": st.column_config.TextColumn(width="small"),
