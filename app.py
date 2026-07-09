@@ -1274,6 +1274,7 @@ if 'search_multiselect' not in st.session_state: st.session_state.search_multise
 if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = {}
 if 'ignored_data_cache' not in st.session_state: st.session_state.ignored_data_cache = {} # 新增這行：忽略資料快取
+if 'prefetch_cache' not in st.session_state: st.session_state.prefetch_cache = {} # 🚀 新增：預載快取
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
@@ -2451,25 +2452,81 @@ with tab1:
                      
                 if cand_to_fetch:
                     with st.spinner(f"正在遞補 {len(cand_to_fetch)} 檔股票..."):
-                        # 🚀 加入多執行緒平行處理，並設定微小緩衝
-                        def _replenish_worker(cand):
-                            time.sleep(0.1) # 加入微小緩衝防 API 封鎖
-                            t_code, t_name, t_src, t_extra = cand
-                            res = fetch_stock_data_raw(t_code, t_name, t_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
-                            if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
-                            return res
-
-                        # 將 max_workers 從 3 提升到 6
-                        with ThreadPoolExecutor(max_workers=6) as executor:
-                            results = list(executor.map(_replenish_worker, cand_to_fetch))
-                            valid_results = [r for r in results if r]
+                        # 🚀 1. 優先從「背景預載快取」提取 (瞬間完成)
+                        ready_results = []
+                        remaining_to_fetch = []
+                        
+                        for cand in cand_to_fetch:
+                            t_code = cand[0]
+                            if t_code in st.session_state.get('prefetch_cache', {}):
+                                ready_results.append(st.session_state.prefetch_cache.pop(t_code))
+                            else:
+                                remaining_to_fetch.append(cand)
+                                
+                        if ready_results:
+                            st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(ready_results)], ignore_index=True)
                             
-                            if valid_results:
-                                st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(valid_results)], ignore_index=True)
-                                save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                                st.toast(f"自動遞補完成，增加 {len(valid_results)} 檔。", icon="🔄")
-                                st.rerun()
+                        # 🚀 2. 若快取不足(例如剛開啟網頁還沒預載完)，才即時抓取剩下的
+                        if remaining_to_fetch:
+                            def _replenish_worker(cand):
+                                time.sleep(0.1)
+                                t_code, t_name, t_src, t_extra = cand
+                                res = fetch_stock_data_raw(t_code, t_name, t_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
+                                if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
+                                return res
 
+                            with ThreadPoolExecutor(max_workers=6) as executor:
+                                results = list(executor.map(_replenish_worker, remaining_to_fetch))
+                                valid_results = [r for r in results if r]
+                                if valid_results:
+                                    st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(valid_results)], ignore_index=True)
+                        
+                        save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                        st.rerun() # 遞補完成，立刻更新畫面
+
+        # ==========================================
+        # 🚀 背景非同步預載系統 (極致提速 0 秒遞補)
+        # ==========================================
+        if st.session_state.all_candidates:
+            existing_codes = set(st.session_state.stock_data['代號'].astype(str)) if not st.session_state.stock_data.empty else set()
+            
+            prefetch_targets = []
+            for cand in st.session_state.all_candidates:
+                c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
+                # 找出還沒在畫面上、沒被刪除、且還沒被快取的後補股票
+                if c_source == 'upload' and c_code not in st.session_state.ignored_stocks and c_code not in existing_codes and c_code not in st.session_state.get('prefetch_cache', {}):
+                    prefetch_targets.append(cand)
+                if len(prefetch_targets) >= 3: # 隨時保持 3 檔庫存
+                    break
+                    
+            if prefetch_targets:
+                import threading
+                try:
+                    from streamlit.runtime.scriptrunner import add_script_run_ctx
+                except ImportError:
+                    add_script_run_ctx = None
+                
+                f_copy = dict(st.session_state.futures_list)
+                n_copy = dict(st.session_state.get('saved_notes', {}))
+                c_map_copy, _ = load_local_stock_names()
+                sj_log = st.session_state.get('sj_logged_in', False)
+                sj_api_obj = st.session_state.get('sj_api', None)
+                
+                def bg_prefetch_task(targets):
+                    for c in targets:
+                        t_code, t_name, t_src, t_extra = c
+                        if t_code in st.session_state.get('prefetch_cache', {}): continue
+                        time.sleep(0.5) # 放慢背景抓取速度，避免觸發 API 封鎖
+                        res = fetch_stock_data_raw(t_code, t_name, t_extra, f_copy, n_copy, c_map_copy, sj_log, sj_api_obj)
+                        if res:
+                            res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
+                            st.session_state.prefetch_cache[t_code] = res
+                            
+                thread = threading.Thread(target=bg_prefetch_task, args=(prefetch_targets,), daemon=True)
+                if add_script_run_ctx: add_script_run_ctx(thread)
+                thread.start()
+
+        
         st.markdown("---")
         col_btn, col_clear, _ = st.columns([2, 2, 4])
         with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", width='stretch', type="primary")
