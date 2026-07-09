@@ -965,14 +965,16 @@ def fetch_and_parse_pdf(pdf_url):
         images = []
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            for page in doc:
-                pix = page.get_pixmap(dpi=100) # 調降解析度，大幅降低記憶體消耗
+            # 記憶體優化：最多只轉譯前 2 頁，並將解析度降到 72 dpi，防止大檔撐爆記憶體
+            for page_idx in range(min(len(doc), 2)):
+                page = doc[page_idx]
+                pix = page.get_pixmap(dpi=72)
                 img_bytes = io.BytesIO(pix.tobytes("png"))
                 img = Image.open(img_bytes)
-                img.load() # 確保圖片已載入，避免檔案關閉後遺失資料
+                img.load() 
                 images.append(img)
-                img_bytes.close() # 關閉 BytesIO 釋放資源
-            doc.close()  # 釋放底層記憶體
+                img_bytes.close() 
+            doc.close()  
         except Exception as e:
             pass
             
@@ -1043,6 +1045,11 @@ def fetch_goodinfo_data():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920x1080")
+    # --- 新增：極致記憶體瘦身設定 ---
+    chrome_options.add_argument("--single-process") 
+    chrome_options.add_argument("--no-zygote")      
+    chrome_options.add_argument("--disable-software-rasterizer")
+    # -------------------------------
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -2018,7 +2025,7 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
                 return res
                 
             # 將 max_workers 從 3 提升到 6
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 results = list(executor.map(_fetch_worker, fetch_tasks))
                 valid_results = [r for r in results if r]
                 if valid_results:
@@ -2197,7 +2204,7 @@ with tab1:
         sj_api_obj = st.session_state.get('sj_api', None)
 
         # 將 max_workers 從 2 提升到 6，增加同時分析的股票數量
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy, sj_logged_in_flag, sj_api_obj): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
@@ -2392,8 +2399,8 @@ with tab1:
                         if not row_data.empty:
                             st.session_state.ignored_data_cache[c] = row_data.iloc[0].to_dict()
                             
-                    # --- 新增：資源優化，忽略快取超過 20 檔就刪除最舊的 ---
-                    while len(st.session_state.ignored_data_cache) > 20:
+                    # --- 新增：資源優化，忽略快取超過 5 檔就刪除最舊的 ---
+                    while len(st.session_state.ignored_data_cache) > 5:
                         oldest_key = next(iter(st.session_state.ignored_data_cache))
                         del st.session_state.ignored_data_cache[oldest_key]
                     # ----------------------------------------------------
@@ -2483,7 +2490,7 @@ with tab1:
                                 if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
                                 return res
 
-                            with ThreadPoolExecutor(max_workers=4) as executor:
+                            with ThreadPoolExecutor(max_workers=2) as executor:
                                 results = list(executor.map(_replenish_worker, remaining_to_fetch))
                                 valid_results = [r for r in results if r]
                                 if valid_results:
@@ -2504,7 +2511,7 @@ with tab1:
                 # 找出還沒在畫面上、沒被刪除、且還沒被快取的後補股票
                 if c_source == 'upload' and c_code not in st.session_state.ignored_stocks and c_code not in existing_codes and c_code not in st.session_state.get('prefetch_cache', {}):
                     prefetch_targets.append(cand)
-                if len(prefetch_targets) >= 3: # 隨時保持 3 檔庫存
+                if len(prefetch_targets) >= 2: # 隨時保持 2 檔庫存
                     break
                     
             if prefetch_targets:
@@ -2523,8 +2530,8 @@ with tab1:
                 def bg_prefetch_task(targets):
                     for c in targets:
                         t_code, t_name, t_src, t_extra = c
-                        # 資源優化：預載快取最多只保留 5 檔，避免撐爆記憶體
-                        if len(st.session_state.get('prefetch_cache', {})) >= 5:
+                        # 資源優化：預載快取最多只保留 2 檔，避免撐爆記憶體
+                        if len(st.session_state.get('prefetch_cache', {})) >= 2:
                             break
                             
                         if t_code in st.session_state.get('prefetch_cache', {}): continue
@@ -2616,7 +2623,7 @@ with tab1:
                     )
                 
                 # 同樣開啟多執行緒處理獨立分析 (建議 max_workers 設為 4 避免記憶體超載)
-                with ThreadPoolExecutor(max_workers=4) as executor:
+                with ThreadPoolExecutor(max_workers=2) as executor:
                     results = list(executor.map(_indep_worker, indep_selection))
                     indep_data = [res for res in results if res]
                         
