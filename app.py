@@ -2010,11 +2010,14 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
             
         if fetch_tasks:
             def _fetch_worker(task):
+                time.sleep(0.1) # 加入微小緩衝防 API 封鎖
                 t_code, t_name, t_src, t_ord, t_rnk = task
                 res = fetch_stock_data_raw(t_code, t_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
                 if res: res.update({'_source': t_src, '_order': t_ord, '_source_rank': t_rnk})
                 return res
-            with ThreadPoolExecutor(max_workers=3) as executor:
+                
+            # 將 max_workers 從 3 提升到 6
+            with ThreadPoolExecutor(max_workers=6) as executor:
                 results = list(executor.map(_fetch_worker, fetch_tasks))
                 valid_results = [r for r in results if r]
                 if valid_results:
@@ -2448,14 +2451,16 @@ with tab1:
                      
                 if cand_to_fetch:
                     with st.spinner(f"正在遞補 {len(cand_to_fetch)} 檔股票..."):
-                        # 🚀 加入多執行緒平行處理，大幅降低 API 等待時間
+                        # 🚀 加入多執行緒平行處理，並設定微小緩衝
                         def _replenish_worker(cand):
+                            time.sleep(0.1) # 加入微小緩衝防 API 封鎖
                             t_code, t_name, t_src, t_extra = cand
                             res = fetch_stock_data_raw(t_code, t_name, t_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
                             if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
                             return res
 
-                        with ThreadPoolExecutor(max_workers=3) as executor:
+                        # 將 max_workers 從 3 提升到 6
+                        with ThreadPoolExecutor(max_workers=6) as executor:
                             results = list(executor.map(_replenish_worker, cand_to_fetch))
                             valid_results = [r for r in results if r]
                             
