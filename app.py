@@ -1181,10 +1181,17 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
         df_save = df.fillna("") 
         data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags}
         
+        # 本地存檔
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        
+        # 速度優化：將雲端存檔放入背景執行緒，避免卡住 UI 畫面
         if "gsheet_api_url" in st.secrets:
             json_str = json.dumps(data_to_save, ensure_ascii=False)
-            requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
+            def bg_save():
+                try: requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
+                except: pass
+            import threading
+            threading.Thread(target=bg_save, daemon=True).start()
     except: pass
 
 def load_data_cache():
@@ -1266,6 +1273,7 @@ if 'cloud_url_input' not in st.session_state: st.session_state.cloud_url_input =
 if 'search_multiselect' not in st.session_state: st.session_state.search_multiselect = load_search_cache()
 if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = {}
+if 'ignored_data_cache' not in st.session_state: st.session_state.ignored_data_cache = {} # 新增這行：忽略資料快取
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
@@ -1965,7 +1973,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
     }
 
 # ==========================================
-# 處理待加回的忽略股票 (防止 NameError)
+# 處理待加回的忽略股票 (防止 NameError & 提速)
 # ==========================================
 if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
     unignored_codes = st.session_state.pending_unignore
@@ -1980,22 +1988,38 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
     sj_api_obj = st.session_state.get('sj_api', None)
     
     with st.spinner("正在將股票加回分析區..."):
+        cached_rows = []
+        fetch_tasks = []
         for c_code in unignored_codes:
-            # 尋找原始的來源與順序，確保插回正確位置
             cand_info = next((c for c in st.session_state.all_candidates if c[0] == c_code), None)
-            if cand_info:
-                c_name, c_source, c_order = cand_info[1], cand_info[2], cand_info[3]
-                c_rank = 1 if c_source == 'upload' else 2
+            c_name = cand_info[1] if cand_info else get_stock_name_online(c_code)
+            c_source = cand_info[2] if cand_info else 'search'
+            c_order = cand_info[3] if cand_info else 999
+            c_rank = 1 if c_source == 'upload' else 2
+            
+            # 速度優化：如果有暫存的分析資料，直接取用，省去等待
+            if c_code in st.session_state.get('ignored_data_cache', {}):
+                cached_row = st.session_state.ignored_data_cache.pop(c_code)
+                cached_row.update({'_source': c_source, '_order': c_order, '_source_rank': c_rank})
+                cached_rows.append(cached_row)
             else:
-                c_name = get_stock_name_online(c_code)
-                c_source, c_order, c_rank = 'search', 999, 2
-                
-            data = fetch_stock_data_raw(c_code, c_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
-            if data:
-                data.update({'_source': c_source, '_order': c_order, '_source_rank': c_rank})
-                st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
-                
-        # 加回後依照原始屬性重新排序
+                fetch_tasks.append((c_code, c_name, c_source, c_order, c_rank))
+
+        if cached_rows:
+            st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(cached_rows)], ignore_index=True)
+            
+        if fetch_tasks:
+            def _fetch_worker(task):
+                t_code, t_name, t_src, t_ord, t_rnk = task
+                res = fetch_stock_data_raw(t_code, t_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
+                if res: res.update({'_source': t_src, '_order': t_ord, '_source_rank': t_rnk})
+                return res
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                results = list(executor.map(_fetch_worker, fetch_tasks))
+                valid_results = [r for r in results if r]
+                if valid_results:
+                    st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(valid_results)], ignore_index=True)
+
         if not st.session_state.stock_data.empty and '_source_rank' in st.session_state.stock_data.columns:
             st.session_state.stock_data = st.session_state.stock_data.sort_values(by=['_source_rank', '_order']).reset_index(drop=True)
             
@@ -2353,30 +2377,45 @@ with tab1:
                 to_remove = edited_df[edited_df["移除"] == True]
                 if not to_remove.empty:
                     remove_codes = to_remove["代號"].unique()
-                    for c in remove_codes: st.session_state.ignored_stocks.add(str(c))
+                    
+                    # 速度優化：將刪除的股票資料快取起來，下次加回瞬間完成
+                    for c in remove_codes: 
+                        st.session_state.ignored_stocks.add(str(c))
+                        row_data = st.session_state.stock_data[st.session_state.stock_data["代號"] == c]
+                        if not row_data.empty:
+                            st.session_state.ignored_data_cache[c] = row_data.iloc[0].to_dict()
+                    
                     st.session_state.stock_data = st.session_state.stock_data[~st.session_state.stock_data["代號"].isin(remove_codes)]
                     
                     upload_count = len(st.session_state.stock_data[st.session_state.stock_data['_source'] == 'upload'])
                     needed = st.session_state.limit_rows - upload_count
                     
                     if needed > 0 and st.session_state.all_candidates:
-                        replenished_count = 0
                         existing_codes = set(st.session_state.stock_data['代號'].astype(str))
                         futures_copy = dict(st.session_state.futures_list)
                         notes_copy = dict(st.session_state.saved_notes)
                         code_map_copy, _ = load_local_stock_names()
                         
+                        cand_to_fetch = []
                         for cand in st.session_state.all_candidates:
                              c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
                              if c_source != 'upload' or c_code in st.session_state.ignored_stocks or c_code in existing_codes: continue
+                             cand_to_fetch.append((c_code, c_name, c_source, c_extra))
+                             if len(cand_to_fetch) >= needed: break
                              
-                             data = fetch_stock_data_raw(c_code, c_name, c_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
-                             if data:
-                                 data.update({'_source': c_source, '_order': c_extra, '_source_rank': 1})
-                                 st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame([data])], ignore_index=True)
-                                 existing_codes.add(c_code)
-                                 replenished_count += 1
-                             if replenished_count >= needed: break
+                        # 速度優化：若需遞補，改用多執行緒平行處理
+                        if cand_to_fetch:
+                            def _replenish_worker(cand):
+                                t_code, t_name, t_src, t_extra = cand
+                                res = fetch_stock_data_raw(t_code, t_name, t_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
+                                if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
+                                return res
+
+                            with ThreadPoolExecutor(max_workers=3) as executor:
+                                results = list(executor.map(_replenish_worker, cand_to_fetch))
+                                valid_results = [r for r in results if r]
+                                if valid_results:
+                                    st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(valid_results)], ignore_index=True)
                     
                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                     trigger_rerun = True
