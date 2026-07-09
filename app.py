@@ -2423,7 +2423,7 @@ with tab1:
                                                 st.session_state.stock_data.at[j, '戰略備註'] = nn
                                                 st.session_state.saved_notes[c_code] = n_note[len(b_auto):] if b_auto and n_note.startswith(b_auto) else f"[M]{n_note}"
                                         
-                                        st.session_state.stock_data.at[j, '狀態'] = recalculate_row(st.session_state.stock_data.iloc[j], points_map)
+                                        st.session_state.stock_data.at[j, '狀態'] = recalculate_row(st.session_state.stock_data.loc[j], points_map)
                                     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                                     trigger_rerun = True
                             break
