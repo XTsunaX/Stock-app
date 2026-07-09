@@ -2173,7 +2173,8 @@ with tab1:
         code_map_copy, _ = load_local_stock_names()
 
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj):
-            time.sleep(random.uniform(0.5, 1.5))
+            # 將原本 0.5~1.5 秒的長時間延遲，改為 0.1 秒的微小緩衝以防 API 封鎖
+            time.sleep(0.1)
             try: return (t_code, t_source, t_extra, fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj))
             except Exception: return (t_code, t_source, t_extra, None)
 
@@ -2186,11 +2187,11 @@ with tab1:
             if source == 'upload': upload_current += 1
             seen.add((code, source))
 
-        # 提前在主執行緒取出 session_state
         sj_logged_in_flag = st.session_state.get('sj_logged_in', False)
         sj_api_obj = st.session_state.get('sj_api', None)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        # 將 max_workers 從 2 提升到 6，增加同時分析的股票數量
+        with ThreadPoolExecutor(max_workers=6) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy, sj_logged_in_flag, sj_api_obj): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
@@ -2527,16 +2528,19 @@ with tab1:
             sj_api_obj = st.session_state.get('sj_api', None)
             
             with st.spinner("正在獨立分析..."):
-                for i, item in enumerate(indep_selection):
+                def _indep_worker(item):
                     parts = item.split(' ', 1)
                     q_code = parts[0]
                     q_name = parts[1] if len(parts) > 1 else ""
-                    data = fetch_stock_data_raw(
+                    return fetch_stock_data_raw(
                         q_code, q_name, None, f_set, st.session_state.saved_notes, 
                         c_map_q, sj_logged, sj_api_obj
                     )
-                    if data:
-                        indep_data.append(data)
+                
+                # 同樣開啟多執行緒處理獨立分析
+                with ThreadPoolExecutor(max_workers=6) as executor:
+                    results = list(executor.map(_indep_worker, indep_selection))
+                    indep_data = [res for res in results if res]
                         
             if indep_data:
                 df_indep = pd.DataFrame(indep_data)
