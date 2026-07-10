@@ -1312,6 +1312,13 @@ now_tw = datetime.now(tz_tw)
 if 'cal_year' not in st.session_state: st.session_state.cal_year = now_tw.year
 if 'cal_month' not in st.session_state: st.session_state.cal_month = now_tw.month
 
+@st.cache_resource
+def init_shioaji_connection(api_key, secret_key):
+    """使用 st.cache_resource 全域共享同一個永豐連線實例，避免重複登入"""
+    api = sj.Shioaji(simulation=False)
+    api.login(api_key, secret_key)
+    return api
+
 if 'font_size' not in st.session_state: st.session_state.font_size = saved_config.get('font_size', 15)
 if 'limit_rows' not in st.session_state: st.session_state.limit_rows = saved_config.get('limit_rows', 5)
 if 'auto_update_last_row' not in st.session_state: st.session_state.auto_update_last_row = saved_config.get('auto_update', True)
@@ -1325,14 +1332,13 @@ if 'sj_secret' not in st.session_state:
 if 'remember_sj' not in st.session_state: 
     st.session_state.remember_sj = True if 'sj_key' in st.secrets else saved_config.get('remember_sj', False)
 
-if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('sj_logged_in', False):
+if sj and st.session_state.remember_sj and st.session_state.sj_key:
     try:
-        if 'sj_api' not in st.session_state:
-            st.session_state.sj_api = sj.Shioaji(simulation=False)
-        st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
+        # 改調用快取函式，若已連線則直接重用物件，不再向永豐發送重複登入請求
+        st.session_state.sj_api = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
         st.session_state.sj_logged_in = True
     except:
-        pass
+        st.session_state.sj_logged_in = False
 
 @st.cache_data
 def load_local_stock_names():
@@ -1412,9 +1418,8 @@ with st.sidebar:
             
             if st.button("登入 Shioaji"):
                 try:
-                    if 'sj_api' not in st.session_state:
-                        st.session_state.sj_api = sj.Shioaji(simulation=False)
-                    st.session_state.sj_api.login(sj_api_key, sj_secret)
+                    # 手動登入同樣導入快取機制，確保帳密相同時維持單一連線
+                    st.session_state.sj_api = init_shioaji_connection(sj_api_key, sj_secret)
                     st.session_state.sj_logged_in = True
                     
                     st.session_state.sj_key = sj_api_key
