@@ -1188,7 +1188,8 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
     try:
         # 只在主執行緒做最輕量的複製，避免鎖死 UI
         df_save = df.fillna("").copy()
-        _DROP_COLS = ['_points', '_ma5', '_auto_note', '_source', '_order', '_source_rank']
+        # 修正：移除掉 _points, _source, _source_rank 等，確保重新載入時排序與資料皆正常，防止異常遞補
+        _DROP_COLS = ['_auto_note'] 
         df_save.drop(columns=[c for c in _DROP_COLS if c in df_save.columns], inplace=True)
         ignored_list = list(ignored_set)
         # 快取完整備註供重整後還原（須在 drop 內部欄位前執行）
@@ -1752,6 +1753,10 @@ def recalculate_row(row, points_map):
     except: return status
 
 def generate_note_from_points(points, manual_note, show_3d):
+    # 修正：加入安全判斷，防止重整或合併時產生 NaN 導致的 TypeError
+    if not isinstance(points, list):
+        points = []
+        
     display_candidates = []
     target_tags = ['前高', '前低', '昨高', '昨低', '今高', '今低']
     for p in points:
@@ -2566,6 +2571,10 @@ with tab1:
                                 if valid_results:
                                     st.session_state.stock_data = pd.concat([st.session_state.stock_data, pd.DataFrame(valid_results)], ignore_index=True)
                         
+                        # 修正：強制依據來源優先權進行排序，讓自動遞補的新股票排在查詢的股票之前
+                        if '_source_rank' in st.session_state.stock_data.columns:
+                            st.session_state.stock_data = st.session_state.stock_data.sort_values(by=['_source_rank', '_order']).reset_index(drop=True)
+
                         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                         st.rerun() # 遞補完成，立刻更新畫面
 
