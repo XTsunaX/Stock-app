@@ -239,7 +239,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             resample_map = {'5m': '5min', '15m': '15min', '60m': '60min'}
             if interval in resample_map:
                 df = df.copy()
-                st.session_state['sj_raw_1m_debug'] = df.copy()
                 if is_future:
                     # 期貨：1分K為「結束時間」，需用 closed='right' 避免整點K棒吸收到上一小時的高低點
                     if interval == '60m':
@@ -1185,20 +1184,37 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
     if fibo_tags is None:
         fibo_tags = st.session_state.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
     try:
-        df_save = df.fillna("") 
-        data_to_save = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": list(ignored_set), "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags}
+        # 只在主執行緒做最輕量的複製，避免鎖死 UI
+        df_save = df.fillna("").copy()
+        ignored_list = list(ignored_set)
         
-        # 本地存檔
-        with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        # 本地存檔維持在主執行緒 (若不想寫入本地也可將此段一併移入背景)
+        data_to_save_local = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": ignored_list, "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags}
+        with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: 
+            json.dump(data_to_save_local, f, ensure_ascii=False, indent=4)
         
-        # 速度優化：將雲端存檔放入背景執行緒，避免卡住 UI 畫面
+        # 記憶體與速度終極優化：將「轉換 Dict」與「轉 JSON 字串」等高耗 RAM 動作全部移入背景執行緒
         if "gsheet_api_url" in st.secrets:
-            json_str = json.dumps(data_to_save, ensure_ascii=False)
-            def bg_save():
-                try: requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
+            def bg_save(bg_df, bg_ignored, bg_cands, bg_notes, bg_tags):
+                try:
+                    # 在背景執行緒中進行資料轉換，避免主畫面卡頓與記憶體瞬間暴增
+                    data_to_save = {
+                        "stock_data": bg_df.to_dict(orient='records'), 
+                        "ignored_stocks": bg_ignored, 
+                        "all_candidates": bg_cands, 
+                        "saved_notes": bg_notes, 
+                        "fibo_tags": bg_tags
+                    }
+                    json_str = json.dumps(data_to_save, ensure_ascii=False)
+                    requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
                 except: pass
+                finally:
+                    # 強制回收背景執行緒產生的巨大 JSON 與 Dict 記憶體
+                    import gc
+                    gc.collect()
+
             import threading
-            threading.Thread(target=bg_save, daemon=True).start()
+            threading.Thread(target=bg_save, args=(df_save, ignored_list, candidates, saved_notes, fibo_tags), daemon=True).start()
     except: pass
 
 def load_data_cache():
