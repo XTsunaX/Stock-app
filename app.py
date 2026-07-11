@@ -1207,7 +1207,7 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
                         "ignored_stocks": bg_ignored, 
                         "all_candidates": bg_cands, 
                         "saved_notes": bg_notes, 
-                        "fibo_tags": bg_tags
+                        "fibo_tags": bg_tags,
                         "cal_overrides": st.session_state.get('cal_overrides', pd.DataFrame()).to_dict(orient='records')
                     }
                     json_str = json.dumps(data_to_save, ensure_ascii=False)
