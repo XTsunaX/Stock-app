@@ -967,7 +967,7 @@ def fetch_and_parse_pdf(pdf_url):
             # 記憶體優化：最多只轉譯前 2 頁，並將解析度降到 72 dpi，防止大檔撐爆記憶體
             for page_idx in range(min(len(doc), 2)):
                 page = doc[page_idx]
-                pix = page.get_pixmap(dpi=72)
+                pix = page.get_pixmap(dpi=100)
                 img_bytes = io.BytesIO(pix.tobytes("png"))
                 img_obj = Image.open(img_bytes)
                 img_obj.load()
