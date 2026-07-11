@@ -1643,7 +1643,9 @@ def apply_tick_rules(price):
         tick = get_tick_size(p)
         rounded = (Decimal(str(p)) / Decimal(str(tick))).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal(str(tick))
         return float(rounded)
-    except: return price
+    except:
+        try: return float(price)
+        except: return 0.0
 
 def calculate_limits(price):
     try:
