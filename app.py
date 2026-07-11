@@ -1348,7 +1348,7 @@ if 'sj_secret' not in st.session_state:
 if 'remember_sj' not in st.session_state: 
     st.session_state.remember_sj = True if 'sj_key' in st.secrets else saved_config.get('remember_sj', False)
 
-if sj and st.session_state.remember_sj and st.session_state.sj_key:
+if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('manual_logout', False):
     try:
         # 改調用快取函式，若已連線則直接重用物件，不再向永豐發送重複登入請求
         st.session_state.sj_api = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
@@ -1405,21 +1405,22 @@ with st.sidebar:
             with col_logout:
                 if st.button("登出", key="btn_logout_sj", use_container_width=True):
                     st.session_state.sj_logged_in = False
-                    st.session_state.remember_sj = False # 關閉自動登入
-                    st.session_state.sj_key = "" # 清空畫面上的 Key
-                    st.session_state.sj_secret = ""
+                    st.session_state.manual_logout = True # 標記為手動登出，阻擋重整時自動登入
+                    
                     try: 
                         st.session_state.sj_api.logout()
-                        init_shioaji_connection.clear() # 徹底清除快取中的連線物件
+                        init_shioaji_connection.clear() 
                     except: pass
                     
-                    # 同步更新 config 檔案，確保下次重整不會再被自動登入
+                    # 保持儲存現有的 Key 與記住狀態
                     save_config(
                         st.session_state.font_size, 
                         st.session_state.limit_rows, 
                         st.session_state.auto_update_last_row, 
                         st.session_state.update_delay_sec, 
-                        "", "", False
+                        st.session_state.sj_key, 
+                        st.session_state.sj_secret, 
+                        st.session_state.remember_sj
                     )
                     st.rerun()
             with col_relogin:
@@ -1449,7 +1450,7 @@ with st.sidebar:
             
             if st.button("登入 Shioaji"):
                 try:
-                    # 手動登入同樣導入快取機制，確保帳密相同時維持單一連線
+                    st.session_state.manual_logout = False # 解除手動登出標記
                     st.session_state.sj_api = init_shioaji_connection(sj_api_key, sj_secret)
                     st.session_state.sj_logged_in = True
                     
