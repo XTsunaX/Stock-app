@@ -1405,20 +1405,35 @@ with st.sidebar:
             with col_logout:
                 if st.button("登出", key="btn_logout_sj", use_container_width=True):
                     st.session_state.sj_logged_in = False
-                    try: st.session_state.sj_api.logout()
+                    st.session_state.remember_sj = False # 關閉自動登入
+                    st.session_state.sj_key = "" # 清空畫面上的 Key
+                    st.session_state.sj_secret = ""
+                    try: 
+                        st.session_state.sj_api.logout()
+                        init_shioaji_connection.clear() # 徹底清除快取中的連線物件
                     except: pass
+                    
+                    # 同步更新 config 檔案，確保下次重整不會再被自動登入
+                    save_config(
+                        st.session_state.font_size, 
+                        st.session_state.limit_rows, 
+                        st.session_state.auto_update_last_row, 
+                        st.session_state.update_delay_sec, 
+                        "", "", False
+                    )
                     st.rerun()
             with col_relogin:
                 relogin_clicked = st.button("快速重新登入", key="btn_relogin_sj", use_container_width=True)
                 
-            # 將訊息顯示區塊放在 columns 之外，寬度即可橫跨延伸至兩個按鈕下方
             msg_placeholder = st.empty()
             
             if relogin_clicked:
                 try:
                     st.session_state.sj_api.logout()
-                    time.sleep(0.5)  # 給予一點緩衝時間確保連線確實斷開
-                    st.session_state.sj_api.login(st.session_state.sj_key, st.session_state.sj_secret)
+                    init_shioaji_connection.clear() # 必須清除快取，否則只會拿到舊的連線物件
+                    time.sleep(0.5)
+                    
+                    st.session_state.sj_api = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
                     st.session_state.sj_logged_in = True
                     msg_placeholder.success("✅ 重新登入成功！")
                     time.sleep(0.5)
