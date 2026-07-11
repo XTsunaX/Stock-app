@@ -1330,7 +1330,6 @@ if 'cal_month' not in st.session_state: st.session_state.cal_month = now_tw.mont
 
 @st.cache_resource
 def init_shioaji_connection(api_key, secret_key):
-    """使用 st.cache_resource 全域共享同一個永豐連線實例，避免重複登入"""
     api = sj.Shioaji(simulation=False)
     api.login(api_key, secret_key)
     return api
@@ -2535,52 +2534,6 @@ with tab1:
                         
                         save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
                         st.rerun() # 遞補完成，立刻更新畫面
-
-        # ==========================================
-        # 🚀 背景非同步預載系統 (極致提速 0 秒遞補)
-        # ==========================================
-        if st.session_state.all_candidates:
-            existing_codes = set(st.session_state.stock_data['代號'].astype(str)) if not st.session_state.stock_data.empty else set()
-            
-            prefetch_targets = []
-            for cand in st.session_state.all_candidates:
-                c_code, c_name, c_source, c_extra = str(cand[0]), cand[1], cand[2], cand[3]
-                # 找出還沒在畫面上、沒被刪除、且還沒被快取的後補股票
-                if c_source == 'upload' and c_code not in st.session_state.ignored_stocks and c_code not in existing_codes and c_code not in st.session_state.get('prefetch_cache', {}):
-                    prefetch_targets.append(cand)
-                if len(prefetch_targets) >= 2: # 隨時保持 2 檔庫存
-                    break
-                    
-            if prefetch_targets:
-                import threading
-                try:
-                    from streamlit.runtime.scriptrunner import add_script_run_ctx
-                except ImportError:
-                    add_script_run_ctx = None
-                
-                f_copy = dict(st.session_state.futures_list)
-                n_copy = dict(st.session_state.get('saved_notes', {}))
-                c_map_copy, _ = load_local_stock_names()
-                sj_log = st.session_state.get('sj_logged_in', False)
-                sj_api_obj = st.session_state.get('sj_api', None)
-                
-                def bg_prefetch_task(targets):
-                    for c in targets:
-                        t_code, t_name, t_src, t_extra = c
-                        # 資源優化：預載快取最多只保留 2 檔，避免撐爆記憶體
-                        if len(st.session_state.get('prefetch_cache', {})) >= 2:
-                            break
-                            
-                        if t_code in st.session_state.get('prefetch_cache', {}): continue
-                        time.sleep(0.5) 
-                        res = fetch_stock_data_raw(t_code, t_name, t_extra, f_copy, n_copy, c_map_copy, sj_log, sj_api_obj)
-                        if res:
-                            res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
-                            st.session_state.prefetch_cache[t_code] = res
-                            
-                thread = threading.Thread(target=bg_prefetch_task, args=(prefetch_targets,), daemon=True)
-                if add_script_run_ctx: add_script_run_ctx(thread)
-                thread.start()
 
         
         st.markdown("---")
