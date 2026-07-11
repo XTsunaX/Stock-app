@@ -969,10 +969,12 @@ def fetch_and_parse_pdf(pdf_url):
                 page = doc[page_idx]
                 pix = page.get_pixmap(dpi=72)
                 img_bytes = io.BytesIO(pix.tobytes("png"))
-                img = Image.open(img_bytes)
-                img.load() 
-                images.append(img)
-                img_bytes.close() 
+                img_obj = Image.open(img_bytes)
+                img_obj.load()
+                buf = io.BytesIO()
+                img_obj.save(buf, format='PNG')
+                images.append(buf.getvalue())
+                del img_obj
             doc.close()  
         except Exception as e:
             pass
@@ -1186,6 +1188,8 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
     try:
         # 只在主執行緒做最輕量的複製，避免鎖死 UI
         df_save = df.fillna("").copy()
+        _DROP_COLS = ['_points', '_ma5', '_auto_note', '_source', '_order', '_source_rank']
+        df_save.drop(columns=[c for c in _DROP_COLS if c in df_save.columns], inplace=True)
         ignored_list = list(ignored_set)
         
         # 本地存檔維持在主執行緒 (若不想寫入本地也可將此段一併移入背景)
@@ -1204,6 +1208,7 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
                         "all_candidates": bg_cands, 
                         "saved_notes": bg_notes, 
                         "fibo_tags": bg_tags
+                        "cal_overrides": st.session_state.get('cal_overrides', pd.DataFrame()).to_dict(orient='records')
                     }
                     json_str = json.dumps(data_to_save, ensure_ascii=False)
                     requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
@@ -1355,7 +1360,7 @@ if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.se
     except:
         st.session_state.sj_logged_in = False
 
-@st.cache_data
+@st.cache_data(max_entries=1)
 def load_local_stock_names():
     code_map = {}
     name_map = {}
@@ -1536,7 +1541,6 @@ with st.sidebar:
             if df_goodinfo is not None and not df_goodinfo.empty:
                 # 🟢 變更：同時將 DataFrame 存入 session_state 供戰略室直接讀取
                 st.session_state['goodinfo_df'] = df_goodinfo.astype(str)
-                st.session_state['goodinfo_csv'] = df_goodinfo.to_csv(index=False).encode('utf-8-sig')
                 st.session_state['goodinfo_fetch_failed'] = False
                 st.success("💡 抓取成功並已載入暫存！\n\n若要分析此數據，請確保主畫面「未上傳檔案」且「未輸入雲端連結」，直接點擊主畫面的『🚀 執行分析』即可。")
             else:
@@ -1558,10 +1562,10 @@ with st.sidebar:
             st.link_button("🌐 直接連結", goodinfo_url)
                     
     # 保留原有的下載按鈕
-    if 'goodinfo_csv' in st.session_state:
+    if 'goodinfo_df' in st.session_state:
         st.download_button(
             label="💾 下載 Report.csv",
-            data=st.session_state['goodinfo_csv'],
+            data=st.session_state['goodinfo_df'].to_csv(index=False).encode('utf-8-sig'),
             file_name="Report.csv",
             mime="text/csv",
             width='stretch'
@@ -1569,7 +1573,6 @@ with st.sidebar:
     st.link_button("🚨 上市處置有價證券公告", "https://www.twse.com.tw/zh/announcement/punish.html", width='stretch')
     st.link_button("🚨 上櫃處置有價證券公告", "https://www.tpex.org.tw/zh-tw/announce/market/disposal.html", width='stretch')
 
-@st.cache_data(ttl=86400)
 @st.cache_data(ttl=86400)
 def fetch_futures_list():
     try:
@@ -3885,7 +3888,8 @@ with tab_db:
         st.markdown("#### 📑 永豐期貨盤後籌碼自動化工具")
         
         if st.button("🔄 刷新最新報告清單"):
-            st.cache_data.clear()
+            get_report_list.clear()        # 只清報告清單
+            fetch_and_parse_pdf.clear()   # 只清 PDF 快取
             st.rerun()
 
         reports = get_report_list()
