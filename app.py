@@ -2193,11 +2193,8 @@ with tab1:
                 st.toast("已直接載入 Goodinfo 週轉率排行暫存資料進行分析！", icon="🔄")
                 
         except Exception as e: st.error(f"讀取失敗: {e}")
-        if search_selection:
-            for i, item in enumerate(search_selection):
-                parts = item.split(' ', 1)
-                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', i))
-
+        
+        # 先處理上傳/資料帶入的股票 (優先權高)
         if not df_up.empty:
             df_up.columns = df_up.columns.astype(str).str.strip()
             c_col = next((c for c in df_up.columns if "代號" in str(c)), None)
@@ -2221,6 +2218,14 @@ with tab1:
                     if n.lower() == 'nan': n = ""
                     targets.append((c_raw, n, 'upload', count))
                     count += 1
+
+        # 再處理快速查詢的股票，確保其排序在後面
+        if search_selection:
+            for i, item in enumerate(search_selection):
+                parts = item.split(' ', 1)
+                targets.append((parts[0], parts[1] if len(parts) > 1 else "", 'search', i))
+
+        st.session_state.all_candidates = targets
 
         st.session_state.all_candidates = targets
         seen = set()
@@ -2287,7 +2292,11 @@ with tab1:
         status_text.empty()
         
         if existing_data:
-            st.session_state.stock_data = pd.DataFrame(list(existing_data.values()))
+            df_temp = pd.DataFrame(list(existing_data.values()))
+            # 確保寫入 stock_data 時，嚴格按照來源優先權與順序排序
+            if '_source_rank' in df_temp.columns:
+                df_temp = df_temp.sort_values(by=['_source_rank', '_order']).reset_index(drop=True)
+            st.session_state.stock_data = df_temp
             save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
             
         # 強制清除大型臨時變數並回收記憶體
