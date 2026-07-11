@@ -1191,24 +1191,31 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
         _DROP_COLS = ['_points', '_ma5', '_auto_note', '_source', '_order', '_source_rank']
         df_save.drop(columns=[c for c in _DROP_COLS if c in df_save.columns], inplace=True)
         ignored_list = list(ignored_set)
+        # 快取完整備註供重整後還原（須在 drop 內部欄位前執行）
+        cached_notes = {}
+        for _, row in df_save.iterrows():
+            code = str(row.get('代號', '')).strip()
+            note = str(row.get('戰略備註', '')).strip()
+            auto = str(row.get('_auto_note', '')).strip()
+            if code:
+                cached_notes[code] = {'note': note, 'auto': auto}
         
         # 本地存檔維持在主執行緒 (若不想寫入本地也可將此段一併移入背景)
-        data_to_save_local = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": ignored_list, "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags}
+        data_to_save_local = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": ignored_list, "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags, "cached_notes": cached_notes}
         with open(DATA_CACHE_FILE, "w", encoding='utf-8') as f: 
             json.dump(data_to_save_local, f, ensure_ascii=False, indent=4)
         
         # 記憶體與速度終極優化：將「轉換 Dict」與「轉 JSON 字串」等高耗 RAM 動作全部移入背景執行緒
         if "gsheet_api_url" in st.secrets:
-            def bg_save(bg_df, bg_ignored, bg_cands, bg_notes, bg_tags):
+            def bg_save(bg_df, bg_ignored, bg_cands, bg_notes, bg_tags, bg_cn):
                 try:
-                    # 在背景執行緒中進行資料轉換，避免主畫面卡頓與記憶體瞬間暴增
                     data_to_save = {
                         "stock_data": bg_df.to_dict(orient='records'), 
                         "ignored_stocks": bg_ignored, 
                         "all_candidates": bg_cands, 
                         "saved_notes": bg_notes, 
                         "fibo_tags": bg_tags,
-                        "cal_overrides": st.session_state.get('cal_overrides', pd.DataFrame()).to_dict(orient='records')
+                        "cached_notes": bg_cn
                     }
                     json_str = json.dumps(data_to_save, ensure_ascii=False)
                     requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
@@ -1219,7 +1226,7 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
                     gc.collect()
 
             import threading
-            threading.Thread(target=bg_save, args=(df_save, ignored_list, candidates, saved_notes, fibo_tags), daemon=True).start()
+            threading.Thread(target=bg_save, args=(df_save, ignored_list, candidates, saved_notes, fibo_tags, cached_notes), daemon=True).start()
     except: pass
 
 def load_data_cache():
@@ -1233,7 +1240,7 @@ def load_data_cache():
                 candidates = data.get('all_candidates', [])
                 saved_notes = data.get('saved_notes', {}) 
                 fibo_tags = data.get('fibo_tags', [])
-                return df, ignored, candidates, saved_notes, fibo_tags
+                return df, ignored, candidates, saved_notes, fibo_tags, data.get('cached_notes', {})
         except: pass
 
     if os.path.exists(DATA_CACHE_FILE):
@@ -1244,9 +1251,9 @@ def load_data_cache():
             candidates = data.get('all_candidates', [])
             saved_notes = data.get('saved_notes', {}) 
             fibo_tags = data.get('fibo_tags', [])
-            return df, ignored, candidates, saved_notes, fibo_tags
-        except: return pd.DataFrame(), set(), [], {}, []
-    return pd.DataFrame(), set(), [], {}, []
+            return df, ignored, candidates, saved_notes, fibo_tags, data.get('cached_notes', {})
+        except: return pd.DataFrame(), set(), [], {}, [], {}
+    return pd.DataFrame(), set(), [], {}, [], {}
 
 def load_url_history():
     if os.path.exists(URL_CACHE_FILE):
@@ -1285,12 +1292,13 @@ def save_search_cache(selected_items):
     except: pass
 
 if 'stock_data' not in st.session_state:
-    cached_df, cached_ignored, cached_candidates, cached_notes, cached_fibo_tags = load_data_cache()
+    cached_df, cached_ignored, cached_candidates, cached_saved_notes, cached_fibo_tags, cached_note_dict = load_data_cache()
     st.session_state.stock_data = cached_df
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
-    st.session_state.saved_notes = cached_notes
-    st.session_state.fibo_tags = cached_fibo_tags if cached_fibo_tags else load_config().get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
+    st.session_state.saved_notes = cached_saved_notes
+    st.session_state.fibo_tags = cached_fibo_tags if cached_fibo_tags else ...
+    st.session_state.cached_notes = cached_note_dict
 
 if 'ignored_stocks' not in st.session_state: st.session_state.ignored_stocks = set()
 if 'all_candidates' not in st.session_state: st.session_state.all_candidates = []
@@ -1303,6 +1311,8 @@ if 'saved_notes' not in st.session_state: st.session_state.saved_notes = {}
 if 'futures_list' not in st.session_state: st.session_state.futures_list = {}
 if 'ignored_data_cache' not in st.session_state: st.session_state.ignored_data_cache = {} # 新增這行：忽略資料快取
 if 'prefetch_cache' not in st.session_state: st.session_state.prefetch_cache = {} # 🚀 新增：預載快取
+if 'cached_notes' not in st.session_state: st.session_state.cached_notes = {}    
+
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
@@ -2311,12 +2321,22 @@ with tab1:
         df_display = df_all.reset_index(drop=True)
         
         for i, row in df_display.iterrows():
+            code = row['代號']
             points = row.get('_points', [])
-            manual = st.session_state.saved_notes.get(row['代號'], "")
-            new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
+            manual = st.session_state.saved_notes.get(code, "")
+        
+            if not points:
+                cached = st.session_state.get('cached_notes', {}).get(code, {})
+                if cached and cached.get('note'):
+                    new_full_note = cached['note']
+                    new_auto_note = cached.get('auto', '')
+                else:
+                    new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
+            else:
+                new_full_note, new_auto_note = generate_note_from_points(points, manual, show_3d_hilo)
+        
             df_display.at[i, "戰略備註"] = new_full_note
             df_display.at[i, "_auto_note"] = new_auto_note
-            # 將之前可能暫存於檔案中的圓點一併清除
             clean_name = row['名稱'].replace('🔴 ', '').replace('🟢 ', '').replace('⚪ ', '')
             df_display.at[i, "名稱"] = clean_name
 
