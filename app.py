@@ -457,9 +457,18 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
 
-                            # 用「這根K棒理論上的結束時間」判斷現在是否真的跨入下一根，而非單純比較起始時間，
-                            # 否則只要還沒到下一個整點就永遠被誤判成「該開新K棒」，每次刷新都會產生一根
-                            # 開=高=低=收=當下報價的假K棒，蓋掉這根K棒原本累積的真實開高低收
+                            # 新增：臨時狀況休市(如颱風)攔截，若已達開盤時間一段時間(如09:05)成交量仍為0，視為未開盤
+                            is_temporary_closed = False
+                            if ticker in ["TWF=F", "TMF=F"]:
+                                if (dt_time(8, 50) <= current_time < dt_time(13, 45)) and rt_vol == 0:
+                                    is_temporary_closed = True
+                                elif (current_time >= dt_time(15, 5) or current_time < dt_time(5, 0)) and rt_vol == 0:
+                                    is_temporary_closed = True
+                            else:
+                                if current_time >= dt_time(9, 5) and rt_vol == 0:
+                                    is_temporary_closed = True
+
+                            # 用「這根K棒理論上的結束時間」判斷現在是否真的跨入下一根...
                             bucket_minutes_map = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}
                             bucket_minutes = bucket_minutes_map.get(interval)
                             if bucket_minutes is not None:
@@ -467,17 +476,17 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             else:
                                 is_new_bucket = df.index[-1] < now_dt  # 日/週/月K 維持原判斷
 
-                            if is_before_open or is_market_closed_func(now_dt.date()):
+                            if is_before_open or is_market_closed_func(now_dt.date()) or is_temporary_closed:
                                 # 確認是否為「早晨尚未開盤」。若尚未開盤，快照為昨天資料，絕不能提早產生今天的K棒。
                                 is_morning_premarket = (current_time < dt_time(9, 0)) if ticker not in ["TWF=F", "TMF=F"] else (dt_time(5, 0) <= current_time < dt_time(8, 45))
                                 
-                                # 若歷史資料未到今天，且今天是交易日，且「不是早晨未開盤」，才補今天K棒 (例如期貨的13:45~15:00空窗)
-                                if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()) and not is_morning_premarket:
+                                # 若歷史資料未到今天，且今天是交易日，且「不是早晨未開盤」，且「非臨時休市」，才補今天K棒 (例如期貨的13:45~15:00空窗)
+                                if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()) and not is_morning_premarket and not is_temporary_closed:
                                     now_dt_naive = now_dt if interval in ["1d", "1wk", "1mo"] else datetime.now(tz_tw).replace(tzinfo=None)
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
                                     df = pd.concat([df, new_row])
                                 else:
-                                    # 未開盤/空窗/假日：只同步收盤價，不可更新高低 (避免扁平快照污染)
+                                    # 未開盤/空窗/假日/臨時休市：只同步收盤價，不可更新高低 (避免扁平快照污染)
                                     ref_high = rt_high if interval in ["1d", "1wk", "1mo"] else rt_price
                                     ref_low = rt_low if interval in ["1d", "1wk", "1mo"] else rt_price
                                     df.at[df.index[-1], 'Close'] = rt_price
@@ -553,9 +562,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     # 新增：未開盤時間攔截，防止重覆產生K線
                     current_time = datetime.now(tz_tw).time()
                     is_before_open = current_time < dt_time(9, 0)
+                    is_temporary_closed = current_time >= dt_time(9, 5) and rt_vol == 0
                     
                     if interval == "1d":
-                        if last_hist_date < today_date and not is_market_closed_func(now_tw.date()) and not is_before_open:
+                        if last_hist_date < today_date and not is_market_closed_func(now_tw.date()) and not is_before_open and not is_temporary_closed:
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[today_date])
                             df = pd.concat([df, new_row])
                         else:
@@ -566,7 +576,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     elif interval in ["1m", "5m", "15m", "60m"]:
                         now_dt_naive = now_tw.replace(tzinfo=None)
                         # 判斷最後一根K棒時間，若落後即時時間則追加一根最新的，否則直接更新最後一根
-                        if df.index[-1] < now_dt_naive and rt_price > 0 and not is_market_closed_func(now_tw.date()):
+                        if df.index[-1] < now_dt_naive and rt_price > 0 and not is_market_closed_func(now_tw.date()) and not is_temporary_closed:
                             new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
                             df = pd.concat([df, new_row])
                         else:
