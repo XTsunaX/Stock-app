@@ -228,6 +228,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             if is_future:
                 # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
                 df.index = df.index + pd.Timedelta(hours=9)
+                # 修正：將週末(六、日)的時間強制平移至星期一，避免週五夜盤被獨立切成一根異常K棒
+                shift_days = np.where(df.index.dayofweek == 5, 2, np.where(df.index.dayofweek == 6, 1, 0))
+                df.index = df.index + pd.to_timedelta(shift_days, unit='D')
                 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
