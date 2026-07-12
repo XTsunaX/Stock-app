@@ -155,8 +155,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 3. 呼叫官方 api.kbars
         kbars_dict = None
         
-        # 只有在天數大於 15 天 (通常是日K以上) 才使用分段抓取 (個股與期指皆適用)
-        if actual_lookback > 15:
+        # 只有在天數大於 15 天且為分K週期（短週期大資料量）才使用分段抓取，日K以上直接單次抓取速度最快且最穩
+        if actual_lookback > 15 and interval in ['1m', '5m', '15m', '60m']:
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
             chunks = []
@@ -417,8 +417,11 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     except (ValueError, AttributeError):
                         contract_snap = st.session_state.sj_api.Contracts.Futures.MXF.MXFR1
                 else:
-                    try: contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
-                    except: pass
+                    try: 
+                        contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
+                    except:
+                        try: contract_snap = getattr(st.session_state.sj_api.Contracts.Stocks, raw_code, None)
+                        except: pass
                 
                 if contract_snap:
                     snap = st.session_state.sj_api.snapshots([contract_snap])
@@ -430,10 +433,9 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
-                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常
                         try:
                             if ticker.startswith("^TWII") or ticker in ["TWF=F", "TMF=F"]:
-                                pass  # 指數與期貨交由後方利用「實際每日收盤資料(日盤)」計算昨收，不使用反推
+                                pass  
                             elif hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
                         except:
@@ -447,17 +449,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
                         if rt_price > 0:
-                            # 新增：未開盤前 / 期貨日盤收盤(13:45)~夜盤開盤(15:00)空窗 攔截
                             is_before_open = False
                             current_time = datetime.now(tz_tw).time()
                             if ticker in ["TWF=F", "TMF=F"]:
-                                # 修正期貨盤前定義：5:00~8:45為早晨盤前，13:45~15:00為日盤盤後空窗
                                 if (dt_time(5, 0) <= current_time < dt_time(8, 45)) or (dt_time(13, 45) <= current_time < dt_time(15, 0)):
                                     is_before_open = True
                             else:
                                 if current_time < dt_time(9, 0): is_before_open = True
 
-                            # 新增：臨時狀況休市(如颱風)攔截，若已達開盤時間一段時間(如09:05)成交量仍為0，視為未開盤
+                            # 新增：臨時狀況休市（如颱風天）攔截，若已過開盤時間且成交量為 0，視為休市不產生新 K 棒
                             is_temporary_closed = False
                             if ticker in ["TWF=F", "TMF=F"]:
                                 if (dt_time(8, 50) <= current_time < dt_time(13, 45)) and rt_vol == 0:
@@ -468,19 +468,17 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                                 if current_time >= dt_time(9, 5) and rt_vol == 0:
                                     is_temporary_closed = True
 
-                            # 用「這根K棒理論上的結束時間」判斷現在是否真的跨入下一根...
                             bucket_minutes_map = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}
                             bucket_minutes = bucket_minutes_map.get(interval)
                             if bucket_minutes is not None:
                                 is_new_bucket = now_dt >= (df.index[-1] + pd.Timedelta(minutes=bucket_minutes))
                             else:
-                                is_new_bucket = df.index[-1] < now_dt  # 日/週/月K 維持原判斷
+                                is_new_bucket = df.index[-1] < now_dt  
 
                             if is_before_open or is_market_closed_func(now_dt.date()) or is_temporary_closed:
-                                # 確認是否為「早晨尚未開盤」。若尚未開盤，快照為昨天資料，絕不能提早產生今天的K棒。
                                 is_morning_premarket = (current_time < dt_time(9, 0)) if ticker not in ["TWF=F", "TMF=F"] else (dt_time(5, 0) <= current_time < dt_time(8, 45))
                                 
-                                # 若歷史資料未到今天，且今天是交易日，且「不是早晨未開盤」，且「非臨時休市」，才補今天K棒 (例如期貨的13:45~15:00空窗)
+                                # 補齊條件：非早晨盤前且「非臨時狀況休市」
                                 if df.index[-1].date() < now_dt.date() and not is_market_closed_func(now_dt.date()) and not is_morning_premarket and not is_temporary_closed:
                                     now_dt_naive = now_dt if interval in ["1d", "1wk", "1mo"] else datetime.now(tz_tw).replace(tzinfo=None)
                                     new_row = pd.DataFrame([{'Open': rt_open, 'High': rt_high, 'Low': rt_low, 'Close': rt_price, 'Volume': rt_vol}], index=[now_dt_naive])
@@ -1423,8 +1421,8 @@ with st.sidebar:
                 usage = st.session_state.sj_api.usage()
                 rem_mb = usage.remaining_bytes / (1024 * 1024)
                 st.caption(f"📊 API 今日剩餘流量: {rem_mb:.2f} MB")
-            except:
-                pass
+            except Exception:
+                st.caption("📊 API 今日剩餘流量: 暫時無法獲取 (連線讀取中)")
 
             col_logout, col_relogin = st.columns(2)
             with col_logout:
