@@ -425,13 +425,16 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
             if not df.empty and not is_index and 'Volume' in df.columns:
                 df['Volume'] = df['Volume'] / 1000
 
-            # --- 新增：強制過濾歷史 K 線中包含的休市日 (如颱風天)，避免圖表出現未開市的 K 棒 ---
+            # --- 新增：動態過濾歷史 K 線中的未開市日 (如颱風天) ---
             if not df.empty:
                 if df.index.tzinfo is not None:
                     df.index = df.index.tz_convert('Asia/Taipei').tz_localize(None)
-                drop_indices = [idx for idx in df.index if is_market_closed_func(idx.date())]
-                if drop_indices:
-                    df.drop(index=drop_indices, inplace=True)
+                
+                # 自動判斷未開盤：若日K以上的交易量為 0，視為未開市自動剔除 (不依賴行事曆)
+                if interval in ["1d", "1wk", "1mo"]:
+                    drop_indices = df[df['Volume'] == 0].index
+                    if not drop_indices.empty:
+                        df.drop(index=drop_indices, inplace=True)
                 
         # 透過 snapshots 即時快照更新圖表最後一筆資料
         if st.session_state.get('sj_logged_in', False) and not df.empty:
