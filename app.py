@@ -232,30 +232,36 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 # 2. 處理期貨夜盤日K對齊 (將 T-1 15:00 ~ T 13:45 平移至 T 日)
                 df.index = df.index + pd.Timedelta(hours=9)
                 
-                # 3. 動態判定開市日：完全不依賴行事曆，直接由資料判斷當天是否有日盤 (08:45~13:45)
+                # 3. 動態判定開市日：直接由資料判斷當天是否有日盤 (08:45~13:45)
                 is_day_session = (original_hours >= 8.75) & (original_hours <= 13.75)
                 date_series = df.index.normalize()
-                valid_dates = date_series[is_day_session].unique()
+                dates_with_day_session = date_series[is_day_session].unique()
                 
-                # 4. 建立日期映射：將「沒有日盤的孤立夜盤」(如颱風休市、週末) 自動順延併入下一個實際開盤日
+                # 4. 建立日期映射：將沒有日盤的孤立夜盤 (如颱風休市、尚未開日盤的最新交易日) 往後併入有效的 T 盤
                 all_dates = pd.Series(date_series.unique()).sort_values()
                 date_mapping = {}
+                
                 for d in all_dates:
-                    if d in valid_dates:
+                    if d in dates_with_day_session:
                         date_mapping[d] = d
                     else:
-                        future_valid = valid_dates[valid_dates > d]
-                        if len(future_valid) > 0:
-                            date_mapping[d] = future_valid.min()
+                        # 找未來的「有日盤的日期」
+                        future_valid = [fd for fd in all_dates if fd > d and fd in dates_with_day_session]
+                        
+                        if future_valid:
+                            date_mapping[d] = min(future_valid)
                         else:
-                            # 最新資料尚無日盤時，保底過濾週末
-                            d_ts = pd.Timestamp(d)
-                            if d_ts.dayofweek == 5:
-                                date_mapping[d] = d_ts + pd.Timedelta(days=2)
-                            elif d_ts.dayofweek == 6:
-                                date_mapping[d] = d_ts + pd.Timedelta(days=1)
-                            else:
-                                date_mapping[d] = d
+                            # 如果未來沒有明確的日盤日期，代表這是最新的孤兒K棒 (例如現在 01:15 正在夜盤)
+                            # 將其指向資料庫中最新收到的這一天
+                            target_date = all_dates.iloc[-1]
+                            
+                            # 防呆：如果最後一天是星期六 (由週五夜盤+9小時產生)，期交所規定算在下週一的 T 盤
+                            if target_date.dayofweek == 5:
+                                target_date += pd.Timedelta(days=2)
+                            elif target_date.dayofweek == 6:
+                                target_date += pd.Timedelta(days=1)
+                                
+                            date_mapping[d] = target_date
                 
                 # 5. 套用動態修正
                 df.index = date_series.map(date_mapping) + (df.index - date_series)
