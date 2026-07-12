@@ -226,17 +226,39 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
             pass
         elif interval in ['1d', '1wk', '1mo']:
             if is_future:
-                # 處理期貨夜盤日K對齊 (T-1 15:00 ~ T 13:45 為同一交易日)
+                # 1. 取得真實時間的浮點數小時 (例如 08:45 為 8.75) 以判斷是否為日盤
+                original_hours = df.index.hour + df.index.minute / 60.0
+                
+                # 2. 處理期貨夜盤日K對齊 (將 T-1 15:00 ~ T 13:45 平移至 T 日)
                 df.index = df.index + pd.Timedelta(hours=9)
                 
-                # 修正：遇到假日(含週末及颱風天臨時休市)，強制順延至下一個「正常交易日」
-                # 依期交所規定，颱風休市時，前一日夜盤將自動併入次一正常交易日，避免拆成兩根K棒
-                def shift_to_next_trading_day(d):
-                    while d.weekday() >= 5 or is_market_closed_func(d.date()):
-                        d += pd.Timedelta(days=1)
-                    return d
+                # 3. 動態判定開市日：完全不依賴行事曆，直接由資料判斷當天是否有日盤 (08:45~13:45)
+                is_day_session = (original_hours >= 8.75) & (original_hours <= 13.75)
+                date_series = df.index.normalize()
+                valid_dates = date_series[is_day_session].unique()
                 
-                df.index = df.index.map(shift_to_next_trading_day)
+                # 4. 建立日期映射：將「沒有日盤的孤立夜盤」(如颱風休市、週末) 自動順延併入下一個實際開盤日
+                all_dates = pd.Series(date_series.unique()).sort_values()
+                date_mapping = {}
+                for d in all_dates:
+                    if d in valid_dates:
+                        date_mapping[d] = d
+                    else:
+                        future_valid = valid_dates[valid_dates > d]
+                        if len(future_valid) > 0:
+                            date_mapping[d] = future_valid.min()
+                        else:
+                            # 最新資料尚無日盤時，保底過濾週末
+                            d_ts = pd.Timestamp(d)
+                            if d_ts.dayofweek == 5:
+                                date_mapping[d] = d_ts + pd.Timedelta(days=2)
+                            elif d_ts.dayofweek == 6:
+                                date_mapping[d] = d_ts + pd.Timedelta(days=1)
+                            else:
+                                date_mapping[d] = d
+                
+                # 5. 套用動態修正
+                df.index = date_series.map(date_mapping) + (df.index - date_series)
                 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
