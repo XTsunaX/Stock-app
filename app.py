@@ -1373,10 +1373,19 @@ if 'remember_sj' not in st.session_state:
 
 if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.session_state.get('manual_logout', False):
     try:
-        # 改調用快取函式，若已連線則直接重用物件，不再向永豐發送重複登入請求
-        st.session_state.sj_api = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
-        st.session_state.sj_logged_in = True
-    except:
+        # 取得快取的連線物件
+        api_obj = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
+        # 測試連線是否存活 (防呆：解決 AuthError: Not authenticated)
+        try:
+            api_obj.usage()
+            st.session_state.sj_api = api_obj
+            st.session_state.sj_logged_in = True
+        except Exception:
+            # 若快取的連線已失效，則清除快取並強制重新登入
+            init_shioaji_connection.clear()
+            st.session_state.sj_api = init_shioaji_connection(st.session_state.sj_key, st.session_state.sj_secret)
+            st.session_state.sj_logged_in = True
+    except Exception:
         st.session_state.sj_logged_in = False
 
 @st.cache_data(max_entries=1)
