@@ -483,9 +483,12 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         rt_low = s.low
                         rt_vol = s.total_volume 
                         
+                        # 擷取永豐快照的正確昨日參考價，避免計算漲跌幅異常
                         try:
-                            if ticker.startswith("^TWII") or ticker in ["TWF=F", "TMF=F"]:
-                                pass  
+                            # 修正：利用快照的 change_price 反推官方真實昨收(日盤基準價)，解決期貨夜盤基準落差
+                            change_val = getattr(s, 'change_price', getattr(s, 'change', None))
+                            if change_val is not None and rt_price > 0:
+                                explicit_ref_prev_close = rt_price - float(change_val)
                             elif hasattr(contract_snap, 'reference') and contract_snap.reference > 0:
                                 explicit_ref_prev_close = float(contract_snap.reference)
                         except:
@@ -789,37 +792,44 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
         cl = float(df_subset['Close'].iloc[-1])
         vol = float(df_subset['Volume'].iloc[-1]) if 'Volume' in df_subset.columns else 0.0
 
-       # 精準計算漲跌幅: 統一改為與「前一根K棒收盤價」對比，不再強制套用日線級別的昨日收盤價
-        ref_prev_close = cl
-        if len(df_subset) > 1:
-            ref_prev_close = float(df_subset['Close'].iloc[-2])
-        elif len(df) > 1:
-            ref_prev_close = float(df['Close'].iloc[-2])
+       # 修正：總漲跌幅必須與「日線級別的昨日收盤價 (日盤)」對比，不能與「上一根分K」對比
+        if explicit_ref_prev_close is not None and explicit_ref_prev_close > 0:
+            daily_ref_close = explicit_ref_prev_close
+        else:
+            if interval in ["1d", "1wk", "1mo"]:
+                daily_ref_close = float(df['Close'].iloc[-2]) if len(df) > 1 else cl
+            else:
+                last_date = df.index[-1].date()
+                past_df = df[df.index.date < last_date]
+                if not past_df.empty:
+                    daily_ref_close = float(past_df['Close'].iloc[-1])
+                else:
+                    daily_ref_close = float(df['Close'].iloc[-2]) if len(df) > 1 else cl
 
-        chg = cl - ref_prev_close
-        pct_chg = (chg / ref_prev_close * 100) if ref_prev_close > 0 else 0.0
+        chg = cl - daily_ref_close
+        pct_chg = (chg / daily_ref_close * 100) if daily_ref_close > 0 else 0.0
 
         chg = round(chg, 2)
         pct_chg = round(pct_chg, 2)
         color = "#ff4b4b" if chg > 0 else ("#00e676" if chg < 0 else "white")
         sign = "+" if chg > 0 else ""
 
-        # 定義各自與「上一根K棒收盤價」對比的顏色函數 (修正夜盤及連續時間區段的顏色斷層)
+        # K棒內部變色邏輯維持與「上一根K棒收盤價」對比 (解決連續區段跳空落差)
         prev_k_close = float(df_subset['Close'].iloc[-2]) if len(df_subset) > 1 else op
 
         def get_ohlc_color(val, ref):
-            if val > ref: return "#ff4b4b"     # 紅漲
-            elif val < ref: return "#00e676"   # 綠跌
-            return "white"                     # 平盤
+            if val > ref: return "#ff4b4b"
+            elif val < ref: return "#00e676"
+            return "white"
 
-        # 標題上的開高低收文字，統一使用上一根K棒收盤價(prev_k_close)來作為變色基準
+        # 標題上的開高低收文字，使用上一根K棒收盤價(prev_k_close)變色
         color_op = get_ohlc_color(op, prev_k_close)
         color_hi = get_ohlc_color(hi, prev_k_close)
         color_lo = get_ohlc_color(lo, prev_k_close)
         color_cl = get_ohlc_color(cl, prev_k_close)
         
-        # 主名稱與總漲跌幅的顏色，依然保留使用昨日收盤價 (ref_prev_close)
-        color_main = get_ohlc_color(cl, ref_prev_close)
+        # 主名稱與總漲跌幅的顏色，則使用正確的日盤昨收 (daily_ref_close)
+        color_main = get_ohlc_color(cl, daily_ref_close)
 
         if is_index:
             if ticker == '^TWII':
@@ -1986,6 +1996,27 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
                 hist = hist.iloc[:-1]
 
     if hist.empty: return None
+
+    # 修正夜盤基準：若是期貨，透過快照直接擷取官方基準價 (日盤 13:45 收盤價)
+    if sj_logged_in and sj_api is not None and code in ["TWF=F", "TMF=F"]:
+        try:
+            contract = None
+            if code == "TWF=F":
+                contract = min([c for c in sj_api.Contracts.Futures.TXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+            else:
+                contract = min([c for c in sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+            if contract:
+                snap = sj_api.snapshots([contract])
+                if snap and len(snap) > 0:
+                    s = snap[0]
+                    rt_p = s.close if s.close > 0 else s.open
+                    change_val = getattr(s, 'change_price', getattr(s, 'change', None))
+                    if change_val is not None and rt_p > 0:
+                        official_ref = rt_p - float(change_val)
+                        if len(hist) >= 2:
+                            hist.iloc[-2, hist.columns.get_loc('Close')] = official_ref
+        except:
+            pass
 
     live_base_price = hist.iloc[-1]['Close']
     if len(hist) >= 2: live_prev_price = hist.iloc[-2]['Close']
