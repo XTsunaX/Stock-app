@@ -2896,7 +2896,6 @@ with tab1:
                 )
 
 with tab2:
-    st.markdown("#### 💰 交易損益室 💰")
     tab2_1, tab2_2, tab2_3 = st.tabs(["當沖損益室", "波段信用室", "期權交易室"])
     
     with tab2_1:
@@ -3881,7 +3880,6 @@ with tab2:
                 st.info("👈 請在左側填寫完整的 **進場價**、**出場/目標價** 與 **單邊手續費** 即可自動開始計算損益與風險。")
                 
 with tab_fibo:
-    st.markdown("#### 📈 費波計算")
     
     def format_fibo_tag(key):
         val = st.session_state[key].strip()
