@@ -2696,10 +2696,10 @@ with tab1:
 
         
         st.markdown("---")
-        # 調整欄位配置以加入新按鈕
-        col_btn, col_rt_update, col_clear, col_clear_price = st.columns([2.5, 2, 2, 2])
-        with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", width='stretch', type="primary")
-        with col_rt_update: btn_rt_update = st.button("⏱️ 即時更新報價", width='stretch')
+        # 重新配置欄位比例與順序
+        col_rt_update, col_btn, col_clear, col_clear_price = st.columns([2, 2.5, 2, 2])
+        with col_rt_update: btn_rt_update = st.button("⏱️ 即時更新報價", width='stretch', type="primary")
+        with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", width='stretch')
         with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", width='stretch', help="清除所有記憶的戰略備註內容")
         with col_clear_price: btn_clear_price = st.button("🗑️ 清除自訂價", width='stretch', help="清除所有輸入的自訂價")
         
