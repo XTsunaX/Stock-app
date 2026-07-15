@@ -1869,12 +1869,18 @@ def generate_note_from_points(points, manual_note, show_3d):
         elif "前高" in tags: final_tag = "前高"
         elif "前低" in tags: final_tag = "前低"
         
-        v_str = fmt_price(val)
+       v_str = fmt_price(val)
         suffix_tags = ["多", "空", "平"]
         prefix_tags = ["漲停", "漲停高", "跌停", "跌停低", "高", "低"]
         numeric_only_tags = ["前高", "前低", "昨高", "昨低", "今高", "今低"]
         
-        if final_tag in suffix_tags: item = f"{v_str}{final_tag}" 
+        if final_tag in suffix_tags: 
+            if final_tag == "多":
+                item = f"🔴{v_str}{final_tag}"
+            elif final_tag == "空":
+                item = f"🟢{v_str}{final_tag}"
+            else:
+                item = f"{v_str}{final_tag}"
         elif final_tag in prefix_tags: item = f"{final_tag}{v_str}"
         elif final_tag in numeric_only_tags: item = v_str 
         elif final_tag: item = f"{v_str}{final_tag}" 
