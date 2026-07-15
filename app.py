@@ -2513,8 +2513,11 @@ with tab1:
             note = str(row.get('戰略備註', ''))
             st_val = str(row.get('狀態', ''))
             
-            # 當狀態為「命中」時，名稱欄位套用顯眼顏色 (黃底黑字粗體)
-            if st_val == "命中":
+            if st_val == "漲停":
+                name_c = 'background-color: #ff4b4b; color: #ffffff; font-weight: bold;'
+            elif st_val == "跌停":
+                name_c = 'background-color: #00e676; color: #ffffff; font-weight: bold;'
+            elif st_val == "命中":
                 name_c = 'background-color: #ffeb3b; color: #000000; font-weight: bold;'
             else:
                 name_c = 'color: #ff4b4b;' if "多" in note else ('color: #00e676;' if "空" in note else '')
@@ -2612,7 +2615,7 @@ with tab1:
                                             any_changed = True
                                             break
                                             
-                                if any_changed and str(new_price).strip().lower() not in ['nan', '', 'none']:
+                                if any_changed:
                                     if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
                                     
                                     for j, r in st.session_state.stock_data.iterrows():
