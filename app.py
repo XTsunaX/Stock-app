@@ -3429,6 +3429,24 @@ with tab2:
                     
                     if opt_main_tab in ["台指期", "個股期貨"] and sj_logged and sj_api:
                         contract = None
+                        
+                        # 新增：動態判斷目前是否已過日盤結算時間 (13:45)，以過濾已結算到期的合約
+                        tz_now = datetime.now(pytz.timezone('Asia/Taipei'))
+                        today_str = tz_now.strftime("%Y%m%d")
+                        now_time = tz_now.time()
+                        
+                        def is_valid_contract(c):
+                            code_str = getattr(c, 'code', '')
+                            if code_str.endswith('R1') or code_str.endswith('R2') or '/' in code_str:
+                                return False
+                            d_date = getattr(c, 'delivery_date', '999999')
+                            # 過濾結算日已過的合約，或今日已過 13:45 的結算合約 (轉倉日夜盤換月)
+                            if d_date < today_str:
+                                return False
+                            if d_date == today_str and now_time >= dt_time(13, 45):
+                                return False
+                            return True
+
                         if opt_main_tab == "台指期":
                             try:
                                 if "大台" in opt_tx_type:
@@ -3437,7 +3455,10 @@ with tab2:
                                     contracts = sj_api.Contracts.Futures.MXF
                                 else:
                                     contracts = sj_api.Contracts.Futures.TMF
-                                contract = min([c for c in contracts if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                    
+                                valid_list = [c for c in contracts if is_valid_contract(c)]
+                                if valid_list:
+                                    contract = min(valid_list, key=lambda c: getattr(c, 'delivery_date', '999999'))
                             except: pass
                         elif opt_main_tab == "個股期貨":
                             code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
@@ -3458,7 +3479,7 @@ with tab2:
                                             for c in category:
                                                 if str(getattr(c, 'underlying_code', '')) == str(code): candidates.append(c)
                                     if candidates:
-                                        valid_contracts = [c for c in candidates if '/' not in getattr(c, 'code', '') and not getattr(c, 'code', '').endswith('R1') and not getattr(c, 'code', '').endswith('R2')]
+                                        valid_contracts = [c for c in candidates if is_valid_contract(c)]
                                         if valid_contracts:
                                             contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
                                 except Exception: pass
