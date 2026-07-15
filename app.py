@@ -3430,7 +3430,6 @@ with tab2:
                     if opt_main_tab in ["台指期", "個股期貨"] and sj_logged and sj_api:
                         contract = None
                         
-                        # 新增：動態判斷目前是否已過日盤結算時間 (13:45)，以過濾已結算到期的合約
                         tz_now = datetime.now(pytz.timezone('Asia/Taipei'))
                         today_str = tz_now.strftime("%Y%m%d")
                         now_time = tz_now.time()
@@ -3439,12 +3438,32 @@ with tab2:
                             code_str = getattr(c, 'code', '')
                             if code_str.endswith('R1') or code_str.endswith('R2') or '/' in code_str:
                                 return False
-                            d_date = getattr(c, 'delivery_date', '999999')
-                            # 過濾結算日已過的合約，或今日已過 13:45 的結算合約 (轉倉日夜盤換月)
-                            if d_date < today_str:
-                                return False
-                            if d_date == today_str and now_time >= dt_time(13, 45):
-                                return False
+                                
+                            # 優先取得 delivery_date，若無則取 delivery_month，並清除斜線與破折號以利比對
+                            d_date = str(getattr(c, 'delivery_date', getattr(c, 'delivery_month', '999999')))
+                            d_date = d_date.replace('/', '').replace('-', '')
+                            
+                            # 若為 8 碼精確日期 (YYYYMMDD)
+                            if len(d_date) == 8:
+                                if d_date < today_str:
+                                    return False
+                                if d_date == today_str and now_time >= dt_time(13, 45):
+                                    return False
+                            # 若僅有 6 碼年月 (YYYYMM)
+                            elif len(d_date) == 6:
+                                today_ym = today_str[:6]
+                                if d_date < today_ym:
+                                    return False
+                                if d_date == today_ym:
+                                    # 判斷今天是否為結算日(第三個星期三)
+                                    cal = calendar.monthcalendar(tz_now.year, tz_now.month)
+                                    wednesdays = [week[calendar.WEDNESDAY] for week in cal if week[calendar.WEDNESDAY] != 0]
+                                    if len(wednesdays) >= 3:
+                                        settle_day = wednesdays[2]
+                                        if tz_now.day > settle_day:
+                                            return False
+                                        if tz_now.day == settle_day and now_time >= dt_time(13, 45):
+                                            return False
                             return True
 
                         if opt_main_tab == "台指期":
@@ -3458,7 +3477,7 @@ with tab2:
                                     
                                 valid_list = [c for c in contracts if is_valid_contract(c)]
                                 if valid_list:
-                                    contract = min(valid_list, key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                    contract = min(valid_list, key=lambda c: str(getattr(c, 'delivery_date', getattr(c, 'delivery_month', '999999'))).replace('/', '').replace('-', ''))
                             except: pass
                         elif opt_main_tab == "個股期貨":
                             code = search_stock_futures.split(" ")[0] if search_stock_futures else ""
@@ -3481,7 +3500,7 @@ with tab2:
                                     if candidates:
                                         valid_contracts = [c for c in candidates if is_valid_contract(c)]
                                         if valid_contracts:
-                                            contract = min(valid_contracts, key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                            contract = min(valid_contracts, key=lambda c: str(getattr(c, 'delivery_date', getattr(c, 'delivery_month', '999999'))).replace('/', '').replace('-', ''))
                                 except Exception: pass
 
                         if contract:
