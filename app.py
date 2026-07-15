@@ -2561,7 +2561,7 @@ with tab1:
                 "當日跌停價": st.column_config.TextColumn(width="small", disabled=True),
                 "自訂價價差": st.column_config.TextColumn(width=70, disabled=True),
                 "5日線價差": st.column_config.TextColumn(width=70, disabled=True),
-                "狀態": st.column_config.TextColumn(width=60, disabled=True),
+                "狀態": None, # 設定為 None 即可在資料編輯器中隱藏該欄位
                 "戰略備註": st.column_config.TextColumn("戰略備註 ✏️", width=note_width_px, disabled=False),
             },
             hide_index=True, width='content', num_rows="fixed", key="main_editor"
@@ -2892,7 +2892,7 @@ with tab1:
                         "當日跌停價": st.column_config.TextColumn(width="small"),
                         "自訂價價差": st.column_config.TextColumn(width=70),
                         "5日線價差": st.column_config.TextColumn(width=70),
-                        "狀態": st.column_config.TextColumn(width=60),
+                        "狀態": None, # 設定為 None 隱藏獨立計算結果的狀態欄位
                         "戰略備註": st.column_config.TextColumn("戰略備註", width=note_width_px)
                     },
                     hide_index=True, width='content', key="indep_table_output"
