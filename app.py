@@ -3588,7 +3588,9 @@ with tab2:
                             color = "#ff4b4b" if rt_p > ref_p else ("#00e676" if rt_p < ref_p else "white")
                             diff = rt_p - ref_p
                             sign = "+" if diff > 0 else ""
-                            st.markdown(f"<div style='font-size:20px; margin:0px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='font-size:16px; color:{color};'>({sign}{diff:g})</span></div>", unsafe_allow_html=True)
+                            # 新增：計算漲跌幅百分比
+                            pct_chg = (diff / ref_p * 100) if ref_p else 0.0
+                            st.markdown(f"<div style='font-size:20px; margin:0px;'>最新成交價: <span style='color:{color}; font-weight:bold;'>{rt_p:g}</span> <span style='font-size:16px; color:{color};'>({sign}{diff:g})({pct_chg:+.2f}%)</span></div>", unsafe_allow_html=True)
                         else:
                             st.markdown("<div style='font-size:20px; margin:0px; color:#aaa;'>最新成交價: 尚未更新</div>", unsafe_allow_html=True)
                     with c_rt2:
