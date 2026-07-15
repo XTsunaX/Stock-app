@@ -2511,7 +2511,13 @@ with tab1:
         def style_tab1_df(row):
             styles = [''] * len(row)
             note = str(row.get('戰略備註', ''))
-            name_c = 'color: #ff4b4b;' if "多" in note else ('color: #00e676;' if "空" in note else '')
+            st_val = str(row.get('狀態', ''))
+            
+            # 當狀態為「命中」時，名稱欄位套用顯眼顏色 (黃底黑字粗體)
+            if st_val == "命中":
+                name_c = 'background-color: #ffeb3b; color: #000000; font-weight: bold;'
+            else:
+                name_c = 'color: #ff4b4b;' if "多" in note else ('color: #00e676;' if "空" in note else '')
             
             price_c = ''
             try:
@@ -2678,10 +2684,48 @@ with tab1:
 
         
         st.markdown("---")
-        col_btn, col_clear, _ = st.columns([2, 2, 4])
+        # 調整欄位配置以加入新按鈕
+        col_btn, col_rt_update, col_clear, _ = st.columns([2.5, 2, 2, 1.5])
         with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", width='stretch', type="primary")
+        with col_rt_update: btn_rt_update = st.button("即時更新報價", width='stretch')
         with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", width='stretch', help="清除所有記憶的戰略備註內容")
         
+        if btn_rt_update:
+            if st.session_state.get('sj_logged_in', False) and st.session_state.get('sj_api'):
+                sj_api = st.session_state.sj_api
+                updated = False
+                with st.spinner("正在透過永豐API更新報價..."):
+                    for i, row in st.session_state.stock_data.iterrows():
+                        code = str(row['代號'])
+                        try:
+                            contract = None
+                            if code in ["TWF=F", "TMF=F"]:
+                                if code == "TWF=F":
+                                    contract = min([c for c in sj_api.Contracts.Futures.TXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                else:
+                                    contract = min([c for c in sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                            else:
+                                try: contract = sj_api.Contracts.Stocks[code]
+                                except: pass
+                            
+                            if contract:
+                                snap = sj_api.snapshots([contract])
+                                if snap and len(snap) > 0:
+                                    rt_price = snap[0].close
+                                    if rt_price > 0:
+                                        st.session_state.stock_data.at[i, '自訂價(可修)'] = fmt_price(rt_price)
+                                        st.session_state.stock_data.at[i, '狀態'] = recalculate_row(st.session_state.stock_data.iloc[i], points_map)
+                                        updated = True
+                        except Exception:
+                            pass
+                if updated:
+                    tz_tw = pytz.timezone('Asia/Taipei')
+                    st.session_state.last_rt_update_time = datetime.now(tz_tw).strftime("%Y/%m/%d %H:%M:%S")
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    st.rerun()
+            else:
+                st.warning("⚠️ 請先登入永豐 API 才能使用即時更新報價功能。")
+
         if btn_clear_notes:
             st.session_state.saved_notes = {}
             st.toast("手動備註已清除", icon="🧹")
@@ -2698,6 +2742,9 @@ with tab1:
         if auto_update:
             col_delay, _ = st.columns([2, 8])
             with col_delay: st.session_state.update_delay_sec = st.number_input("⏳ 緩衝秒數", min_value=0.0, max_value=5.0, step=0.1, value=st.session_state.update_delay_sec)
+
+        if 'last_rt_update_time' in st.session_state:
+            st.markdown(f"<div style='text-align: left; color: #888; font-size: 14px; margin-top: 5px; margin-bottom: 10px;'>透過永豐API即時更新報價(更新時間:{st.session_state.last_rt_update_time})</div>", unsafe_allow_html=True)
 
         if btn_update:
              update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
