@@ -2602,8 +2602,17 @@ with tab1:
                         if row['代號'] == last_visible_code:
                             if last_visible_code in update_map:
                                 new_price = update_map[last_visible_code]['自訂價(可修)']
-                                old_price = str(row['自訂價(可修)'])
-                                if old_price != str(new_price) and str(new_price).strip().lower() != 'nan':
+                                
+                                # 檢查是否表格內有任何自訂價或備註發生變動
+                                any_changed = False
+                                for j, r in st.session_state.stock_data.iterrows():
+                                    c_code = r['代號']
+                                    if c_code in update_map:
+                                        if str(update_map[c_code]['自訂價(可修)']) != str(r['自訂價(可修)']) or str(update_map[c_code]['戰略備註']) != str(r['戰略備註']):
+                                            any_changed = True
+                                            break
+                                            
+                                if any_changed and str(new_price).strip().lower() not in ['nan', '', 'none']:
                                     if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
                                     
                                     for j, r in st.session_state.stock_data.iterrows():
@@ -2685,11 +2694,20 @@ with tab1:
         
         st.markdown("---")
         # 調整欄位配置以加入新按鈕
-        col_btn, col_rt_update, col_clear, _ = st.columns([2.5, 2, 2, 1.5])
+        col_btn, col_rt_update, col_clear, col_clear_price = st.columns([2.5, 2, 2, 2])
         with col_btn: btn_update = st.button("⚡ 執行更新&儲存手動備註", width='stretch', type="primary")
-        with col_rt_update: btn_rt_update = st.button("即時更新報價", width='stretch')
+        with col_rt_update: btn_rt_update = st.button("⏱️ 即時更新報價", width='stretch')
         with col_clear: btn_clear_notes = st.button("🧹 清除手動備註", width='stretch', help="清除所有記憶的戰略備註內容")
+        with col_clear_price: btn_clear_price = st.button("🗑️ 清除自訂價", width='stretch', help="清除所有輸入的自訂價")
         
+        if btn_clear_price:
+            for idx, row in st.session_state.stock_data.iterrows():
+                st.session_state.stock_data.at[idx, '自訂價(可修)'] = ""
+                st.session_state.stock_data.at[idx, '狀態'] = recalculate_row(st.session_state.stock_data.iloc[idx], points_map)
+            save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+            st.toast("自訂價已清除", icon="🗑️")
+            st.rerun()
+
         if btn_rt_update:
             if st.session_state.get('sj_logged_in', False) and st.session_state.get('sj_api'):
                 sj_api = st.session_state.sj_api
