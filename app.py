@@ -16,21 +16,18 @@ import io
 import twstock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
-import random
 import gc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 import streamlit.components.v1 as components
 import urllib3
-import base64
 import pdfplumber
 import fitz  # PyMuPDF 用於將 PDF 轉為圖片
 from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 # 關閉 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -75,11 +72,6 @@ def is_market_closed_func(d_date):
     name = h_dict.get((d_date.month, d_date.day), "")
     if name and name != "封關日": return True
     return False
-
-def is_warrant(code):
-    c = str(code)
-    if c.startswith('00'): return False
-    return len(c) > 4
 
 def is_warrant(code):
     c = str(code)
@@ -1143,7 +1135,6 @@ def fetch_goodinfo_data():
         
         html = driver.page_source
         
-        import io
         tables = pd.read_html(io.StringIO(html))
         
         target_df = None
@@ -1207,12 +1198,15 @@ CONFIG_FILE = "config.json"
 DATA_CACHE_FILE = "data_cache.json"
 URL_CACHE_FILE = "url_cache.json"
 SEARCH_CACHE_FILE = "search_cache.json"
+DEFAULT_FIBO_TAGS = ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"]
+ANALYSIS_MAX_WORKERS = 2
+API_REQUEST_GAP_SECONDS = 0.1
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r") as f: return json.load(f)
-        except: return {}
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: return {}
     return {}
 
 def save_config(font_size, limit_rows, auto_update, delay_sec, sj_key="", sj_secret="", remember_sj=False):
@@ -1227,9 +1221,9 @@ def save_config(font_size, limit_rows, auto_update, delay_sec, sj_key="", sj_sec
             "sj_secret": sj_secret if remember_sj else "",
             "remember_sj": remember_sj
         })
-        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f)
         return True
-    except: return False
+    except Exception: return False
 
 def save_fibo_config():
     config = load_config()
@@ -1245,29 +1239,35 @@ def save_fibo_config():
     if 'ma_w' in st.session_state:
         config['ma_width'] = st.session_state.ma_w
     try:
-        with open(CONFIG_FILE, "w") as f: json.dump(config, f)
-    except: pass
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f)
+    except Exception: pass
     # 同步寫入 Google Sheets
     save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes, fibo_tags)
 
-def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=None):
+def save_data_cache(df, ignored_set, candidates=None, saved_notes=None, fibo_tags=None):
+    if candidates is None:
+        candidates = []
+    if saved_notes is None:
+        saved_notes = {}
     if fibo_tags is None:
-        fibo_tags = st.session_state.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
+        fibo_tags = st.session_state.get('fibo_tags', list(DEFAULT_FIBO_TAGS))
     try:
         # 只在主執行緒做最輕量的複製，避免鎖死 UI
         df_save = df.fillna("").copy()
-        # 修正：移除掉 _points, _source, _source_rank 等，確保重新載入時排序與資料皆正常，防止異常遞補
-        _DROP_COLS = ['_auto_note'] 
-        df_save.drop(columns=[c for c in _DROP_COLS if c in df_save.columns], inplace=True)
         ignored_list = list(ignored_set)
         # 快取完整備註供重整後還原（須在 drop 內部欄位前執行）
-        cached_notes = {}
-        for _, row in df_save.iterrows():
-            code = str(row.get('代號', '')).strip()
-            note = str(row.get('戰略備註', '')).strip()
-            auto = str(row.get('_auto_note', '')).strip()
-            if code:
-                cached_notes[code] = {'note': note, 'auto': auto}
+        empty_col = pd.Series("", index=df_save.index, dtype=str)
+        codes = df_save.get('代號', empty_col).astype(str).str.strip()
+        notes = df_save.get('戰略備註', empty_col).astype(str).str.strip()
+        auto_notes = df_save.get('_auto_note', empty_col).astype(str).str.strip()
+        cached_notes = {
+            code: {'note': note, 'auto': auto}
+            for code, note, auto in zip(codes, notes, auto_notes)
+            if code
+        }
+
+        # 移除只供執行期間使用的欄位，避免重新載入時污染資料。
+        df_save.drop(columns=['_auto_note'], errors='ignore', inplace=True)
         
         # 本地存檔維持在主執行緒 (若不想寫入本地也可將此段一併移入背景)
         data_to_save_local = {"stock_data": df_save.to_dict(orient='records'), "ignored_stocks": ignored_list, "all_candidates": candidates, "saved_notes": saved_notes, "fibo_tags": fibo_tags, "cached_notes": cached_notes}
@@ -1288,15 +1288,14 @@ def save_data_cache(df, ignored_set, candidates=[], saved_notes={}, fibo_tags=No
                     }
                     json_str = json.dumps(data_to_save, ensure_ascii=False)
                     requests.post(st.secrets["gsheet_api_url"], json={"action": "save", "data": json_str}, timeout=5)
-                except: pass
+                except Exception: pass
                 finally:
                     # 強制回收背景執行緒產生的巨大 JSON 與 Dict 記憶體
-                    import gc
                     gc.collect()
 
             import threading
             threading.Thread(target=bg_save, args=(df_save, ignored_list, candidates, saved_notes, fibo_tags, cached_notes), daemon=True).start()
-    except: pass
+    except Exception: pass
 
 def load_data_cache():
     if "gsheet_api_url" in st.secrets:
@@ -1310,7 +1309,7 @@ def load_data_cache():
                 saved_notes = data.get('saved_notes', {}) 
                 fibo_tags = data.get('fibo_tags', [])
                 return df, ignored, candidates, saved_notes, fibo_tags, data.get('cached_notes', {})
-        except: pass
+        except Exception: pass
 
     if os.path.exists(DATA_CACHE_FILE):
         try:
@@ -1321,7 +1320,7 @@ def load_data_cache():
             saved_notes = data.get('saved_notes', {}) 
             fibo_tags = data.get('fibo_tags', [])
             return df, ignored, candidates, saved_notes, fibo_tags, data.get('cached_notes', {})
-        except: return pd.DataFrame(), set(), [], {}, [], {}
+        except Exception: return pd.DataFrame(), set(), [], {}, [], {}
     return pd.DataFrame(), set(), [], {}, [], {}
 
 def load_url_history():
@@ -1331,7 +1330,7 @@ def load_url_history():
                 data = json.load(f)
                 if "url" in data and isinstance(data["url"], str) and data["url"]: return [data["url"]]
                 return data.get("urls", [])
-        except: return []
+        except Exception: return []
     return []
 
 def save_url_history(urls):
@@ -1345,20 +1344,20 @@ def save_url_history(urls):
                 seen.add(u_clean)
         with open(URL_CACHE_FILE, "w", encoding='utf-8') as f: json.dump({"urls": unique_urls}, f)
         return True
-    except: return False
+    except Exception: return False
 
 def load_search_cache():
     if os.path.exists(SEARCH_CACHE_FILE):
         try:
             with open(SEARCH_CACHE_FILE, "r", encoding='utf-8') as f: data = json.load(f)
             return data.get("selected", [])
-        except: return []
+        except Exception: return []
     return []
 
 def save_search_cache(selected_items):
     try:
         with open(SEARCH_CACHE_FILE, "w", encoding='utf-8') as f: json.dump({"selected": selected_items}, f, ensure_ascii=False)
-    except: pass
+    except Exception: pass
 
 if 'stock_data' not in st.session_state:
     cached_df, cached_ignored, cached_candidates, cached_saved_notes, cached_fibo_tags, cached_note_dict = load_data_cache()
@@ -1366,7 +1365,7 @@ if 'stock_data' not in st.session_state:
     st.session_state.ignored_stocks = cached_ignored
     st.session_state.all_candidates = cached_candidates
     st.session_state.saved_notes = cached_saved_notes
-    st.session_state.fibo_tags = cached_fibo_tags if cached_fibo_tags else ...
+    st.session_state.fibo_tags = cached_fibo_tags if cached_fibo_tags else list(DEFAULT_FIBO_TAGS)
     st.session_state.cached_notes = cached_note_dict
 
 if 'ignored_stocks' not in st.session_state: st.session_state.ignored_stocks = set()
@@ -1385,7 +1384,7 @@ if 'cached_notes' not in st.session_state: st.session_state.cached_notes = {}
 
 # Fibo 標籤與狀態初始化
 saved_config = load_config()
-fibo_tags = saved_config.get('fibo_tags', ["台積電(2330)", "鴻海(2317)", "聯發科(2454)", "和椿(6215)", "晶彩科(3535)"])
+fibo_tags = saved_config.get('fibo_tags', list(DEFAULT_FIBO_TAGS))
 
 # 優先採用從 Google Sheets 載入回來的雲端快取標籤紀錄
 fibo_tags_source = st.session_state.get('fibo_tags', fibo_tags)
@@ -1450,18 +1449,15 @@ if sj and st.session_state.remember_sj and st.session_state.sj_key and not st.se
 
 @st.cache_data(max_entries=1)
 def load_local_stock_names():
-    code_map = {}
-    name_map = {}
     if os.path.exists("stock_names.csv"):
         try:
             df = pd.read_csv("stock_names.csv", header=None, names=["code", "name"], dtype=str)
-            for _, row in df.iterrows():
-                c = str(row['code']).strip()
-                n = str(row['name']).strip()
-                code_map[c] = n
-                name_map[n] = c
-        except: pass
-    return code_map, name_map
+            codes = df['code'].astype(str).str.strip()
+            names = df['name'].astype(str).str.strip()
+            return dict(zip(codes, names)), dict(zip(names, codes))
+        except Exception:
+            pass
+    return {}, {}
 
 @st.cache_data(ttl=86400)
 def get_stock_name_online(code):
@@ -2178,14 +2174,13 @@ if 'pending_unignore' in st.session_state and st.session_state.pending_unignore:
             
         if fetch_tasks:
             def _fetch_worker(task):
-                time.sleep(0.1) # 加入微小緩衝防 API 封鎖
+                time.sleep(API_REQUEST_GAP_SECONDS)  # 保留既有請求間隔，避免 API 封鎖
                 t_code, t_name, t_src, t_ord, t_rnk = task
                 res = fetch_stock_data_raw(t_code, t_name, None, futures_copy, notes_copy, code_map_copy, sj_logged, sj_api_obj)
                 if res: res.update({'_source': t_src, '_order': t_ord, '_source_rank': t_rnk})
                 return res
                 
-            # 將 max_workers 從 3 提升到 6
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with ThreadPoolExecutor(max_workers=ANALYSIS_MAX_WORKERS) as executor:
                 results = list(executor.map(_fetch_worker, fetch_tasks))
                 valid_results = [r for r in results if r]
                 if valid_results:
@@ -2352,7 +2347,7 @@ with tab1:
 
         def process_stock_task(t_code, t_name, t_source, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj):
             # 將原本 0.5~1.5 秒的長時間延遲，改為 0.1 秒的微小緩衝以防 API 封鎖
-            time.sleep(0.1)
+            time.sleep(API_REQUEST_GAP_SECONDS)
             try: return (t_code, t_source, t_extra, fetch_stock_data_raw(t_code, t_name, t_extra, f_set, n_dict, c_map, sj_logged, sj_api_obj))
             except Exception: return (t_code, t_source, t_extra, None)
 
@@ -2368,8 +2363,7 @@ with tab1:
         sj_logged_in_flag = st.session_state.get('sj_logged_in', False)
         sj_api_obj = st.session_state.get('sj_api', None)
 
-        # 將 max_workers 從 2 提升到 6，增加同時分析的股票數量
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=ANALYSIS_MAX_WORKERS) as executor:
             future_to_task = {executor.submit(process_stock_task, t[0], t[1], t[2], t[3], futures_copy, notes_copy, code_map_copy, sj_logged_in_flag, sj_api_obj): t for t in tasks_to_run}
             completed_count = 0
             total_tasks = len(tasks_to_run) if len(tasks_to_run) > 0 else 1
@@ -2671,13 +2665,13 @@ with tab1:
                         # 🚀 2. 若快取不足(例如剛開啟網頁還沒預載完)，才即時抓取剩下的
                         if remaining_to_fetch:
                             def _replenish_worker(cand):
-                                time.sleep(0.1)
+                                time.sleep(API_REQUEST_GAP_SECONDS)
                                 t_code, t_name, t_src, t_extra = cand
                                 res = fetch_stock_data_raw(t_code, t_name, t_extra, futures_copy, notes_copy, code_map_copy, st.session_state.get('sj_logged_in', False), st.session_state.get('sj_api', None))
                                 if res: res.update({'_source': t_src, '_order': t_extra, '_source_rank': 1})
                                 return res
 
-                            with ThreadPoolExecutor(max_workers=2) as executor:
+                            with ThreadPoolExecutor(max_workers=ANALYSIS_MAX_WORKERS) as executor:
                                 results = list(executor.map(_replenish_worker, remaining_to_fetch))
                                 valid_results = [r for r in results if r]
                                 if valid_results:
@@ -2808,7 +2802,7 @@ with tab1:
             
             with st.spinner("正在獨立分析..."):
                 def _indep_worker(item):
-                    time.sleep(0.1) # 加入微小緩衝
+                    time.sleep(API_REQUEST_GAP_SECONDS)  # 保留既有請求間隔
                     parts = item.split(' ', 1)
                     q_code = parts[0]
                     q_name = parts[1] if len(parts) > 1 else ""
@@ -2817,8 +2811,7 @@ with tab1:
                         c_map_q, sj_logged, sj_api_obj
                     )
                 
-                # 同樣開啟多執行緒處理獨立分析 (建議 max_workers 設為 4 避免記憶體超載)
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                with ThreadPoolExecutor(max_workers=ANALYSIS_MAX_WORKERS) as executor:
                     results = list(executor.map(_indep_worker, indep_selection))
                     indep_data = [res for res in results if res]
                         

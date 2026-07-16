@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.log
+
+# Runtime state and locally stored credentials
+config.json
+data_cache.json
+url_cache.json
+search_cache.json
+
+# Local Streamlit secrets
+.streamlit/secrets.toml

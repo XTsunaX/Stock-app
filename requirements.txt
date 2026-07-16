@@ -11,8 +11,6 @@ urllib3
 pdfplumber
 pillow
 PyMuPDF
-cloudscraper
 openpyxl
 pytz
 selenium
-webdriver-manager
