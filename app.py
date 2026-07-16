@@ -2612,16 +2612,15 @@ with tab1:
                             if last_visible_code in update_map:
                                 new_price = update_map[last_visible_code]['自訂價(可修)']
                                 
-                                # 檢查是否表格內有任何自訂價或備註發生變動
-                                any_changed = False
+                                # 僅檢查「最後一列」是否發生變動 (以此確保輸入到最後一列時才觸發自動更新)
+                                last_row_changed = False
                                 for j, r in st.session_state.stock_data.iterrows():
-                                    c_code = r['代號']
-                                    if c_code in update_map:
-                                        if str(update_map[c_code]['自訂價(可修)']) != str(r['自訂價(可修)']) or str(update_map[c_code]['戰略備註']) != str(r['戰略備註']):
-                                            any_changed = True
-                                            break
+                                    if r['代號'] == last_visible_code:
+                                        if str(new_price) != str(r['自訂價(可修)']) or str(update_map[last_visible_code]['戰略備註']) != str(r['戰略備註']):
+                                            last_row_changed = True
+                                        break
                                             
-                                if any_changed:
+                                if last_row_changed:
                                     if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
                                     
                                     for j, r in st.session_state.stock_data.iterrows():
