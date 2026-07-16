@@ -2321,8 +2321,8 @@ with tab1:
                     if c_raw in st.session_state.ignored_stocks: continue
                     if hide_non_stock:
                         is_etf = c_raw.startswith('00')
-                        is_warrant = (len(c_raw) > 4) and c_raw.isdigit()
-                        if is_etf or is_warrant: continue
+                        is_warrant_flag = (len(c_raw) > 4) and c_raw.isdigit()
+                        if is_etf or is_warrant_flag: continue
                     n = str(row[n_col]) if n_col else ""
                     if n.lower() == 'nan': n = ""
                     targets.append((c_raw, n, 'upload', count))
