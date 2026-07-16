@@ -2602,40 +2602,33 @@ with tab1:
                     st.rerun()
 
             if not trigger_rerun and st.session_state.auto_update_last_row:
+                editor_state = st.session_state.get('main_editor', {})
+                edited_rows = editor_state.get('edited_rows', {})
                 last_visible_idx = len(edited_df) - 1
-                if last_visible_idx >= 0:
-                    last_visible_code = edited_df.iloc[last_visible_idx]['代號']
+                
+                # 嚴格限制：只有當最後一列有發生編輯行為時，才觸發更新，避免中斷前面的連續輸入
+                last_row_edited = str(last_visible_idx) in str(edited_rows.keys())
+                
+                if last_row_edited:
                     update_map = edited_df.set_index('代號')[['自訂價(可修)', '戰略備註']].to_dict('index')
                     
-                    for i, row in st.session_state.stock_data.iterrows():
-                        if row['代號'] == last_visible_code:
-                            if last_visible_code in update_map:
-                                new_price = update_map[last_visible_code]['自訂價(可修)']
-                                
-                                # 檢查目前觸發編輯的儲存格是否包含「最後一列」
-                                editor_state = st.session_state.get('main_editor', {})
-                                edited_rows = editor_state.get('edited_rows', {})
-                                last_row_interacted = (last_visible_idx in edited_rows) or (str(last_visible_idx) in str(edited_rows.keys()))
-                                
-                                # 無論最後一欄是否有輸入內容，只要在最後一欄按輸入(觸發編輯事件)，就直接更新整個表格狀態
-                                if last_row_interacted:
-                                    if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
-                                    
-                                    for j, r in st.session_state.stock_data.iterrows():
-                                        c_code = r['代號']
-                                        if c_code in update_map:
-                                            np, nn = update_map[c_code]['自訂價(可修)'], update_map[c_code]['戰略備註']
-                                            st.session_state.stock_data.at[j, '自訂價(可修)'] = np
-                                            if str(r['戰略備註']) != str(nn):
-                                                b_auto = str(auto_notes_dict.get(c_code, "")).strip()
-                                                n_note = str(nn).strip()
-                                                st.session_state.stock_data.at[j, '戰略備註'] = nn
-                                                st.session_state.saved_notes[c_code] = n_note[len(b_auto):] if b_auto and n_note.startswith(b_auto) else f"[M]{n_note}"
-                                        
-                                        st.session_state.stock_data.at[j, '狀態'] = recalculate_row(st.session_state.stock_data.loc[j], points_map)
-                                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
-                                    trigger_rerun = True
-                            break
+                    if st.session_state.update_delay_sec > 0: time.sleep(st.session_state.update_delay_sec)
+                    
+                    for j, r in st.session_state.stock_data.iterrows():
+                        c_code = r['代號']
+                        if c_code in update_map:
+                            np, nn = update_map[c_code]['自訂價(可修)'], update_map[c_code]['戰略備註']
+                            st.session_state.stock_data.at[j, '自訂價(可修)'] = np
+                            if str(r['戰略備註']) != str(nn):
+                                b_auto = str(auto_notes_dict.get(c_code, "")).strip()
+                                n_note = str(nn).strip()
+                                st.session_state.stock_data.at[j, '戰略備註'] = nn
+                                st.session_state.saved_notes[c_code] = n_note[len(b_auto):] if b_auto and n_note.startswith(b_auto) else f"[M]{n_note}"
+                        
+                        st.session_state.stock_data.at[j, '狀態'] = recalculate_row(st.session_state.stock_data.loc[j], points_map)
+                        
+                    save_data_cache(st.session_state.stock_data, st.session_state.ignored_stocks, st.session_state.all_candidates, st.session_state.saved_notes)
+                    trigger_rerun = True
 
             if trigger_rerun: st.rerun()
 
