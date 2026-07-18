@@ -105,13 +105,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
 
         elif code in ["TMF=F", "微型台指期貨", "TMF", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
             is_future = True
-            try:
-                contract = min(
-                    [c for c in api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code],
-                    key=lambda c: c.delivery_date
-                )
-            except (ValueError, AttributeError):
-                contract = api.Contracts.Futures.MXF.MXFR1
+            # TMF 是微型台指；MXF 是小型台指。使用 R1 可讓歷史 K 棒依結算日
+            # 自動換月，避免用「今天的近月實體合約」回查舊日期而混入不同月份資料。
+            contract = api.Contracts.Futures.TMF.TMFR1
         else:
             try:
                 contract = api.Contracts.Stocks[code]
@@ -147,14 +143,16 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
         # 3. 呼叫官方 api.kbars
         kbars_dict = None
         
-        # 只有在天數大於 15 天且為分K週期（短週期大資料量）才使用分段抓取，日K以上直接單次抓取速度最快且最穩
-        if actual_lookback > 15 and interval in ['1m', '5m', '15m', '60m']:
+        # Shioaji 單次 K 棒查詢有日期區間上限；日 K 也必須分段，否則 60 根
+        # 費波樣本可能不完整。分 K 使用較短區間以控制單次資料量。
+        max_chunk_days = 15 if interval in ['1m', '5m', '15m', '60m'] else 30
+        if actual_lookback > max_chunk_days:
             all_ts, all_open, all_high, all_low, all_close, all_vol = [], [], [], [], [], []
             curr_end = now
             chunks = []
             
             while curr_end > now - timedelta(days=actual_lookback):
-                curr_start = curr_end - timedelta(days=15)
+                curr_start = curr_end - timedelta(days=max_chunk_days)
                 if curr_start < now - timedelta(days=actual_lookback):
                     curr_start = now - timedelta(days=actual_lookback)
                 chunks.append((curr_start, curr_end))
@@ -283,6 +281,9 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                     # 個股：開盤第一筆為 09:00:00，若用 closed='right' 會被誤分到上一根空K棒，必須維持 closed='left'
                     df = df.resample(resample_map[interval], closed='left', label='left').agg(agg_dict).dropna()
 
+        # 保留資料實際來源，讓圖表可以驗證商品與連續契約是否正確。
+        df.attrs['shioaji_contract_code'] = getattr(contract, 'code', '')
+        df.attrs['shioaji_target_code'] = getattr(contract, 'target_code', '')
         return df
     except Exception as e:
         print(f"Shioaji fetch error for {code}: {e}")
@@ -451,13 +452,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                     except (ValueError, AttributeError):
                         contract_snap = st.session_state.sj_api.Contracts.Futures.TXF.TXFR1
                 elif ticker == "TMF=F":
-                    try:
-                        contract_snap = min(
-                            [c for c in st.session_state.sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code],
-                            key=lambda c: c.delivery_date
-                        )
-                    except (ValueError, AttributeError):
-                        contract_snap = st.session_state.sj_api.Contracts.Futures.MXF.MXFR1
+                    contract_snap = st.session_state.sj_api.Contracts.Futures.TMF.TMFR1
                 else:
                     try: 
                         contract_snap = st.session_state.sj_api.Contracts.Stocks[raw_code]
@@ -881,7 +876,10 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     fetch_time_str = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')
     
     if sj_kbars_used:
-        data_source_text = "永豐 Shioaji API (即時K線)"
+        contract_code = df.attrs.get('shioaji_contract_code', '')
+        target_code = df.attrs.get('shioaji_target_code', '')
+        resolved_contract = f" → {target_code}" if target_code else ""
+        data_source_text = f"永豐 Shioaji API (K線合約：{contract_code}{resolved_contract})"
     elif sj_snap_used:
         data_source_text = "YF歷史 + 永豐即時快照"
     elif twstock_used:
@@ -2006,7 +2004,7 @@ def fetch_stock_data_raw(code, name_hint="", extra_data=None, futures_set=None, 
             if code == "TWF=F":
                 contract = min([c for c in sj_api.Contracts.Futures.TXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
             else:
-                contract = min([c for c in sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                contract = sj_api.Contracts.Futures.TMF.TMFR1
             if contract:
                 snap = sj_api.snapshots([contract])
                 if snap and len(snap) > 0:
@@ -2714,7 +2712,7 @@ with tab1:
                                 if code == "TWF=F":
                                     contract = min([c for c in sj_api.Contracts.Futures.TXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
                                 else:
-                                    contract = min([c for c in sj_api.Contracts.Futures.MXF if c.code[-2:] not in ["R1", "R2"] and '/' not in c.code], key=lambda c: getattr(c, 'delivery_date', '999999'))
+                                    contract = sj_api.Contracts.Futures.TMF.TMFR1
                             else:
                                 try: contract = sj_api.Contracts.Stocks[code]
                                 except: pass
