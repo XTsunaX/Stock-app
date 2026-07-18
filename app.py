@@ -257,7 +257,12 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 
                 # 6. 套用動態修正
                 df.index = date_series.map(date_mapping) + (df.index - date_series)
-                
+
+                # Match the standard daily bar used by TAIFEX and Cathay: only
+                # the regular session (08:45-13:45), excluding the prior night.
+                if interval == '1d':
+                    df = df.loc[np.asarray(is_day_session, dtype=bool)]
+
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
             else: df = df.resample('M').agg(agg_dict).dropna()
@@ -320,15 +325,15 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     display_name = raw_input
 
     # 針對大盤與期貨的特例處理 (支援含有"全"字的自訂輸入)
-    if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)"]:
+    if raw_input in ["^TWII", "加權指數", "加權指數(^TWII)", "加權股價指數(TAIEX)"]:
         ticker_code = "^TWII"
-        display_name = "加權指數(^TWII)"
-    elif raw_input in ["TWF=F", "台指期貨", "台指", "小型台指", "台指期貨(TWF=F)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
+        display_name = "加權股價指數(TAIEX)"
+    elif raw_input in ["TWF=F", "台指期貨", "臺股期貨", "台指", "小型台指", "台指期貨(TWF=F)", "臺股期貨(TX)", "台指(全)", "台指期(全)", "台指期貨(全)"]:
         ticker_code = "TWF=F"
-        display_name = "台指期貨(TWF=F)"
-    elif raw_input in ["TMF=F", "微型台指期貨", "微台", "微型台指", "微型台指期貨(TMF=F)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
+        display_name = "臺股期貨(TX)"
+    elif raw_input in ["TMF=F", "微型台指期貨", "微型臺指期貨", "微台", "微型台指", "微型台指期貨(TMF=F)", "微型臺指期貨(TMF)", "微台(全)", "微台期(全)", "微型台指(全)", "微型台指期貨(全)"]:
         ticker_code = "TMF=F"
-        display_name = "微型台指期貨(TMF=F)"
+        display_name = "微型臺指期貨(TMF)"
     else:
         if "(" in raw_input and raw_input.endswith(")"):
             name_part, code_part = raw_input.rsplit("(", 1)
@@ -887,7 +892,8 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     else:
         data_source_text = "YF 歷史數據"
         
-    st.caption(f"📊 數據最後更新時間: {fetch_time_str} ({data_source_text})")
+    session_note = "；日K口徑：一般交易時段 08:45–13:45" if (sj_kbars_used and interval == '1d' and ticker in ['TWF=F', 'TMF=F']) else ""
+    st.caption(f"📊 數據最後更新時間: {fetch_time_str} ({data_source_text}{session_note})")
 
 
 # ==========================================
@@ -3910,7 +3916,7 @@ with tab_fibo:
                 continue
             fibo_stock_options.append(f"{n}({c})")
         # 下方 search_list 修改對應變數
-        search_list = ["加權指數(^TWII)", "台指期貨(TWF=F)", "微型台指期貨(TMF=F)"] + fibo_stock_options
+        search_list = ["加權股價指數(TAIEX)", "臺股期貨(TX)", "微型臺指期貨(TMF)"] + fibo_stock_options
 
         def set_fibo_search(val):
             st.session_state.fibo_search_input = val
@@ -3930,9 +3936,9 @@ with tab_fibo:
 
         st.write("📌 **快速查詢標籤** (點擊按鈕直接帶入)")
         btn_labels = [
-            ("加權指數(^TWII)", "加權指數(^TWII)"),
-            ("台指期貨(TWF=F)", "台指期貨(TWF=F)"),
-            ("微型台指期貨(TMF=F)", "微型台指期貨(TMF=F)")
+            ("加權股價指數(TAIEX)", "加權股價指數(TAIEX)"),
+            ("臺股期貨(TX)", "臺股期貨(TX)"),
+            ("微型臺指期貨(TMF)", "微型臺指期貨(TMF)")
         ]
         for tag in [st.session_state.custom_tag_1, st.session_state.custom_tag_2, st.session_state.custom_tag_3, st.session_state.custom_tag_4, st.session_state.custom_tag_5]:
             if tag.strip(): btn_labels.append((tag.strip(), tag.strip()))
