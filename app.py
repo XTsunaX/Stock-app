@@ -73,6 +73,15 @@ def is_market_closed_func(d_date):
     if name and name != "封關日": return True
     return False
 
+def get_futures_trading_date(now_dt):
+    """Map Taiwan local time to the active futures trading date."""
+    trading_date = pd.Timestamp(now_dt.date())
+    if now_dt.time() >= dt_time(15, 0):
+        trading_date += pd.Timedelta(days=1)
+    while is_market_closed_func(trading_date.date()):
+        trading_date += pd.Timedelta(days=1)
+    return trading_date.normalize()
+
 def is_warrant(code):
     c = str(code)
     if c.startswith('00'): return False
@@ -228,12 +237,8 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 dates_with_day_session = date_series[is_day_session].unique()
                 
                 # 4. 計算現實世界中「當前」的期貨 T 盤日期，作為兜底目標
-                now_tw = pd.Timestamp.now(tz='Asia/Taipei')
-                current_t_date = now_tw.normalize().tz_localize(None)
-                if now_tw.hour >= 15:
-                    current_t_date += pd.Timedelta(days=1)
-                while current_t_date.dayofweek >= 5:  # 強制跳過六、日
-                    current_t_date += pd.Timedelta(days=1)
+                now_tw = datetime.now(pytz.timezone('Asia/Taipei'))
+                current_t_date = get_futures_trading_date(now_tw)
 
                 # 5. 建立日期映射：將沒有日盤的孤立夜盤往後併入有效的 T 盤
                 all_dates = pd.Series(date_series.unique()).sort_values()
@@ -257,11 +262,6 @@ def fetch_shioaji_data(api, code, interval='1d', lookback_days=10):
                 
                 # 6. 套用動態修正
                 df.index = date_series.map(date_mapping) + (df.index - date_series)
-
-                # Match the standard daily bar used by TAIFEX and Cathay: only
-                # the regular session (08:45-13:45), excluding the prior night.
-                if interval == '1d':
-                    df = df.loc[np.asarray(is_day_session, dtype=bool)]
 
             if interval == '1d': df = df.resample('D').agg(agg_dict).dropna()
             elif interval == '1wk': df = df.resample('W-MON').agg(agg_dict).dropna()
@@ -489,8 +489,13 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
                         if df.index.tzinfo is not None: df.index = df.index.tz_localize(None)
                         
                         tz_tw = pytz.timezone('Asia/Taipei')
-                        now_dt = datetime.now(tz_tw).replace(tzinfo=None)
-                        if interval in ["1d", "1wk", "1mo"]:
+                        now_tw_aware = datetime.now(tz_tw)
+                        now_dt = now_tw_aware.replace(tzinfo=None)
+                        if interval == "1d" and ticker in ["TWF=F", "TMF=F"]:
+                            # 15:00 起的夜盤屬於下一個交易日；該未完成日 K
+                            # 會在隔日日盤持續累加，不會另開一根日 K。
+                            now_dt = get_futures_trading_date(now_tw_aware).to_pydatetime()
+                        elif interval in ["1d", "1wk", "1mo"]:
                             now_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                             
                         if rt_price > 0:
@@ -892,7 +897,7 @@ def plot_fibonacci_chart(symbol, interval, lookback=60, font_size=15, ma_flags=N
     else:
         data_source_text = "YF 歷史數據"
         
-    session_note = "；日K口徑：一般交易時段 08:45–13:45" if (sj_kbars_used and interval == '1d' and ticker in ['TWF=F', 'TMF=F']) else ""
+    session_note = "；日K口徑：夜盤 15:00 起＋次日日盤，依查詢時間動態更新" if (sj_kbars_used and interval == '1d' and ticker in ['TWF=F', 'TMF=F']) else ""
     st.caption(f"📊 數據最後更新時間: {fetch_time_str} ({data_source_text}{session_note})")
 
 
