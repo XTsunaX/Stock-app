@@ -1740,6 +1740,18 @@ def apply_tick_rules(price):
         try: return float(price)
         except: return 0.0
 
+def calculate_stop_loss_price(base_price, stop_loss_percent, is_long=True):
+    """依交易方向及台股跳動單位，計算可下單的停損價格。"""
+    try:
+        base = float(base_price)
+        percent = float(stop_loss_percent)
+        if math.isnan(base) or math.isnan(percent) or base <= 0 or percent < 0:
+            return 0.0
+        raw_price = base * (1 - percent / 100) if is_long else base * (1 + percent / 100)
+        return apply_tick_rules(raw_price)
+    except (TypeError, ValueError):
+        return 0.0
+
 def calculate_limits(price):
     try:
         p = float(price)
@@ -2911,6 +2923,18 @@ with tab2:
         with c4: min_fee = st.number_input("最低手續費 (元)", value=20, step=1)
         with c5: tick_count = st.number_input("顯示檔數 (檔)", value=10, min_value=1, max_value=50, step=1)
         direction = st.radio("交易方向", ["當沖多 (先買後賣)", "當沖空 (先賣後買)"], horizontal=True)
+
+        stop_col1, stop_col2, _ = st.columns([1, 1, 3])
+        with stop_col1:
+            day_stop_loss_percent = st.number_input(
+                "停損幅度 (%)", value=5.0, min_value=0.0, max_value=100.0,
+                step=0.5, format="%.1f", key="day_stop_loss_percent"
+            )
+        with stop_col2:
+            day_is_long = "多" in direction
+            day_stop_price = calculate_stop_loss_price(calc_price, day_stop_loss_percent, day_is_long)
+            stop_direction = "下跌" if day_is_long else "上漲"
+            st.metric("停損價", fmt_price(day_stop_price), f"{stop_direction} {day_stop_loss_percent:g}%")
         
         # --- 新增：目標價快速試算區 ---
         st.markdown("##### 🎯 目標價快速試算")
@@ -3078,6 +3102,24 @@ with tab2:
             st.caption(f"總天數: {swing_days} 天")
         with c2_fee_rate:
             short_fee_rate = st.number_input("借券費率(‱)", value=8.0 if swing_type == "融券(空)" else 0.0, step=1.0, key="short_fee_rate")
+
+        swing_stop_col1, swing_stop_col2, _ = st.columns([1, 1, 3])
+        with swing_stop_col1:
+            swing_stop_loss_percent = st.number_input(
+                "停損幅度 (%)", value=5.0, min_value=0.0, max_value=100.0,
+                step=0.5, format="%.1f", key="swing_stop_loss_percent"
+            )
+        with swing_stop_col2:
+            swing_is_long = swing_type != "融券(空)"
+            swing_stop_price = (
+                calculate_stop_loss_price(swing_calc_price, swing_stop_loss_percent, swing_is_long)
+                if swing_calc_price is not None else 0.0
+            )
+            swing_stop_direction = "下跌" if swing_is_long else "上漲"
+            st.metric(
+                "停損價", fmt_price(swing_stop_price) if swing_calc_price is not None else "—",
+                f"{swing_stop_direction} {swing_stop_loss_percent:g}%"
+            )
 
         # --- 目標價快速試算區 ---
         st.markdown("##### 🎯 目標價快速試算")
@@ -3267,10 +3309,22 @@ with tab2:
             if not df_swing_calc.empty:
                 st.dataframe(
                     df_swing_calc.style.apply(style_swing_row, axis=1), 
-                    width=425, 
+                    width='stretch',
                     hide_index=True, 
                     height=(len(df_swing_calc) + 1) * 35,
-                    column_config={"_profit": None, "_is_base": None, "_call": None}
+                    column_config={
+                        "成交價": st.column_config.TextColumn(width="small"),
+                        "漲跌": st.column_config.TextColumn(width="small"),
+                        "預估損益": st.column_config.NumberColumn(width="small"),
+                        "報酬率%": st.column_config.TextColumn(width="small"),
+                        "手續費": st.column_config.NumberColumn(width="small"),
+                        "交易稅": st.column_config.NumberColumn(width="small"),
+                        "借券費": st.column_config.NumberColumn(width="small"),
+                        "利息": st.column_config.NumberColumn(width="small"),
+                        "維持率%": st.column_config.TextColumn(width="small"),
+                        "強制回補價": st.column_config.TextColumn(width="small"),
+                        "_profit": None, "_is_base": None, "_call": None
+                    }
                 )
 
     with tab2_3:
