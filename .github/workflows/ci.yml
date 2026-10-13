@@ -31,7 +31,7 @@ jobs:
         # 安裝檢查與測試工具
         python -m pip install ruff pytest
         # 如果專案有 requirements.txt 則安裝，沒有就跳過
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f requirements.txt ]; then grep -v '^shioaji==' requirements.txt > /tmp/model-ui-ci-requirements.txt && pip install -r /tmp/model-ui-ci-requirements.txt; fi
 
     - name: 執行阻斷性程式碼檢查 (Ruff)
       run: |
